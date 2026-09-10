@@ -1,0 +1,13 @@
+name: Dependabot auto-merge
+on:
+  pull_request:
+    branches: [ "main" ]
+
+permissions: {}
+
+jobs:
+  dependabot-auto-merge:
+    permissions:
+      contents: write       # to merge auto-merge PRs
+      pull-requests: write  # to enable auto-merge
+    uses: iwamot/workflows/.github/workflows/dependabot-auto-merge.yml@6dd705693b7a451242519165c90446d73a6870c8 # v8.10.0
