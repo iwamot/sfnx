@@ -1,4 +1,4 @@
-min_version = "2026.8.14"
+min_version = "2026.9.5"
 
 [settings]
 lockfile = true
@@ -7,6 +7,10 @@ lockfile = true
 locked = true
 
 [tools]
+python = "3.14.7"
+"aqua:astral-sh/ruff" = "0.16.6"
+"aqua:astral-sh/ty" = "0.0.79"
+"aqua:astral-sh/uv" = "0.12.12"
 
 [task_config]
 includes = [

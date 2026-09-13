@@ -1,0 +1,209 @@
+# The language
+
+sfnx accepts the part of Python that has a counterpart in ASL and whose meaning JSONata can express. This page lists what that part is and what it compiles to. The reasons behind the decisions, and the Step Functions behavior they rely on, are in [design.md](design.md).
+
+The generated ASL is the contract: sfnx writes what someone would write in ASL for what the source intends, rather than reproducing every detail of Python. A module is still ordinary Python that imports and runs, and where the two would disagree, [Where results differ from Python](#where-results-differ-from-python) lists what to expect. The number of items in a list and how deeply lists nest are always kept, even when that takes a longer expression.
+
+## The machine
+
+```python
+from sfnx import state_machine
+
+
+@state_machine(timeout=300)
+def pay(input):
+    return input["amount"]
+```
+
+- The function is the machine and its name the file name (`pay.asl.json`). `timeout` becomes `TimeoutSeconds`; the parentheses are optional.
+- The parameter is the execution input. It compiles to `$states.context.Execution.Input` everywhere, because `$states.input` changes after a Task. A machine may take no parameter. Assigning to the parameter is rejected.
+- A function that ends without `return` returns `null`.
+- A file may hold several machines; the compiler reads it without importing it.
+
+## Names of states
+
+A state is named after what it does: the variable it assigns, `return`, `raise`, `if`, `for`, `while`, `wait`, `map`, `parallel`, or the action of a Task on its own line (`getItem`, `invoke`). Repeated names get serials (`amount`, `amount_2`). States inside a Parallel branch or a Map are prefixed with the function that holds them (`email.return`).
+
+States split only where ASL requires it: an assignment that reads another pending assignment, a Task, a Choice. Independent assignments share one Pass, a Task's result goes in the Task's `Assign`, and a machine that returns a Task's result ends on that Task.
+
+## Values and types
+
+Literals are JSON: numbers, strings, `True`, `False`, `None`, lists and dicts with string keys. Tuples, sets and bytes are rejected.
+
+Most operators have one JSONata spelling. A few depend on the type of their operands, and the compiler must know it:
+
+| Needs a type | Why |
+|---|---|
+| `a + b` | `+` for numbers, `&` for strings, `$append` for lists |
+| `len(x)` | `$count` for lists, `$length` for strings, `$count($keys())` for dicts |
+| `x in c` | `in` for lists, `$exists` for dicts, `$contains` for strings |
+| `c[k]` with a variable key | position or `$lookup` |
+| `for x in c` and comprehensions | elements or keys |
+
+One side is enough (`input["name"] + "!"` is a string join), a literal string key needs no type (`"coupon" in input`), and the key's own type is enough for `c[k]`.
+
+Types come from:
+
+- **Annotations** on assignments and parameters: `float` / `int`, `str`, `bool`, `list` / `list[X]`, `dict` / `dict[str, X]`, `None`, and unions such as `str | None`. An annotated variable keeps its type when reassigned with a value of unknown type.
+- **Literals and results**: `-` gives a number, comparisons a boolean, `len` a number, `str()` a string, `x[0]` of a `list[float]` a number.
+- **AWS responses**: the botocore output shape of an SDK or optimized integration. What external code returns is unknown: a Lambda `Payload`, the `Output` of a `.sync:2` child execution, the result of an activity, the `ResponseBody` of an HTTP Task, and every result of `.sync` and `.waitForTaskToken`.
+
+A value that may have several types must be narrowed first. `isinstance(x, str)`, `x is None` and `x is not None` narrow in `if` / `elif` / `else`, in the right operand of `and` / `or`, in conditional expressions, in comprehension conditions and after a branch that returns.
+
+Annotations are not checked at run time. A wrong one fails the way hand-written JSONata fails, with `States.QueryEvaluationError`.
+
+## Expressions
+
+| Python | JSONata |
+|---|---|
+| `a - b`, `a * b`, `a / b` | the same |
+| `a % b` | `$a - $b * $floor($a / $b)` (the sign follows the divisor, as in Python) |
+| `a // b`, `a ** b` | `$floor($a / $b)`, `$power($a, $b)` |
+| `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c` |
+| `x is None`, `x is not None` | `$not($exists($x) and $x != null)`, `$exists($x) and $x != null` |
+| `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b` |
+| `a or b` as a value | `$boolean($a) ? $a : $b` |
+| `not x` | `$not($x)` |
+| `x if c else y` | `$c ? $x : $y` |
+| `if x:` | `$boolean($x)`, or `$count($x) > 0` for a list (tested with `$type` when `x` may be a list) |
+| `float(x)`, `int(x)`, `str(x)`, `bool(x)` | `$number($x)`, `$floor($number($x))`, `$string($x)`, `$boolean($x)` |
+| `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
+| `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
+| `[f(x) for x in xs if c]` | `[$map($filter($xs, function($x) { c }), function($x) { f })]` |
+| `f"order {id}"` | `'order ' & $string($id)` |
+| `[a, xs, v]` in an expression | `[$a, [$xs], $type($v) = 'array' ? [[$v]] : $v]`: an item known to be a list, or one that may be, stays one item |
+
+- A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
+- f-strings take no conversions (`!r`, `{x=}`) and no format specs.
+- A string literal that starts with `{%` or ends with `%}` is written as a JSONata string, so Step Functions does not read it as an expression.
+
+## Assignments and variables
+
+- `x = value` assigns one name; `a, b = b, a` and `a, b = parallel(f, g)` assign several in one state, with the values from before it.
+- `x: float = value` declares a type along with the value.
+- `x += v`, `x -= v` and the others are `x = x + v` and so on. A list is the exception: `xs += [...]` extends the list in place in Python, which a JSON value cannot do, so write `xs = xs + [...]`.
+- A key or a position cannot be assigned (`d["k"] = v`); build the new dict or list as a literal.
+
+Variable names become JSONata variable names, so they follow Step Functions' rules: no leading `_`, at most 80 characters, not `states`, and not the name of a JSONata function the generated code calls (`count`, `string`, `keys`, `map`, ...). A variable used after a branch must be assigned on every path to it.
+
+A `parallel` branch or a Map function cannot assign a name that its enclosing function assigns anywhere; Step Functions keeps those scopes apart. Return the value instead. Variables that sfnx adds for itself (loop counters, caught errors) never clash across scopes.
+
+## Control flow
+
+**`if` / `elif` / `else`** is one Choice, a rule per test, with `Default` for `else` or for what follows.
+
+**`while test:`** is a Choice named `while` that the body leads back to. `while True:` has no Choice and leads back to its first state.
+
+**`for x in xs:`** counts with a variable of its own (`x_index`) and uses `$xs[$x_index]` for `x`, so an iteration adds no Pass state (unless the body assigns `x`, which then becomes a variable). A dict loops over its keys. `range(stop)`, `range(start, stop)` and `range(start, stop, step)` count with the loop variable itself; the step is a nonzero literal. When the body changes what the loop iterates, the loop copies it first. The loop variable is not available after the loop: a range variable would count past its last value, and an empty loop would keep the value from before it in Python.
+
+**`break`** leaves the loop; **`continue`** moves to the next iteration, through the increment of a `for`. Loops take no `else`, and `enumerate` / `zip` are rejected (`for i in range(len(items)):`).
+
+## Tasks
+
+```python
+receipt = task(
+    "arn:aws:states:::lambda:invoke",
+    {"FunctionName": "charge", "Payload": input},
+    timeout=30,
+    retry=[{"ErrorEquals": [Timeout], "MaxAttempts": 3}],
+)
+```
+
+- The first argument is the literal resource ARN, the second the `Arguments`. The options are `timeout=` (`TimeoutSeconds`), `heartbeat=` (`HeartbeatSeconds`), `role=` (`Credentials.RoleArn`, not for activities and HTTP Tasks) and `retry=`.
+- A statement holds one `task()`, as an assignment (`Assign` gets `$states.result`), a `return` (the Task ends the machine) or a line of its own. It cannot sit in an `if` test, in a comprehension, or where it would run only sometimes (`a and task(...)`, `a < b < task(...)`).
+- SDK integrations (`arn:aws:states:::aws-sdk:<service>:<action>`) are checked against botocore: the service, the action, argument names in PascalCase and the required arguments. Service names follow the AWS SDK for Java (`sfn`, `eventbridge`, `cloudwatchlogs`); botocore's names that differ (`logs`) are rejected. Whether Step Functions supports a service or action that botocore has is not checked, nor are the types of argument values; ValidateStateMachineDefinition checks those it can, such as a number written as a Lambda `Payload`.
+- Optimized integrations (`arn:aws:states:::<service>:<action>`, with `.sync`, `.sync:2` or `.waitForTaskToken`) are checked for argument names and required arguments when botocore has the action. HTTP Tasks need `ApiEndpoint`, `Method` and a connection. Activity and Lambda function ARNs, and ARNs containing `${...}`, are passed as written.
+- A `.waitForTaskToken` Task must pass `context["Task"]["Token"]` in its arguments, the only place it can be read.
+
+## Parallel and maps
+
+```python
+order = input["order"]
+
+def email():
+    return {"to": order["email"]}
+
+def audit():
+    entry = task("arn:aws:states:::aws-sdk:sns:publish", {"Message": order["id"]})
+    return entry["MessageId"]
+
+message, receipt = parallel(email, audit)
+```
+
+**`parallel(f, g, retry=)`** compiles each function without parameters as a branch where it is called. A function defined in the machine reads the variables around it; one defined at module level reads none of them. The result is the list of branch results, and `a, b = ...` unpacks it. As in Python, a name the function assigns is its own from its first line, not the one around it. A function defined in a branch or a loop can be passed only where every path to that point defines the same one, and a loop cannot define again a function defined before it.
+
+**`inline_map(f, items, max_concurrency=, retry=)`** calls `f(item)` or `f(item, index)` per item. The ItemSelector passes them by parameter name, and the function reads them from `$states.input`; when it calls `task()`, `parallel()` or a map, or assigns a parameter again, its first Pass binds them to variables, since those states replace `$states.input` and the paths that do not assign would read the item.
+
+**`distributed_map(f, items, ...)`** runs each item as a child execution:
+
+| Keyword | ASL |
+|---|---|
+| `source=` | `ItemReader` (`Resource`, `ReaderConfig`, `Arguments`), instead of `items` |
+| `args=` | the values the function reads besides the item; its parameters are the item and exactly these names |
+| `batch=` | `ItemBatcher` (`MaxItemsPerBatch`, `MaxInputBytesPerBatch`); the first parameter becomes the list of items and `args` the `BatchInput` |
+| `result=` | `ResultWriter` (`Resource`, `Arguments`, `WriterConfig`); the result is then the writer's details |
+| `max_concurrency=`, `tolerated_failure_count=`, `tolerated_failure_percentage=` | the fields of the same names |
+| `label=` | `Label`, at most 40 characters without spaces or special characters, and not used by another map |
+| `execution_type=` | `"STANDARD"` (the default) or `"EXPRESS"` |
+| `retry=` | `Retry` |
+
+The function reads its parameters from `$states.context.Execution.Input` and nothing from outside; a variable it would need is reported with the `args=` to add.
+
+## Errors
+
+```python
+class Declined(Exception):
+    pass
+
+
+class Lambda:
+    class ServiceException(Exception):
+        pass
+
+
+try:
+    receipt = task("arn:aws:states:::lambda:invoke", {"FunctionName": "charge"})
+except (Declined, Lambda.ServiceException) as e:
+    return {"declined": str(e)}
+except Exception:
+    raise
+```
+
+- **Error names** are exception classes. A class derives from `Exception` directly; ASL error names have no hierarchy, so list several with `except (A, B)`. A class nested in another spells a dotted name. An imported class keeps its name from the first capitalized segment (`errors.Lambda.ServiceException` is `Lambda.ServiceException`).
+- **sfnx exports** the Step Functions errors a Retry or Catch can name: `Timeout`, `TaskFailed`, `Permissions`, `HeartbeatTimeout`, `DataLimitExceeded`, `ExceedToleratedFailureThreshold`, `ItemReaderFailed`, `ResultWriterFailed`, `QueryEvaluationError`, `HttpSocket`. `except Exception` is `States.ALL`, which does not catch `States.Runtime` and, according to the Step Functions documentation, `States.DataLimitExceeded`.
+- **`raise Declined("message")`** is a Fail with that `Error` and `Cause`. A message known not to be a string goes through `$string()`. Python's built-in exceptions and the Step Functions errors cannot be raised, and `from ...` is left out, as a Fail has no chained cause.
+- **`try` / `except`** puts a Catch on each Task, Parallel and Map in the body, innermost clauses first. A clause runs with the variables bound before the state that failed. `as e` assigns the error output, `str(e)` and `f"{e}"` read its `Cause`, and a bare `raise` fails again with the caught `Error` and `Cause`. `else:` runs after the body without the Catch.
+- Pass, Choice and Wait states cannot catch, so a `try` whose body has no Task, Parallel or Map is rejected, and so is a `raise` in the body that its own `except` would catch, or a bare `raise` in a clause that an `except` around it would catch: a Fail ends the execution. `finally` and a bare `except:` are rejected.
+- **`retry=`** takes retriers as dicts: `ErrorEquals` (a list of classes), `IntervalSeconds`, `MaxAttempts`, `BackoffRate`, `MaxDelaySeconds`, `JitterStrategy`, each checked against its range. A retrier for `Exception` comes last.
+
+## Wait and the Context Object
+
+`wait(10)` is `Seconds` (0 to 99,999,999) and `wait(until="2026-09-13T01:59:00Z")` is `Timestamp` (RFC 3339 with an uppercase `T` and `Z`); either may be an expression.
+
+`context["Execution"]["Id"]` reads `$states.context.Execution.Id`, with types for the documented fields: `Execution` (`Id`, `Input`, `Name`, `RoleArn`, `StartTime`, `RedriveCount`, `RedriveTime`), `State` (`EnteredTime`, `Name`, `RetryCount`), `StateMachine` (`Id`, `Name`) and `Task` (`Token`). Unknown keys are rejected. `Map.Item` is rejected because a map passes the item and index to its function.
+
+## What is rejected
+
+Each of these is rejected with what to write instead:
+
+- **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
+- **Expressions**: tuples, sets, slices, method calls, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, and built-in functions other than `len`, `float`, `int`, `str`, `bool`, `isinstance` and `range` in a `for`.
+- **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
+
+## Where results differ from Python
+
+The ASL uses JSONata's own operations where they carry the intent, so a few values come out differently from CPython:
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
+| `int(x)` | `-1.5` | `-2` (`$floor`) | `-1` |
+| `str(x)`, `f"{x}"` | `True`, `None`, `1.0` | `"true"`, `"null"`, `"1"` | `"True"`, `"None"`, `"1.0"` |
+| `bool(x)`, `if x:` with `x` of unknown type | `[0]` | `false` (`$boolean`) | `True` |
+| `bool(x)`, `if x:` with `x: list` or `x: list \| None` | `[0]` | `true` (`$count($x) > 0`) | `True` |
+| `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
+
+Declaring the type of a value that may be a list makes its truthiness follow Python.
+
+## At run time
+
+Importing the module works, and the names sfnx exports behave as plain Python where they can: `state_machine` returns the function, `wait` returns at once, `parallel` and `inline_map` call their functions in turn, and `distributed_map` does the same for the items given. `task()` and `distributed_map(source=...)` raise `NotImplementedError`, and `context` is an empty dict.

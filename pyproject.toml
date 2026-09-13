@@ -1,0 +1,120 @@
+[project]
+name = "sfnx"
+dynamic = ["version"]
+description = "Write the intent of an AWS Step Functions workflow in Python and compile it to readable Amazon States Language in JSONata mode"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Takashi Iwamoto" }]
+keywords = ["aws", "step-functions", "states-language", "asl", "jsonata", "workflow"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Typing :: Typed",
+]
+# Ranged rather than pinned: workflow modules import this package, so it is
+# installed next to the user's own dependencies and composed by their resolver.
+# The floors are the oldest versions the test suite passes with.
+dependencies = [
+    "botocore>=1.31.0",
+]
+
+[project.scripts]
+sfnx = "sfnx.cli:main"
+
+[project.urls]
+Repository = "https://github.com/iwamot/sfnx"
+Issues = "https://github.com/iwamot/sfnx/issues"
+
+# The dev group is included by `uv sync` and `uv run` by default, and —
+# unlike a dev extra — is not published in the wheel metadata.
+[dependency-groups]
+dev = [
+    "hypothesis==6.168.0",
+    "jsonata-python==0.7.0",
+    "pip-licenses==5.5.5",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/sfnx/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sfnx"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.github",
+    "/compatibility.sh",
+    "/mise.lock",
+    "/mise.toml",
+    "/uv.lock",
+    "/validate.sh",
+]
+
+[tool.uv]
+exclude-newer = "1 day"
+
+[tool.uv.audit]
+# Check the locked packages against OSV malware advisories before any sync
+# installs them, so a compromised release cannot run its install hooks here.
+malware-check = true
+
+[tool.ruff]
+include = ["*.py", "src/**/*.py", "tests/**/*.py", "examples/**/*.py"]
+
+[tool.ruff.lint]
+# Reference: https://pydevtools.com/handbook/how-to/how-to-configure-recommended-ruff-defaults/
+extend-select = [
+    "F",    # Pyflakes rules
+    "W",    # PyCodeStyle warnings
+    "I",    # Sort imports properly
+    "UP",   # Warn if certain things can changed due to newer Python versions
+    "B",    # Likely bugs
+    "C4",   # Catch incorrect use of comprehensions, dict, list, etc
+    "ISC",  # Good use of string concatenation
+    "ICN",  # Use common import conventions
+    "RET",  # Good return practices
+    "TID",  # Some good import practices
+    "PTH",  # Use pathlib instead of os.path
+    "TD",   # Be diligent with TODO comments
+    "S",    # flake8-bandit (security)
+]
+
+ignore = [
+    "S101",  # assert narrows types for ty in src and is the assertion in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"src/sfnx/cli.py" = ["BLE001"]  # the CLI maps every failure to an exit code
+# The tests build workflow source as strings and run it with exec.
+"tests/**" = ["S102"]
+
+[tool.ty.src]
+# The tests index generated JSON freely; typing them adds narrowing, not checks.
+include = ["src", "examples"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["sfnx"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true

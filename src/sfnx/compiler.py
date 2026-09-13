@@ -1,0 +1,1879 @@
+"""Compile @state_machine functions to Amazon States Language."""
+
+import ast
+import re
+import symtable
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from importlib.util import decode_source
+from pathlib import Path
+
+from sfnx.diagnostics import CompileError
+from sfnx.errors import EVERYTHING, caught, raised, retriers
+from sfnx.expressions import (
+    ADD,
+    COMPARE,
+    FUNCTIONS,
+    Expr,
+    binary,
+    call,
+    expression,
+    literal,
+    variable,
+)
+from sfnx.expressions import field as step
+from sfnx.expressions import index as index_expr
+from sfnx.graph import Graph
+from sfnx.jsontypes import (
+    ARRAY,
+    BOOLEAN,
+    ERROR_OUTPUT,
+    NUMBER,
+    OBJECT,
+    STRING,
+    AnnotationError,
+    Type,
+    annotation,
+    of,
+    union,
+)
+from sfnx.module import Module, module, qualified
+from sfnx.translate import StateCall, Translator, text
+
+# Step Functions reserves $states for its own variables.
+RESERVED = {"states"}
+MAX_VARIABLE = 80
+# How often a loop is compiled again with wider types before a type that keeps
+# changing is taken as unknown.
+MAX_WIDENING = 8
+MAX_WAIT = 99_999_999
+# RFC 3339 with an uppercase T and Z, as Wait requires.
+TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
+
+
+def machine_options(decorator: ast.expr) -> dict[str, object]:
+    """The TimeoutSeconds of a @state_machine decorator."""
+    if not isinstance(decorator, ast.Call):
+        return {}
+    if decorator.args:
+        raise CompileError(
+            "pass the timeout by keyword: @state_machine(timeout=300)", decorator
+        )
+    options: dict[str, object] = {}
+    for keyword in decorator.keywords:
+        if keyword.arg != "timeout":
+            raise CompileError(
+                "@state_machine takes only timeout; set the rest when you deploy",
+                keyword,
+            )
+        value = keyword.value
+        if not (
+            isinstance(value, ast.Constant)
+            and type(value.value) is int
+            and value.value > 0
+        ):
+            raise CompileError(
+                "timeout is a positive number of seconds: @state_machine(timeout=300)",
+                value,
+            )
+        options["TimeoutSeconds"] = value.value
+    return options
+
+
+def is_machine(decorator: ast.expr, names: dict[str, str]) -> bool:
+    target = decorator.func if isinstance(decorator, ast.Call) else decorator
+    return qualified(target, names) == "sfnx.state_machine"
+
+
+def machines(
+    tree: ast.Module, names: dict[str, str]
+) -> list[tuple[ast.FunctionDef, dict[str, object]]]:
+    found = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        marked = [d for d in node.decorator_list if is_machine(d, names)]
+        if not marked:
+            continue
+        if any(function.name == node.name for function, _ in found):
+            # Python keeps the last definition, which would drop the other.
+            raise CompileError(
+                f"another state machine is named {node.name}; give each its own name",
+                node,
+            )
+        if isinstance(node, ast.AsyncFunctionDef):
+            raise CompileError(
+                "a state machine is a plain function; write def instead of async def",
+                node,
+            )
+        if len(node.decorator_list) > 1:
+            raise CompileError(
+                "a state machine takes no other decorators; remove them", node
+            )
+        found.append((node, machine_options(marked[0])))
+    if not found:
+        raise CompileError(
+            "no state machine here; mark the function with @state_machine "
+            "(from sfnx import state_machine)",
+            tree,
+        )
+    return found
+
+
+@dataclass
+class Flow:
+    """Where control is at the end of a branch: the variables bound on the way,
+    those bound on some paths to it only, the functions defined on it, and the
+    transitions waiting for the next state."""
+
+    bindings: dict[str, Expr]
+    declared: dict[str, Type]
+    tails: list[tuple[dict[str, object], str]]
+    functions: dict[str, ast.FunctionDef]
+    partial: set[str]
+
+
+@dataclass
+class Loop:
+    """A loop being compiled: the types at its head, the functions defined
+    before it, and the flows that leave its body early through break and
+    continue."""
+
+    head: dict[str, Type | None]
+    functions: frozenset[str] = frozenset()
+    breaks: list[Flow] = field(default_factory=list)
+    continues: list[Flow] = field(default_factory=list)
+
+
+@dataclass
+class Handler:
+    """An except clause. Each Catch that leads to it adds the flow from the
+    state that failed."""
+
+    node: ast.ExceptHandler
+    errors: list[str]
+    variable: str | None
+    flows: list[Flow] = field(default_factory=list)
+
+
+@dataclass
+class Checkpoint:
+    """Everything a loop attempt can change, to try it again with wider types."""
+
+    states: set[str]
+    tails: list[tuple[dict[str, object], str]]
+    start: str | None
+    bindings: dict[str, Expr]
+    declared: dict[str, Type]
+    partial: set[str]
+    pending: dict[str, Expr]
+    pending_node: ast.AST | None
+    hidden: set[str]
+    names: set[str]
+    labels: set[str]
+    functions: dict[str, ast.FunctionDef]
+    returns: int
+    catches: list[int]
+    depth: tuple[int, int, int]
+
+
+class Scope:
+    """Compile the body of one function into a graph."""
+
+    def __init__(
+        self,
+        graph: Graph,
+        bindings: dict[str, Expr],
+        module: Module,
+        parameters: set[str],
+        taken: set[str],
+        hidden: set[str],
+        assigned: set[str],
+        outer: set[str],
+    ):
+        self.graph = graph
+        self.bindings = bindings
+        self.module = module
+        self.parameters = parameters
+        self.partial: set[str] = set()
+        self.translator = Translator(bindings, module.names, self.partial, self.compose)
+        self.translator.is_function = lambda name: (
+            name in self.functions or name in module.functions
+        )
+        # Functions defined in the body, for parallel() to run.
+        self.functions: dict[str, ast.FunctionDef] = {}
+        # What this scope assigns, and what enclosing scopes do: Step Functions
+        # lets no Parallel branch or Map assign a variable its outside assigns.
+        self.assigned = assigned
+        self.outer = outer
+        # The types of what the scope returns, for the result of a parallel().
+        self.returns: list[Type | None] = []
+        # The type an annotation declared for a variable holds for its later
+        # assignments too, unless their values have a type of their own.
+        self.declared: dict[str, Type] = {}
+        # Independent assignments wait here to share one Pass.
+        self.pending: dict[str, Expr] = {}
+        self.pending_node: ast.AST | None = None
+        self.loops: list[Loop] = []
+        # Names in the source, and the variables loops and handlers added for
+        # themselves, shared by every scope of the machine.
+        self.taken = taken
+        self.hidden = hidden
+        # Map Run labels, unique across the machine.
+        self.labels: set[str] = set()
+        # The except clauses of the try statements around the current point,
+        # outermost first, and the clauses being compiled, for a bare raise.
+        self.tries: list[list[Handler]] = []
+        # States added that can report errors to except, counted.
+        self.catchable = 0
+        self.handling: list[Handler] = []
+
+    def add(self, base: str, state: dict[str, object], node: ast.AST) -> str:
+        try:
+            return self.graph.add(base, state)
+        except ValueError as exc:
+            raise CompileError(str(exc), node) from exc
+
+    def flush(self) -> None:
+        if not self.pending:
+            return
+        assert self.pending_node is not None
+        first = next(iter(self.pending))
+        assign = {name: value.template for name, value in self.pending.items()}
+        node = self.pending_node
+        self.pending = {}
+        self.pending_node = None
+        self.add(first, {"Type": "Pass", "Assign": assign}, node)
+
+    def materialize(self, statements: list[ast.stmt], node: ast.AST) -> None:
+        """Assign to variables the names bound to expressions, such as a map's
+        item or a list loop's variable, that the statements assign again. A path
+        that does not assign them would read the expression after the others
+        join it, or after a loop leads back, instead of the value.
+
+        They share a Pass with what is pending, a map's parameters, without
+        reading it: an expression here reads variables of the enclosing scope,
+        and the names this scope assigns are not among them."""
+        for name in sorted(assigned_names(statements) - self.parameters):
+            binding = self.bindings.get(name)
+            if binding is None or binding == variable(name, binding.type):
+                continue
+            self.pending[name] = binding
+            self.pending_node = self.pending_node or node
+            self.bindings[name] = variable(name, binding.type)
+
+    def block(self, statements: list[ast.stmt]) -> None:
+        for statement in statements:
+            if not self.graph.reachable:
+                raise CompileError(
+                    "this line is never reached; remove it or the return above it",
+                    statement,
+                )
+            self.statement(statement)
+
+    def statement(self, node: ast.stmt) -> None:
+        if isinstance(node, ast.Assign):
+            if len(node.targets) != 1:
+                raise CompileError(
+                    "assign one variable per statement: x = ...", node.targets[-1]
+                )
+            self.assign(node.targets[0], node.value, None)
+        elif isinstance(node, ast.AnnAssign):
+            if node.value is None:
+                raise CompileError(
+                    "an annotation declares the type of a value; assign it here: "
+                    f"{ast.unparse(node.target)}: {ast.unparse(node.annotation)} = ...",
+                    node,
+                )
+            self.assign(node.target, node.value, node.annotation)
+        elif isinstance(node, ast.AugAssign):
+            self.augment(node)
+        elif isinstance(node, ast.Return):
+            if node.value is None:
+                self.finish(literal(None), None, node)
+            else:
+                self.finish(*self.translator.statement_value(node.value), node)
+        elif isinstance(node, ast.If):
+            self.branch(node)
+        elif isinstance(node, ast.While):
+            self.while_loop(node)
+        elif isinstance(node, ast.For):
+            self.for_loop(node)
+        elif isinstance(node, (ast.Break, ast.Continue)):
+            self.leave(node)
+        elif isinstance(node, ast.Raise):
+            self.fail(node)
+        elif isinstance(node, ast.Try):
+            self.attempt(node)
+        elif isinstance(node, ast.Assert):
+            raise CompileError(
+                "assert is not compiled; write the check as "
+                "if not ...: raise OrderFailed(...)",
+                node,
+            )
+        elif isinstance(node, ast.Expr) and self.called(node.value, "wait"):
+            assert isinstance(node.value, ast.Call)
+            self.wait(node.value)
+        elif isinstance(node, ast.Expr) and any(
+            self.called(node.value, name)
+            for name in ("task", "parallel", "inline_map", "distributed_map")
+        ):
+            _, call = self.translator.statement_value(node.value)
+            assert call is not None
+            self.flush()
+            self.add_call(call.name, call, {}, node)
+        elif isinstance(node, ast.FunctionDef):
+            self.define(node)
+        elif isinstance(node, ast.Pass):
+            return
+        elif (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            # A docstring or a string used as a comment.
+            return
+        else:
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+            ):
+                self.translator.check_import(node.value.func)
+            name = type(node).__name__
+            raise CompileError(
+                STATEMENTS.get(name, f"{name} statements are not supported"), node
+            )
+
+    def augment(self, node: ast.AugAssign) -> None:
+        """x += v as x = x + v. A list is extended in place in Python, which
+        other names for it see; a JSON value is a copy, so it is written out."""
+        if not isinstance(node.target, ast.Name):
+            raise CompileError(
+                "assign one variable per statement: x = ...", node.target
+            )
+        name = node.target.id
+        reading = ast.copy_location(ast.Name(name, ast.Load()), node.target)
+        current = self.translator.expr(reading)
+        if (
+            isinstance(node.op, ast.Add)
+            and current.type is not None
+            and ARRAY in current.type.kinds
+        ):
+            symbol = ast.unparse(node.value)
+            raise CompileError(
+                f"{name} += extends the list in place, which other names for it "
+                f"see in Python; write {name} = {name} + {symbol}",
+                node,
+            )
+        value = ast.copy_location(ast.BinOp(reading, node.op, node.value), node)
+        self.assign(
+            ast.copy_location(ast.Name(name, ast.Store()), node.target), value, None
+        )
+
+    def called(self, node: ast.expr, name: str) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and qualified(node.func, self.module.names) == f"sfnx.{name}"
+        )
+
+    def claim(self, name: str, node: ast.AST) -> None:
+        """A name the scope assigns: not the input or a function, a valid Step
+        Functions variable, and not a variable of an enclosing scope."""
+        if name in self.functions:
+            raise CompileError(
+                f"{name} is a function here; give the variable another name", node
+            )
+        if name in self.parameters:
+            raise CompileError(
+                f"{name} is the execution input; assign the new value to another "
+                "name, such as data",
+                node,
+            )
+        check_variable(name, node)
+        if name in self.outer:
+            raise CompileError(
+                f"{name} is assigned outside this function too, and Step Functions "
+                "keeps the variables of a branch apart from the machine's; use "
+                "another name here and return the value",
+                node,
+            )
+
+    def define(self, node: ast.FunctionDef) -> None:
+        if node.name in self.bindings:
+            raise CompileError(
+                f"{node.name} is a variable here; give the function another name",
+                node,
+            )
+        if any(node.name in loop.functions for loop in self.loops):
+            # Python runs the new definition from the next iteration on, and
+            # after the loop; a state machine compiles each call once.
+            raise CompileError(
+                f"{node.name} is defined before the loop too; give the function "
+                "in the loop another name",
+                node,
+            )
+        self.functions[node.name] = node
+
+    def assign(
+        self, target: ast.expr, value_node: ast.expr, annotation_node: ast.expr | None
+    ) -> None:
+        if isinstance(target, ast.Tuple):
+            self.unpack(target, value_node)
+            return
+        if not isinstance(target, ast.Name):
+            raise CompileError("assign one variable per statement: x = ...", target)
+        name = target.id
+        self.claim(name, target)
+        declared = annotate(annotation_node)
+        value, call = self.translator.statement_value(value_node)
+        known = declared or value.type or self.declared.get(name)
+        if call is not None:
+            # The state's own Assign takes its result. A Catch leaves with the
+            # declarations from before, as the assignment did not happen.
+            self.flush()
+            self.add_call(name, call, {"Assign": {name: value.template}}, target)
+            if declared is not None:
+                self.declared[name] = declared
+            self.bindings[name] = variable(name, known)
+            self.partial.discard(name)
+            return
+        if declared is not None:
+            self.declared[name] = declared
+        # Assign evaluates every expression with the values from before the
+        # state, so one that reads a pending assignment needs a state of its own.
+        if name in self.pending or value.variables & self.pending.keys():
+            self.flush()
+        if not self.pending:
+            self.pending_node = target
+        self.pending[name] = value
+        self.bindings[name] = variable(name, known)
+        self.partial.discard(name)
+
+    def unpack(self, target: ast.Tuple, value_node: ast.expr) -> None:
+        """a, b = ...: each name takes one element, all in one state. With a
+        tuple of values, `a, b = b, a` swaps, as Assign reads the old values."""
+        names = []
+        for element in target.elts:
+            if not isinstance(element, ast.Name):
+                raise CompileError("unpack into variable names: a, b = ...", element)
+            self.claim(element.id, element)
+            names.append(element.id)
+        if len(set(names)) != len(names):
+            raise CompileError("unpack into different names", target)
+        call = None
+        if isinstance(value_node, (ast.Tuple, ast.List)):
+            if len(value_node.elts) != len(names):
+                raise CompileError(
+                    f"{len(names)} names take {len(names)} values", value_node
+                )
+            values = [self.translator.expr(e) for e in value_node.elts]
+        else:
+            whole, call = self.translator.statement_value(value_node)
+            values = [element_at(whole, literal(i)) for i in range(len(names))]
+        assign = {
+            name: value.template for name, value in zip(names, values, strict=True)
+        }
+        if call is not None:
+            self.flush()
+            self.add_call(names[0], call, {"Assign": assign}, target)
+        else:
+            reads = frozenset().union(*(v.variables for v in values))
+            if set(names) & self.pending.keys() or reads & self.pending.keys():
+                self.flush()
+            self.pending_node = self.pending_node or target
+            self.pending.update(zip(names, values, strict=True))
+        for name, value in zip(names, values, strict=True):
+            known = value.type or self.declared.get(name)
+            self.bindings[name] = variable(name, known)
+            self.partial.discard(name)
+
+    def finish(self, value: Expr, call: StateCall | None, node: ast.AST) -> None:
+        self.flush()
+        self.returns.append(value.type)
+        if call is None:
+            self.add("return", {"Type": "Succeed", "Output": value.template}, node)
+            return
+        # A Task at the end ends the machine itself; its output is the result
+        # unless the return makes something of it.
+        ending: dict[str, object] = {}
+        if value.code != "$states.result":
+            ending["Output"] = value.template
+        self.add_call("return", call, {**ending, "End": True}, node)
+
+    def add_call(
+        self, base: str, call: StateCall, fields: dict[str, object], node: ast.AST
+    ) -> str:
+        """A Task or Parallel, with a Catch for every except clause around it,
+        innermost first. A Catch for Exception matches everything, so nothing
+        follows it."""
+        state = dict(call.state)
+        self.catchable += 1
+        if call.retry is not None:
+            state["Retry"] = retriers(call.retry, self.module)
+        catchers: list[dict[str, object]] = []
+        for handlers in reversed(self.tries):
+            for handler in handlers:
+                catcher: dict[str, object] = {"ErrorEquals": handler.errors}
+                if handler.variable:
+                    catcher["Assign"] = {handler.variable: "{% $states.errorOutput %}"}
+                catchers.append(catcher)
+                # The state's own Assign does not happen when it fails.
+                flow = Flow(
+                    dict(self.bindings),
+                    dict(self.declared),
+                    [(catcher, "Next")],
+                    dict(self.functions),
+                    set(self.partial),
+                )
+                handler.flows.append(flow)
+                if handler.errors == [EVERYTHING]:
+                    break
+            if catchers and catchers[-1]["ErrorEquals"] == [EVERYTHING]:
+                break
+        if catchers:
+            state["Catch"] = catchers
+        return self.add(base, {**state, **fields}, node)
+
+    def compose(
+        self, node: ast.Call, function: str
+    ) -> tuple[dict[str, object], Type | None]:
+        if function == "parallel":
+            return self.parallel_state(node)
+        if function == "inline_map":
+            return self.inline_map_state(node)
+        return self.distributed_map_state(node)
+
+    def resolve(self, node: ast.expr, call: str) -> tuple[ast.FunctionDef, bool]:
+        """A function passed to parallel() or a map, and whether it is defined
+        in the body, where it reads the variables around it."""
+        if not isinstance(node, ast.Name):
+            raise CompileError(f"pass the function by name: {call}(charge, ...)", node)
+        if node.id in self.partial and node.id not in self.functions:
+            raise CompileError(
+                f"{node.id} is not defined the same way on every path to here; "
+                "define the function once, before the if, loop or try",
+                node,
+            )
+        local = node.id in self.functions
+        function = self.functions.get(node.id) or self.module.functions.get(node.id)
+        if function is None:
+            raise CompileError(
+                f"{node.id} is not a function defined here; define it with "
+                f"def {node.id}(...):",
+                node,
+            )
+        if function.decorator_list:
+            raise CompileError(
+                f"a function for {call} takes no decorators; remove them", function
+            )
+        arguments = function.args
+        if (
+            arguments.posonlyargs
+            or arguments.vararg
+            or arguments.kwonlyargs
+            or arguments.kwarg
+            or arguments.defaults
+        ):
+            raise CompileError(
+                f"a function for {call} takes plain parameters only", function
+            )
+        return function, local
+
+    def child(
+        self,
+        function: ast.FunctionDef,
+        local: bool,
+        bindings: dict[str, Expr],
+        parameters: set[str],
+    ) -> "Scope":
+        """A scope for a function run by parallel() or a map: its states are
+        named after it and it cannot assign what this scope assigns. A function
+        defined here reads this scope, except for the names it binds itself,
+        which Python makes local to it from its first line."""
+        own = set()
+        if local:
+            own = local_names(function) - {a.arg for a in function.args.args}
+            for name in own:
+                bindings.pop(name, None)
+        scope = Scope(
+            Graph(f"{function.name}.", self.graph.names),
+            bindings,
+            self.module,
+            parameters,
+            self.taken | {n.id for n in ast.walk(function) if isinstance(n, ast.Name)},
+            self.hidden,
+            assigned_names(function.body),
+            self.outer | self.assigned | self.hidden,
+        )
+        scope.labels = self.labels
+        if local:
+            scope.functions = dict(self.functions)
+            scope.declared = {n: t for n, t in self.declared.items() if n not in own}
+            scope.partial.update(self.partial - own)
+            scope.translator.expired.update(self.translator.expired - own)
+        return scope
+
+    def run_child(
+        self, scope: "Scope", function: ast.FunctionDef
+    ) -> tuple[dict[str, object], list[Type | None]]:
+        """The states of a function, and the types of what its returns give."""
+        scope.materialize(function.body, function)
+        scope.block(function.body)
+        if scope.graph.reachable:
+            scope.finish(literal(None), None, function)
+        return scope.graph.definition(), scope.returns
+
+    def parallel_state(self, node: ast.Call) -> tuple[dict[str, object], Type | None]:
+        """The branches of parallel(): each function's body as a scope of its
+        own that reads the variables here, with states named after it."""
+        if not node.args:
+            raise CompileError(
+                "parallel takes the functions to run: parallel(email, audit)", node
+            )
+        for keyword in node.keywords:
+            if keyword.arg != "retry":
+                raise CompileError("parallel takes only retry=", keyword)
+        branches = []
+        returns: list[Type | None] = []
+        for argument in node.args:
+            function, local = self.resolve(argument, "parallel")
+            if function.args.args:
+                raise CompileError(
+                    f"a branch takes no parameters; {function.name} reads the "
+                    "variables around it instead",
+                    function,
+                )
+            bindings = dict(self.bindings) if local else {}
+            scope = self.child(
+                function, local, bindings, self.parameters if local else set()
+            )
+            branch, returned = self.run_child(scope, function)
+            branches.append(branch)
+            returns.extend(returned)
+        state = {"Type": "Parallel", "Branches": branches}
+        return state, of(ARRAY, items=joined(returns))
+
+    def options(self, node: ast.Call, allowed: set[str]) -> dict[str, ast.expr]:
+        found = {}
+        for keyword in node.keywords:
+            if keyword.arg not in allowed:
+                raise CompileError(
+                    f"this map takes {', '.join(sorted(allowed))}=", keyword
+                )
+            found[keyword.arg] = keyword.value
+        return found
+
+    def count_option(
+        self, node: ast.expr, name: str, high: int | None = None
+    ) -> object:
+        """A whole-number field that may also be an expression."""
+        value = self.translator.expr(node)
+        if isinstance(value.template, (int, float)) and not isinstance(
+            value.template, bool
+        ):
+            if not (
+                isinstance(value.template, int)
+                and value.template >= 0
+                and (high is None or value.template <= high)
+            ):
+                limit = f" to {high}" if high is not None else " or more"
+                raise CompileError(f"{name} is a whole number from 0{limit}", node)
+        elif value.type is not None and value.type.kinds != {NUMBER}:
+            raise CompileError(
+                f"{name} is a number, not a {value.type.describe()}", node
+            )
+        return value.template
+
+    def inline_map_state(self, node: ast.Call) -> tuple[dict[str, object], Type | None]:
+        """inline_map(f, items): f takes the item, and its index if it has a
+        second parameter. The ItemSelector passes them by parameter name.
+        They are read from $states.input, which a Task or a nested Parallel or
+        Map replaces, so a function that makes such states binds them first."""
+        if len(node.args) != 2:
+            raise CompileError(
+                "inline_map takes the function and the items: "
+                "inline_map(charge, orders)",
+                node,
+            )
+        found = self.options(node, {"max_concurrency", "retry"})
+        function, local = self.resolve(node.args[0], "inline_map")
+        parameters = function.args.args
+        if not 1 <= len(parameters) <= 2:
+            raise CompileError(
+                "the function of inline_map takes the item, and its index if "
+                "needed: def charge(order, index):",
+                function,
+            )
+        items = self.translator.expr(node.args[1])
+        if items.type is not None and ARRAY not in items.type.kinds:
+            raise CompileError(
+                f"{ast.unparse(node.args[1])} is a {items.type.describe()}; "
+                "inline_map takes a list",
+                node.args[1],
+            )
+        item_type = items.type.items if items.type else None
+        sources = ["$states.context.Map.Item.Value", "$states.context.Map.Item.Index"]
+        kinds = [item_type, of(NUMBER)]
+        selector: dict[str, object] = {}
+        bindings = dict(self.bindings) if local else {}
+        pending: dict[str, Expr] = {}
+        binds = makes_states(function, self.module.names)
+        for parameter, source, kind in zip(parameters, sources, kinds, strict=False):
+            name = parameter.arg
+            selector[name] = "{% " + source + " %}"
+            declared = annotate(parameter.annotation) or kind
+            if binds:
+                bindings[name] = variable(name, declared)
+                pending[name] = step(expression("$states.input"), name)
+            else:
+                bindings[name] = replace(
+                    step(expression("$states.input"), name), type=declared
+                )
+        scope = self.child(
+            function, local, bindings, self.parameters if local else set()
+        )
+        for parameter in parameters:
+            if binds:
+                scope.claim(parameter.arg, parameter)
+            else:
+                check_variable(parameter.arg, parameter)
+        scope.pending = pending
+        scope.pending_node = function if pending else None
+        # What the first state binds is the function's to assign.
+        scope.assigned |= pending.keys()
+        processor, returned = self.run_child(scope, function)
+        state: dict[str, object] = {"Type": "Map", "Items": items.template}
+        state["ItemSelector"] = selector
+        if "max_concurrency" in found:
+            state["MaxConcurrency"] = self.count_option(
+                found["max_concurrency"], "max_concurrency"
+            )
+        state["ItemProcessor"] = {"ProcessorConfig": {"Mode": "INLINE"}, **processor}
+        return state, of(ARRAY, items=joined(returned))
+
+    def distributed_map_state(
+        self, node: ast.Call
+    ) -> tuple[dict[str, object], Type | None]:
+        """distributed_map(f, items or source=, args=, batch=, ...): each item
+        runs as a child execution, whose input is what the ItemSelector (or
+        the ItemBatcher) builds. The function reads its parameters from that
+        input and nothing from outside."""
+        found = self.options(
+            node,
+            {
+                "source",
+                "args",
+                "batch",
+                "result",
+                "max_concurrency",
+                "tolerated_failure_count",
+                "tolerated_failure_percentage",
+                "label",
+                "execution_type",
+                "retry",
+            },
+        )
+        if not 1 <= len(node.args) <= 2:
+            raise CompileError(
+                "distributed_map takes the function, and the items unless "
+                "source= reads them: distributed_map(charge, orders)",
+                node,
+            )
+        if (len(node.args) == 2) == ("source" in found):
+            raise CompileError(
+                "give the items either as the second argument or as source=, "
+                "not both or neither",
+                node,
+            )
+        function, _ = self.resolve(node.args[0], "distributed_map")
+        parameters = [a.arg for a in function.args.args]
+        arguments = self.literal_dict(found.get("args"), "args", None, None)
+        if not parameters or set(parameters[1:]) != set(arguments):
+            raise CompileError(
+                "the function of distributed_map takes the item first and then "
+                "exactly the names in args=: def charge(order, rate): with "
+                'args={"rate": rate}',
+                function,
+            )
+        state: dict[str, object] = {"Type": "Map"}
+        if "label" in found:
+            text = label(found["label"])
+            if text in self.labels:
+                raise CompileError(
+                    f"another distributed_map is labeled {text}; give each its own "
+                    "label",
+                    found["label"],
+                )
+            self.labels.add(text)
+            state["Label"] = text
+        item_type: Type | None = None
+        if len(node.args) == 2:
+            items = self.translator.expr(node.args[1])
+            if items.type is not None and not {ARRAY, OBJECT} & items.type.kinds:
+                raise CompileError(
+                    f"{ast.unparse(node.args[1])} is a {items.type.describe()}; "
+                    "distributed_map takes a list or a dict",
+                    node.args[1],
+                )
+            item_type = items.type.items if items.type else None
+            state["Items"] = items.template
+        else:
+            state["ItemReader"] = self.literal_dict(
+                found["source"],
+                "source",
+                {"Resource", "ReaderConfig", "Arguments"},
+                {"Resource"},
+            )
+        read = expression("$states.context.Execution.Input")
+        bindings: dict[str, Expr] = {}
+        if "batch" in found:
+            batcher = self.literal_dict(
+                found["batch"],
+                "batch",
+                {"MaxItemsPerBatch", "MaxInputBytesPerBatch"},
+                None,
+            )
+            if not batcher:
+                raise CompileError(
+                    "batch sets MaxItemsPerBatch, MaxInputBytesPerBatch or both",
+                    found["batch"],
+                )
+            if arguments:
+                batcher["BatchInput"] = arguments
+            state["ItemBatcher"] = batcher
+            bindings[parameters[0]] = replace(
+                step(read, "Items"), type=of(ARRAY, items=item_type)
+            )
+            for name in parameters[1:]:
+                bindings[name] = step(step(read, "BatchInput"), name)
+        else:
+            selector: dict[str, object] = {
+                parameters[0]: "{% $states.context.Map.Item.Value %}",
+                **arguments,
+            }
+            state["ItemSelector"] = selector
+            bindings[parameters[0]] = replace(step(read, parameters[0]), type=item_type)
+            for name in parameters[1:]:
+                bindings[name] = step(read, name)
+        for parameter in function.args.args:
+            check_variable(parameter.arg, parameter)
+            declared = annotate(parameter.annotation)
+            if declared is not None:
+                bindings[parameter.arg] = replace(
+                    bindings[parameter.arg], type=declared
+                )
+        for name, field_name, high in (
+            ("max_concurrency", "MaxConcurrency", None),
+            ("tolerated_failure_count", "ToleratedFailureCount", None),
+            ("tolerated_failure_percentage", "ToleratedFailurePercentage", 100),
+        ):
+            if name in found:
+                state[field_name] = self.count_option(found[name], name, high)
+        execution = found.get("execution_type")
+        execution_type = "STANDARD"
+        if execution is not None:
+            if not (
+                isinstance(execution, ast.Constant)
+                and execution.value in {"STANDARD", "EXPRESS"}
+            ):
+                raise CompileError(
+                    'execution_type is "STANDARD" or "EXPRESS"', execution
+                )
+            execution_type = execution.value
+        scope = self.child(function, False, bindings, set())
+        scope.translator.isolated = function.name
+        scope.translator.local = assigned_names(function.body)
+        processor, returned = self.run_child(scope, function)
+        state["ItemProcessor"] = {
+            "ProcessorConfig": {"Mode": "DISTRIBUTED", "ExecutionType": execution_type},
+            **processor,
+        }
+        if "result" in found:
+            state["ResultWriter"] = self.literal_dict(
+                found["result"],
+                "result",
+                {"Resource", "Arguments", "WriterConfig"},
+                None,
+            )
+            return state, None
+        return state, of(ARRAY, items=joined(returned))
+
+    def literal_dict(
+        self,
+        node: ast.expr | None,
+        name: str,
+        allowed: set[str] | None,
+        required: set[str] | None,
+    ) -> dict[str, object]:
+        """A dict written out in the call, passed through as ASL."""
+        if node is None:
+            return {}
+        if not isinstance(node, ast.Dict):
+            raise CompileError(f"{name} is a dict written here: {name}={{...}}", node)
+        result: dict[str, object] = {}
+        for key, value in zip(node.keys, node.values, strict=True):
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                raise CompileError(f"the keys of {name} are strings", key or value)
+            if allowed is not None and key.value not in allowed:
+                raise CompileError(f"{name} takes {', '.join(sorted(allowed))}", key)
+            result[key.value] = self.translator.expr(value).template
+        missing = (required or set()) - result.keys()
+        if missing:
+            raise CompileError(f"{name} needs {', '.join(sorted(missing))}", node)
+        return result
+
+    def fail(self, node: ast.Raise) -> None:
+        """raise as Fail: the class names the Error, the message is the Cause."""
+        if node.exc is None:
+            if not self.handling:
+                raise CompileError(
+                    'name the error to raise: raise OrderFailed("...")', node
+                )
+            # Raise what was caught again, unless a try around it would catch
+            # that in Python.
+            handling = self.handling[-1]
+            for handlers in self.tries:
+                for handler in handlers:
+                    if (
+                        EVERYTHING in handling.errors
+                        or EVERYTHING in handler.errors
+                        or set(handling.errors) & set(handler.errors)
+                    ):
+                        raise CompileError(
+                            "raise ends the execution with a Fail state, which the "
+                            "except around it does not catch; handle the error in "
+                            "this clause instead",
+                            node,
+                        )
+            caught_error = handling.variable
+            self.flush()
+            state: dict[str, object] = {
+                "Type": "Fail",
+                "Error": f"{{% ${caught_error}.Error %}}",
+                "Cause": f"{{% ${caught_error}.Cause %}}",
+            }
+            self.add("raise", state, node)
+            return
+        # A Fail has no chained cause, so `from ...` changes nothing in ASL.
+        exception = node.exc
+        arguments: list[ast.expr] = []
+        if isinstance(exception, ast.Call):
+            if len(exception.args) > 1 or exception.keywords:
+                raise CompileError(
+                    'pass one message: raise OrderFailed("...")', exception
+                )
+            arguments = exception.args
+            exception = exception.func
+        error = raised(exception, self.module)
+        for handlers in self.tries:
+            for handler in handlers:
+                if error in handler.errors or handler.errors == [EVERYTHING]:
+                    raise CompileError(
+                        "a raise ends the execution with a Fail state, which except "
+                        "does not catch; handle the case with if instead",
+                        node,
+                    )
+        state: dict[str, object] = {"Type": "Fail", "Error": error}
+        if arguments:
+            cause = self.translator.expr(arguments[0])
+            if cause.type is not None and cause.type.kinds != {STRING}:
+                cause = text(cause)
+            state["Cause"] = cause.template
+        self.flush()
+        self.add("raise", state, node)
+
+    def attempt(self, node: ast.Try) -> None:
+        """try as a Catch on each Task in its body. An except clause runs from
+        wherever a Task failed, with the variables bound there."""
+        if node.finalbody:
+            raise CompileError(
+                "finally is not supported; run the cleanup after the try and "
+                "in each except",
+                node.finalbody[0],
+            )
+        handlers = []
+        for position, clause in enumerate(node.handlers):
+            if clause.type is None:
+                raise CompileError("name what to catch: except Exception", clause)
+            types = (
+                clause.type.elts
+                if isinstance(clause.type, ast.Tuple)
+                else [clause.type]
+            )
+            errors = caught(types, self.module)
+            if errors == [EVERYTHING] and position != len(node.handlers) - 1:
+                raise CompileError(
+                    "except Exception catches every error, so the clauses after "
+                    "it never run; move it last",
+                    clause,
+                )
+            variable_name = clause.name
+            if variable_name is not None:
+                self.claim(variable_name, clause)
+            elif reraises(clause.body):
+                variable_name = self.fresh("error")
+            handlers.append(Handler(clause, errors, variable_name))
+        self.flush()
+        self.tries.append(handlers)
+        catchable = self.catchable
+        self.block(node.body)
+        self.flush()
+        self.tries.pop()
+        if self.catchable == catchable:
+            raise CompileError(
+                "nothing in this try reports an error to except; only task(), "
+                "parallel() and the maps do",
+                node,
+            )
+        # else runs after the body, outside the reach of the except clauses.
+        self.block(node.orelse)
+        self.flush()
+        ends = [self.save()]
+        for handler in handlers:
+            if not handler.flows:
+                # An inner except Exception catches everything first.
+                continue
+            self.join(handler.flows)
+            if handler.variable:
+                self.bindings[handler.variable] = variable(
+                    handler.variable, ERROR_OUTPUT
+                )
+                self.partial.discard(handler.variable)
+            self.handling.append(handler)
+            self.block(handler.node.body)
+            self.flush()
+            self.handling.pop()
+            end = self.save()
+            if handler.variable:
+                # Python unbinds the name at the end of the clause.
+                end.bindings.pop(handler.variable, None)
+            ends.append(end)
+        self.join(ends)
+
+    def branch(self, node: ast.If) -> None:
+        """if / elif / else as one Choice: a rule per test, and Default for the
+        else branch or for what follows the if."""
+        self.flush()
+        tests: list[tuple[ast.expr, list[ast.stmt]]] = []
+        current = node
+        while True:
+            tests.append((current.test, current.body))
+            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                current = current.orelse[0]
+                continue
+            otherwise = current.orelse
+            break
+        rules: list[dict[str, object]] = []
+        bodies: list[tuple[list[ast.stmt], dict[str, Type], dict[str, object]]] = []
+        # A later rule is only tested when the earlier ones did not hold.
+        failed: dict[str, Type] = {}
+        for test, body in tests:
+            with self.translator.narrowed(failed):
+                condition = self.translator.condition(test)
+                when, unless = self.translator.narrowing(test)
+            rule: dict[str, object] = {"Condition": condition.template}
+            rules.append(rule)
+            bodies.append((body, {**failed, **when}, rule))
+            failed = {**failed, **unless}
+        state: dict[str, object] = {"Type": "Choice", "Choices": rules}
+        self.add("if", state, node)
+        start = self.save()
+        ends = []
+        for body, proven, rule in bodies:
+            ends.append(self.follow(start, proven, [(rule, "Next")], body))
+        ends.append(self.follow(start, failed, [(state, "Default")], otherwise))
+        self.join(ends)
+
+    def save(self) -> Flow:
+        return Flow(
+            dict(self.bindings),
+            dict(self.declared),
+            list(self.graph.tails),
+            dict(self.functions),
+            set(self.partial),
+        )
+
+    def follow(
+        self,
+        start: Flow,
+        proven: dict[str, Type],
+        tails: list[tuple[dict[str, object], str]],
+        body: list[ast.stmt],
+    ) -> Flow:
+        self.restore(start)
+        for name, declared in proven.items():
+            self.bindings[name] = replace(self.bindings[name], type=declared)
+        self.graph.tails = tails
+        self.block(body)
+        self.flush()
+        return self.save()
+
+    def restore(self, path: Flow) -> None:
+        self.bindings.clear()
+        self.bindings.update(path.bindings)
+        self.declared = dict(path.declared)
+        self.graph.tails = list(path.tails)
+        self.functions = dict(path.functions)
+        # The translator shares the set, so it is changed in place.
+        self.partial.clear()
+        self.partial.update(path.partial)
+
+    def join(self, paths: list[Flow]) -> None:
+        """Continue after branches. A variable is bound if every branch that
+        reaches here binds it to the same code, with the types of all of them;
+        the variables of two list loops read different expressions under one
+        name. A declaration belongs to the name, as the types of the branches
+        that declare it. A function is defined if every branch defines the same
+        one."""
+        reaching = [path for path in paths if path.tails]
+        if not reaching:
+            self.graph.tails = []
+            return
+        common = set.intersection(*(set(path.bindings) for path in reaching))
+        everywhere = set().union(*(set(path.bindings) for path in reaching))
+        bindings = {}
+        for name in sorted(common):
+            first = reaching[0].bindings[name]
+            if any(path.bindings[name].code != first.code for path in reaching):
+                continue
+            declared = first.type
+            for path in reaching[1:]:
+                declared = union(declared, path.bindings[name].type)
+            bindings[name] = replace(first, type=declared)
+        declared_types: dict[str, Type] = {}
+        for name in sorted(set().union(*(set(p.declared) for p in reaching))):
+            kinds = [p.declared[name] for p in reaching if name in p.declared]
+            kind: Type | None = kinds[0]
+            for more in kinds[1:]:
+                kind = union(kind, more)
+            assert kind is not None
+            declared_types[name] = kind
+        functions = {}
+        defined = set().union(*(set(p.functions) for p in reaching))
+        for name in defined:
+            candidates = [p.functions.get(name) for p in reaching]
+            first_function = candidates[0]
+            if first_function is not None and all(
+                candidate is first_function for candidate in candidates
+            ):
+                functions[name] = first_function
+        self.restore(
+            Flow(
+                bindings,
+                declared_types,
+                [t for p in reaching for t in p.tails],
+                functions,
+                set().union(*(p.partial for p in reaching)),
+            )
+        )
+        self.partial.update(everywhere - bindings.keys(), defined - functions.keys())
+
+    def checkpoint(self) -> Checkpoint:
+        return Checkpoint(
+            set(self.graph.states),
+            list(self.graph.tails),
+            self.graph.start,
+            dict(self.bindings),
+            dict(self.declared),
+            set(self.partial),
+            dict(self.pending),
+            self.pending_node,
+            set(self.hidden),
+            set(self.graph.names),
+            set(self.labels),
+            dict(self.functions),
+            len(self.returns),
+            [len(h.flows) for handlers in self.tries for h in handlers],
+            (len(self.loops), len(self.tries), len(self.handling)),
+        )
+
+    def rollback(self, saved: Checkpoint) -> None:
+        for name in [n for n in self.graph.states if n not in saved.states]:
+            del self.graph.states[name]
+        self.graph.names.intersection_update(saved.names)
+        self.labels.intersection_update(saved.labels)
+        self.functions = dict(saved.functions)
+        del self.returns[saved.returns :]
+        for container, key in saved.tails:
+            container.pop(key, None)
+        self.graph.tails = list(saved.tails)
+        self.graph.start = saved.start
+        self.bindings.clear()
+        self.bindings.update(saved.bindings)
+        self.declared = dict(saved.declared)
+        self.partial.clear()
+        self.partial.update(saved.partial)
+        self.pending = dict(saved.pending)
+        self.pending_node = saved.pending_node
+        self.hidden.intersection_update(saved.hidden)
+        # A failed attempt can leave loops and try statements open.
+        del self.loops[saved.depth[0] :]
+        del self.tries[saved.depth[1] :]
+        del self.handling[saved.depth[2] :]
+        catches = iter(saved.catches)
+        for handlers in self.tries:
+            for handler in handlers:
+                del handler.flows[next(catches) :]
+
+    def settle(
+        self,
+        attempt: Callable[[], tuple[Loop, dict[str, Type | None]]],
+        body: list[ast.stmt],
+    ) -> None:
+        """Compile a loop until the types at its head hold for every way back
+        to it. An attempt returns the loop and the types its head needs; wider
+        ones are tried again from the same point. When a first attempt fails,
+        the variables the body assigns are tried once more with no known type:
+        `acc = None` before a loop that adds to acc is only null at first.
+        A type that grows on every way back, as x = [x] nests a list deeper
+        each time, becomes unknown after a few attempts."""
+        widened: dict[str, Type | None] = {}
+        first: CompileError | None = None
+        attempts = 0
+        while True:
+            saved = self.checkpoint()
+            for name, declared in widened.items():
+                # A range variable is bound inside the attempt, always a number.
+                if name in self.bindings:
+                    self.bindings[name] = replace(self.bindings[name], type=declared)
+            try:
+                loop, needed = attempt()
+            except CompileError as exc:
+                if first is not None:
+                    # The relaxed attempt failed too. The one that got further
+                    # met the line that is wrong; on the same line, the first
+                    # names the types that were known.
+                    if (exc.line, exc.column) > (first.line, first.column):
+                        raise
+                    raise first from None
+                reassigned = assigned_names(body) & self.bindings.keys()
+                if widened or not reassigned:
+                    raise
+                self.rollback(saved)
+                first = exc
+                widened = dict.fromkeys(sorted(reassigned))
+                continue
+            if all(needed[n] == loop.head[n] for n in needed):
+                return
+            self.rollback(saved)
+            attempts += 1
+            if attempts >= MAX_WIDENING:
+                needed = {
+                    n: t if t == loop.head[n] else None for n, t in needed.items()
+                }
+            widened = needed
+
+    def enter_loop(self) -> Loop:
+        """Start a loop at the current point, with the types there."""
+        loop = Loop(
+            {n: b.type for n, b in self.bindings.items()}, frozenset(self.functions)
+        )
+        self.loops.append(loop)
+        return loop
+
+    def back(self, loop: Loop, flows: list[Flow], head: str) -> dict[str, Type | None]:
+        """Link the flows that return to the head of a loop, and the types the
+        head needs for them."""
+        needed = dict(loop.head)
+        for flow in flows:
+            for container, key in flow.tails:
+                container[key] = head
+            for name, declared in needed.items():
+                if name in flow.bindings:
+                    needed[name] = union(declared, flow.bindings[name].type)
+        return needed
+
+    def leave(self, node: ast.Break | ast.Continue) -> None:
+        if not self.loops:
+            raise CompileError(
+                f"{'break' if isinstance(node, ast.Break) else 'continue'} "
+                "is only for loops",
+                node,
+            )
+        self.flush()
+        flow = self.save()
+        loop = self.loops[-1]
+        (loop.breaks if isinstance(node, ast.Break) else loop.continues).append(flow)
+        self.graph.tails = []
+
+    def no_else(self, node: ast.For | ast.While) -> None:
+        if node.orelse:
+            raise CompileError(
+                "loops with else are not supported; set a flag before break "
+                "and test it after the loop",
+                node.orelse[0],
+            )
+
+    def while_loop(self, node: ast.While) -> None:
+        """while as a Choice that the body leads back to. while True has no
+        Choice: the body leads back to its first state."""
+        self.no_else(node)
+        self.flush()
+        forever = isinstance(node.test, ast.Constant) and node.test.value is True
+
+        def attempt() -> tuple[Loop, dict[str, Type | None]]:
+            loop = self.enter_loop()
+            before = set(self.graph.states)
+            start = self.save()
+            if forever:
+                exits: list[Flow] = []
+                self.block(node.body)
+                self.flush()
+                added = [n for n in self.graph.states if n not in before]
+                if not added:
+                    raise CompileError(
+                        "this loop does nothing and never ends; give it a body "
+                        "or remove it",
+                        node,
+                    )
+                head: str = added[0]
+            else:
+                condition = self.translator.condition(node.test)
+                when, unless = self.translator.narrowing(node.test)
+                rule: dict[str, object] = {"Condition": condition.template}
+                state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
+                head = self.add("while", state, node)
+                self.follow(start, when, [(rule, "Next")], node.body)
+                exits = [self.narrow_flow(start, unless, [(state, "Default")])]
+            self.loops.pop()
+            needed = self.back(loop, [self.save(), *loop.continues], head)
+            self.join([*exits, *loop.breaks])
+            self.partial.update(
+                assigned_names(node.body) - self.bindings.keys(),
+                defined_functions(node.body) - self.functions.keys(),
+            )
+            return loop, needed
+
+        self.settle(attempt, node.body)
+
+    def narrow_flow(
+        self,
+        start: Flow,
+        proven: dict[str, Type],
+        tails: list[tuple[dict[str, object], str]],
+    ) -> Flow:
+        bindings = dict(start.bindings)
+        for name, declared in proven.items():
+            bindings[name] = replace(bindings[name], type=declared)
+        return Flow(
+            bindings,
+            dict(start.declared),
+            tails,
+            dict(start.functions),
+            set(start.partial),
+        )
+
+    def fresh(self, base: str) -> str:
+        """A variable of the loop's own, named after what it counts."""
+        name = base
+        serial = 1
+        while name in self.taken or name in self.hidden or name in self.bindings:
+            serial += 1
+            name = f"{base}_{serial}"
+        self.hidden.add(name)
+        return name
+
+    def for_loop(self, node: ast.For) -> None:
+        """for over a list, the keys of a dict, or a range, as a counter the
+        body leads back to through its increment."""
+        self.no_else(node)
+        if not isinstance(node.target, ast.Name):
+            raise CompileError(
+                "loop over one variable: for item in items (unpack inside the loop)",
+                node.target,
+            )
+        target = node.target.id
+        counting = is_range(node)
+        if counting:
+            self.claim(target, node.target)
+        else:
+            # The variable of a list or dict loop is an expression, not a
+            # Step Functions variable, so only its name is checked.
+            if target in self.parameters:
+                raise CompileError(
+                    f"{target} is the execution input; name the loop variable "
+                    "otherwise",
+                    node.target,
+                )
+            check_variable(target, node.target)
+        assigned = assigned_names(node.body)
+        if counting:
+            if target in assigned:
+                raise CompileError(
+                    f"{target} counts the loop; assign the new value to another name",
+                    node.target,
+                )
+            self.range_loop(node, target, assigned)
+            return
+        items = self.translator.expr(node.iter)
+        kind = self.translator.known(
+            node.iter, items, "list", "for depends on what it iterates"
+        )
+        if kind not in {ARRAY, OBJECT}:
+            raise CompileError(
+                f"{ast.unparse(node.iter)} is a {kind}; for iterates lists, "
+                "the keys of dicts and range()",
+                node.iter,
+            )
+
+        def attempt() -> tuple[Loop, dict[str, Type | None]]:
+            source = items
+            if items.variables & assigned:
+                if items.variables & self.pending.keys():
+                    self.flush()
+                # The body changes what the loop iterates, so the loop keeps
+                # the value it started with, as Python does.
+                copy = self.fresh(f"{target}_items")
+                self.pending[copy] = items
+                self.pending_node = self.pending_node or node
+                source = variable(copy, items.type)
+            if kind == OBJECT:
+                source = call("keys", [source], of(ARRAY, items=of(STRING)))
+            counter = self.fresh(f"{target}_index")
+            self.pending[counter] = literal(0)
+            self.pending_node = self.pending_node or node
+            index = variable(counter, of(NUMBER))
+            limit = call("count", [source], of(NUMBER))
+            return self.counted(
+                node, target, element(source, index), counter, index, limit, literal(1)
+            )
+
+        self.settle(attempt, node.body)
+
+    def range_loop(self, node: ast.For, target: str, assigned: set[str]) -> None:
+        assert isinstance(node.iter, ast.Call)
+        arguments = node.iter.args
+        if not 1 <= len(arguments) <= 3 or node.iter.keywords:
+            raise CompileError(
+                "range takes a stop, or a start, a stop and a step: range(10)",
+                node.iter,
+            )
+        values = [self.translator.numeric(a, "range") for a in arguments]
+        step = literal(1)
+        if len(values) == 3:
+            step = values[2]
+            if not (
+                isinstance(step.template, int)
+                and not isinstance(step.template, bool)
+                and step.template != 0
+            ):
+                raise CompileError(
+                    "the step of range is a nonzero whole number, such as 2 or -1",
+                    arguments[2],
+                )
+        start, stop = (literal(0), values[0]) if len(values) == 1 else values[:2]
+
+        def attempt() -> tuple[Loop, dict[str, Type | None]]:
+            if start.variables & self.pending.keys():
+                self.flush()
+            limit = stop
+            # The loop assigns its variable too, so a stop that reads it is
+            # kept from before the first assignment.
+            if stop.variables & (assigned | {target}):
+                if stop.variables & self.pending.keys():
+                    self.flush()
+                copy = self.fresh(f"{target}_stop")
+                self.pending[copy] = stop
+                self.pending_node = self.pending_node or node
+                limit = variable(copy, of(NUMBER))
+            if target in self.pending:
+                self.flush()
+            self.pending[target] = start
+            self.pending_node = self.pending_node or node
+            self.bindings[target] = variable(target, of(NUMBER))
+            self.partial.discard(target)
+            counter = variable(target, of(NUMBER))
+            assert isinstance(step.template, int)
+            return self.counted(
+                node, target, counter, target, counter, limit, step, step.template < 0
+            )
+
+        self.settle(attempt, node.body)
+
+    def counted(
+        self,
+        node: ast.For,
+        target: str,
+        value: Expr,
+        counter: str,
+        index: Expr,
+        limit: Expr,
+        step: Expr,
+        down: bool = False,
+    ) -> tuple[Loop, dict[str, Type | None]]:
+        """The loop shared by lists, dicts and ranges: a Choice on the counter,
+        the body with the loop variable bound, and the increment."""
+        self.flush()
+        loop = self.enter_loop()
+        start = self.save()
+        comparison = ">" if down else "<"
+        condition = binary(index, comparison, limit, COMPARE, of(BOOLEAN), True)
+        rule: dict[str, object] = {"Condition": condition.template}
+        state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
+        head = self.add("for", state, node)
+        self.restore(start)
+        self.graph.tails = [(rule, "Next")]
+        self.bindings[target] = value
+        self.materialize(node.body, node)
+        self.block(node.body)
+        self.loops.pop()
+        increment = binary(index, "+", step, ADD, of(NUMBER))
+        if loop.continues:
+            # continue goes to the increment, so it gets a state of its own.
+            self.flush()
+            self.join([self.save(), *loop.continues])
+        if self.graph.reachable:
+            # Only the loop assigns its counter, so the increment joins
+            # whatever the body left pending.
+            self.pending_node = self.pending_node or node
+            self.pending[counter] = increment
+            self.flush()
+        body_end = self.save()
+        if target != counter:
+            body_end.bindings.pop(target, None)
+        needed = self.back(loop, [body_end], head)
+        exit_flow = Flow(
+            dict(start.bindings),
+            dict(start.declared),
+            [(state, "Default")],
+            dict(start.functions),
+            set(start.partial),
+        )
+        # The loop variable ends with the loop. A range variable counts past
+        # its last value, and keeps no value from before an empty range.
+        exit_flow.bindings.pop(target, None)
+        for flow in loop.breaks:
+            flow.bindings.pop(target, None)
+        self.translator.expired.add(target)
+        self.join([exit_flow, *loop.breaks])
+        # What only the body assigns may be unassigned after zero iterations.
+        body_only = assigned_names(node.body) - self.bindings.keys() - {target}
+        self.partial.update(
+            body_only, defined_functions(node.body) - self.functions.keys()
+        )
+        return loop, needed
+
+    def wait(self, node: ast.Call) -> None:
+        self.flush()
+        until = [k for k in node.keywords if k.arg == "until"]
+        if node.args and not node.keywords and len(node.args) == 1:
+            value = self.translator.expr(node.args[0])
+            seconds = value.template
+            if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+                if not (isinstance(seconds, int) and 0 <= seconds <= MAX_WAIT):
+                    raise CompileError(
+                        f"Wait takes whole seconds from 0 to {MAX_WAIT:,}: wait(10)",
+                        node.args[0],
+                    )
+            elif value.type is not None and value.type.kinds != {NUMBER}:
+                raise CompileError(
+                    f"{ast.unparse(node.args[0])} is a {value.type.describe()}; "
+                    "wait takes seconds, or a timestamp as until=",
+                    node.args[0],
+                )
+            field = {"Seconds": seconds}
+        elif until and len(node.keywords) == 1 and not node.args:
+            value = self.translator.expr(until[0].value)
+            timestamp = value.template
+            literal_timestamp = until[0].value
+            if isinstance(literal_timestamp, ast.Constant) and isinstance(
+                literal_timestamp.value, str
+            ):
+                if not TIMESTAMP.fullmatch(literal_timestamp.value):
+                    raise CompileError(
+                        "Wait timestamps are UTC with T and Z: "
+                        'wait(until="2026-09-13T01:59:00Z")',
+                        until[0].value,
+                    )
+            elif value.type is not None and value.type.kinds != {STRING}:
+                raise CompileError(
+                    f"{ast.unparse(until[0].value)} is a {value.type.describe()}; "
+                    "until takes a timestamp string",
+                    until[0].value,
+                )
+            field = {"Timestamp": timestamp}
+        else:
+            raise CompileError(
+                "wait takes seconds or until=: wait(10) or "
+                'wait(until=input["resumeAt"])',
+                node,
+            )
+        self.add("wait", {"Type": "Wait", **field}, node)
+
+
+# What to write instead of the statements the language leaves out, by node.
+STATEMENTS = {
+    "With": "with is not supported; Step Functions has nothing to open or close, "
+    "so write the body without it",
+    "AsyncWith": "async with is not supported; write the body without it",
+    "AsyncFor": "async for is not supported; write for",
+    "Match": "match is not supported; write if / elif / else",
+    "Global": "global is not supported; return the value and assign it where the "
+    "function is called",
+    "Nonlocal": "nonlocal is not supported; return the value and assign it where "
+    "the function is called",
+    "Import": "import inside a state machine is not supported; import at the top "
+    "of the module",
+    "ImportFrom": "import inside a state machine is not supported; import at the "
+    "top of the module",
+    "Delete": "del is not supported; stop reading the variable, or assign it "
+    "another value",
+    "ClassDef": "a class inside a state machine is not supported; define error "
+    "classes at the top of the module",
+    "AsyncFunctionDef": "async def is not supported; write def",
+    "TryStar": "except* is not supported; write except",
+    "TypeAlias": "type aliases are not supported; annotate the values instead",
+    "Expr": "a value on a line of its own does nothing in a state machine; assign "
+    "it or remove the line",
+}
+
+LABEL_FORBIDDEN = set(' ?*<>{}[]:;,\\|^~$#%&`"')
+
+
+def label(node: ast.expr) -> str:
+    """A Map Run label: at most 40 characters, without whitespace, wildcards,
+    brackets, special or control characters."""
+    if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+        raise CompileError("label is a literal string", node)
+    text = node.value
+    if (
+        not text
+        or len(text) > 40
+        or any(
+            c in LABEL_FORBIDDEN or c.isspace() or ord(c) < 32 or 127 <= ord(c) <= 159
+            for c in text
+        )
+    ):
+        raise CompileError(
+            "label is 1 to 40 characters without spaces, ? * < > { } [ ] : ; , "
+            '\\ | ^ ~ $ # % & ` or "',
+            node,
+        )
+    return text
+
+
+def makes_states(function: ast.FunctionDef, names: dict[str, str]) -> bool:
+    """Whether a function calls task(), parallel() or a map anywhere."""
+    made = {"sfnx.task", "sfnx.parallel", "sfnx.inline_map", "sfnx.distributed_map"}
+    return any(
+        isinstance(n, ast.Call) and qualified(n.func, names) in made
+        for n in ast.walk(function)
+    )
+
+
+def joined(types: list[Type | None]) -> Type | None:
+    """What may come from any of several places; unknown from none, as a
+    function whose every path raises returns nothing."""
+    if not types:
+        return None
+    result = types[0]
+    for kind in types[1:]:
+        result = union(result, kind)
+    return result
+
+
+def local_names(function: ast.FunctionDef) -> set[str]:
+    """The names Python makes local to a function, its parameters included."""
+    table = symtable.symtable(ast.unparse(function), "<function>", "exec")
+    namespace = table.lookup(function.name).get_namespace()
+    assert isinstance(namespace, symtable.Function)
+    return set(namespace.get_locals())
+
+
+def is_range(node: ast.For) -> bool:
+    return (
+        isinstance(node.iter, ast.Call)
+        and isinstance(node.iter.func, ast.Name)
+        and node.iter.func.id == "range"
+    )
+
+
+def assigned_names(statements: list[ast.stmt]) -> set[str]:
+    """The variables a block assigns: assignments, range loop variables and
+    except names, but not the variables of list loops (expressions) or of the
+    functions it defines."""
+    names = set()
+    for statement in statements:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        children = list(ast.iter_child_nodes(statement))
+        if isinstance(statement, ast.For) and not is_range(statement):
+            children = [statement.iter, *statement.body, *statement.orelse]
+        for node in children:
+            if isinstance(node, ast.stmt):
+                names |= assigned_names([node])
+            elif isinstance(node, ast.ExceptHandler):
+                if node.name:
+                    names.add(node.name)
+                names |= assigned_names(node.body)
+            else:
+                names |= stored(node)
+    return names
+
+
+def stored(node: ast.AST) -> set[str]:
+    """The names an expression assigns, without the variables of its
+    comprehensions, which are the comprehension's own."""
+    if isinstance(node, ast.Name):
+        return {node.id} if isinstance(node.ctx, ast.Store) else set()
+    children = ast.iter_child_nodes(node)
+    if isinstance(node, ast.comprehension):
+        children = iter([node.iter, *node.ifs])
+    return set().union(*(stored(child) for child in children))
+
+
+def defined_functions(statements: list[ast.stmt]) -> set[str]:
+    """The functions a block defines, in its branches, loops and handlers too,
+    but not inside the functions it defines."""
+    names = set()
+    for statement in statements:
+        if isinstance(statement, ast.FunctionDef):
+            names.add(statement.name)
+            continue
+        for child in ast.iter_child_nodes(statement):
+            if isinstance(child, ast.stmt):
+                names |= defined_functions([child])
+            elif isinstance(child, ast.ExceptHandler):
+                names |= defined_functions(child.body)
+    return names
+
+
+def element_at(source: Expr, position: Expr) -> Expr:
+    items = source.type.items if source.type else None
+    return replace(index_expr(source, position), type=items)
+
+
+def element(source: Expr, index: Expr) -> Expr:
+    items = source.type.items if source.type else None
+    return replace(index_expr(source, index), type=items)
+
+
+def reraises(statements: list[ast.stmt]) -> bool:
+    """Whether an except clause raises what it caught anywhere in its body."""
+    for statement in statements:
+        if isinstance(statement, ast.Raise) and statement.exc is None:
+            return True
+        for child in ast.iter_child_nodes(statement):
+            if isinstance(child, ast.stmt) and reraises([child]):
+                return True
+    return False
+
+
+def annotate(node: ast.expr | None) -> Type | None:
+    if node is None:
+        return None
+    try:
+        return annotation(node)
+    except AnnotationError as exc:
+        raise CompileError(str(exc), exc.node) from exc
+
+
+def check_variable(name: str, node: ast.AST) -> None:
+    """Names Step Functions or the generated expressions would not accept."""
+    if name in RESERVED:
+        raise CompileError(
+            f"Step Functions reserves ${name}; choose another variable name", node
+        )
+    # Step Functions variable names start with a Unicode ID_Start character,
+    # which Python identifiers share except for the underscore.
+    if name.startswith("_"):
+        raise CompileError(
+            "Step Functions variable names cannot start with _; "
+            f"rename it to {name.lstrip('_') or 'value'}",
+            node,
+        )
+    if len(name) > MAX_VARIABLE:
+        raise CompileError(
+            f"Step Functions variable names are at most {MAX_VARIABLE} characters; "
+            "use a shorter name",
+            node,
+        )
+    if name in FUNCTIONS:
+        raise CompileError(
+            f"a variable named {name} would hide the JSONata function ${name}; "
+            f"choose another name, such as {name}_value",
+            node,
+        )
+
+
+def compile_machine(
+    function: ast.FunctionDef, options: dict[str, object], context: Module
+) -> dict[str, object]:
+    arguments = function.args
+    if (
+        arguments.posonlyargs
+        or arguments.vararg
+        or arguments.kwonlyargs
+        or arguments.kwarg
+        or arguments.defaults
+        or len(arguments.args) > 1
+    ):
+        raise CompileError(
+            "a state machine takes one parameter, its input: def pay(input):",
+            function,
+        )
+    # The execution input reads the same from every state, while $states.input
+    # becomes the result after a Task, Parallel or Map.
+    bindings = {
+        a.arg: expression(
+            "$states.context.Execution.Input", type=annotate(a.annotation)
+        )
+        for a in arguments.args
+    }
+    graph = Graph()
+    taken = {n.id for n in ast.walk(function) if isinstance(n, ast.Name)}
+    scope = Scope(
+        graph,
+        bindings,
+        context,
+        set(bindings),
+        taken,
+        set(),
+        assigned_names(function.body),
+        set(),
+    )
+    scope.block(function.body)
+    if graph.reachable:
+        scope.finish(literal(None), None, function)
+    return {"QueryLanguage": "JSONata", **options, **graph.definition()}
+
+
+def compile_source(
+    source: str, filename: str = "<string>"
+) -> dict[str, dict[str, object]]:
+    """Every state machine in a module, keyed by function name."""
+    try:
+        tree = ast.parse(source, filename)
+        context = module(tree)
+        return {
+            function.name: compile_machine(function, options, context)
+            for function, options in machines(tree, context.names)
+        }
+    except SyntaxError as exc:
+        raise CompileError(
+            exc.msg, line=exc.lineno or 1, column=exc.offset or 1, filename=filename
+        ) from exc
+    except CompileError as exc:
+        raise exc.located(filename) from None
+
+
+def compile_file(path: str | Path) -> dict[str, dict[str, object]]:
+    """A source file, decoded as Python decodes it: UTF-8 unless the file
+    declares its encoding. Python rejects a file it cannot decode as a syntax
+    error, and so does the compiler."""
+    data = Path(path).read_bytes()
+    advice = (
+        "save the file as UTF-8, or declare its encoding: # -*- coding: latin-1 -*-"
+    )
+    try:
+        source = decode_source(data)
+    except SyntaxError as exc:
+        raise CompileError(f"{exc.msg}; {advice}", filename=str(path)) from None
+    except UnicodeDecodeError as exc:
+        raise CompileError(
+            f"the bytes are not {exc.encoding}: {exc.reason}; {advice}",
+            line=data.count(b"\n", 0, exc.start) + 1,
+            filename=str(path),
+        ) from None
+    return compile_source(source, str(path))

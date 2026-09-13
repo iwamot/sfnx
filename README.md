@@ -1,48 +1,269 @@
-# repo-template
+# sfnx
 
-Starter template for repositories in iwamot's ecosystem.
+[![pypi](https://img.shields.io/pypi/v/sfnx.svg)](https://pypi.org/project/sfnx/)
+[![python](https://img.shields.io/pypi/pyversions/sfnx.svg)](https://pypi.org/project/sfnx/)
 
-## Files
+Write the intent of an AWS Step Functions workflow in Python, and sfnx compiles it to the Amazon States Language (ASL) you might write by hand, in JSONata mode. It aims to express what you want the workflow to do in natural, readable states and JSONata expressions, not to reproduce every detail of Python execution. When a construct cannot be translated sensibly, the compiler says what to write instead.
 
-| Path | Purpose |
-|------|---------|
-| `.github/Oidefile` | Manifest of files this template distributes. `oide.yml` pulls every listed path into derived repos. |
-| `.github/release.yml` | GitHub auto-generated release notes categorization (Features / Dependencies). |
-| `.github/renovate.json` | Extends the `iwamot/renovate-config` preset. |
-| `.github/workflows/auto-label.yml` | Labels PRs from their Conventional Commit title. |
-| `.github/workflows/dco.yml` | Checks that every PR commit carries a DCO sign-off. |
-| `.github/workflows/dependabot-auto-merge.yml` | Auto-merges Dependabot PRs. |
-| `.github/workflows/dependency-review.yml` | Vulnerability and license review on PRs. |
-| `.github/workflows/oide.yml` | Pulls the files listed in `.github/Oidefile` from this template. See [Staying in sync](#staying-in-sync). |
-| `.github/workflows/release.yml` | Creates a GitHub Release when a `v*` tag is pushed. |
-| `.github/workflows/renovate.yml` | Self-hosted Renovate runner (every 6 hours + on push to main). |
-| `.github/workflows/validate.yml` | Runs `validate.sh` on push and PR via `iwamot/workflows`. |
-| `CONTRIBUTING.md` | Contribution guide: local setup, DCO, and Conventional Commits. |
-| `LICENSE` | Project license. |
-| `SECURITY.md` | Minimal security policy. Directs vulnerability reports to GitHub Security Advisories. |
-| `mise.toml` | Pins mise minimum version and includes shared tasks from `iwamot/mise-tasks`. |
-| `validate.sh` | Lint entry point invoked by `iwamot/actions/mise-validate`. Add repo-specific lint at the marked location. |
+Save this as `app.py` (it is also [examples/orders.py](https://github.com/iwamot/sfnx/blob/main/examples/orders.py)):
 
-## Staying in sync
+```python
+from sfnx import Timeout, state_machine, task
 
-This template owns the shared governance files — the paths listed in `.github/Oidefile`. Derived repositories track it through two automated flows:
 
-- **Governance files** — `.github/workflows/oide.yml` runs [`iwamot/oide`](https://github.com/iwamot/oide), which pulls every path listed in `.github/Oidefile` from this template and opens a PR. Its `SOURCES` input pins this template by tag, and Renovate tracks that pin, so tagging a new template release bumps it, which triggers the pull. `.github/Oidefile` lists itself, so adding a path to the template's manifest propagates to every derived repo in one pull.
-- **Version pins** — Renovate keeps the action SHAs in `.github/workflows/*.yml` and the task ref in `mise.toml` current.
+class OutOfStock(Exception):
+    pass
 
-## Post-creation setup
 
-After clicking **Use this template**:
+class DynamoDb:
+    class ConditionalCheckFailedException(Exception):
+        pass
 
-1. **Replace this README.md** with the new repository's own description.
-2. **Install the Renovate App** (or your self-hosted equivalent) for the new repo.
-3. **Create a GitHub Environment** for Renovate (default name: `production`, override via the `environment` input on `renovate.yml` if needed) and add environment-scoped secrets:
-   - `RENOVATE_APP_CLIENT_ID`
-   - `RENOVATE_APP_PRIVATE_KEY`
-4. **Add a release workflow** if the repo ships artifacts. These also take an `environment` input — create additional environments as needed:
-   - `iwamot/workflows/.github/workflows/release-ghcr.yml` for GHCR
-   - `iwamot/workflows/.github/workflows/release-ecr-public.yml` for ECR Public
-   - `iwamot/workflows/.github/workflows/release-homebrew-tap.yml` for Homebrew tap
-5. **Add language-specific files** as needed: `Dockerfile`, `package.json`, `pyproject.toml`, `.gitignore`, etc.
-6. **Extend `validate.sh`** with repo-specific lint (e.g. `mise run docker-lint Dockerfile`, language linters).
-7. **Review `mise.toml`'s `min_version`**: the template provides a default, but the minimum mise version is each repository's own decision. Bump it if your tasks require a newer feature, or drop it if no constraint is needed. This is *not* auto-bumped by Renovate.
+
+@state_machine(timeout=300)
+def fulfill(input):
+    """Reserve every item of an order, then charge for it."""
+    items: list = input["items"]
+    for item in items:
+        try:
+            task(
+                "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+                {
+                    "TableName": "stock",
+                    "Key": {"sku": {"S": item["sku"]}},
+                    "UpdateExpression": "SET quantity = quantity - :n",
+                    "ConditionExpression": "quantity >= :n",
+                    "ExpressionAttributeValues": {":n": {"N": str(item["quantity"])}},
+                },
+                retry=[{"ErrorEquals": [Timeout], "MaxAttempts": 3}],
+            )
+        except DynamoDb.ConditionalCheckFailedException:
+            raise OutOfStock(f"{item['sku']} is out of stock") from None
+    receipt = task(
+        "arn:aws:states:::lambda:invoke",
+        {"FunctionName": "charge", "Payload": input},
+    )
+    return {"order": input["id"], "receipt": receipt["Payload"]}
+```
+
+With sfnx installed (`uv add sfnx`), compile it:
+
+```bash
+uv run sfnx compile app.py -o fulfill.asl.json
+```
+
+The definition has the states a person would write by hand, named after what they do:
+
+```json
+{
+  "QueryLanguage": "JSONata",
+  "TimeoutSeconds": 300,
+  "StartAt": "items",
+  "States": {
+    "items": {
+      "Type": "Pass",
+      "Assign": {
+        "items": "{% $states.context.Execution.Input.items %}",
+        "item_index": 0
+      },
+      "Next": "for"
+    },
+    "for": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $item_index < $count($items) %}",
+          "Next": "updateItem"
+        }
+      ],
+      "Default": "receipt"
+    },
+    "updateItem": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "stock",
+        "Key": {
+          "sku": {
+            "S": "{% $items[$item_index].sku %}"
+          }
+        },
+        "UpdateExpression": "SET quantity = quantity - :n",
+        "ConditionExpression": "quantity >= :n",
+        "ExpressionAttributeValues": {
+          ":n": {
+            "N": "{% $string($items[$item_index].quantity) %}"
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "MaxAttempts": 3
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDb.ConditionalCheckFailedException"
+          ],
+          "Next": "raise"
+        }
+      ],
+      "Next": "item_index"
+    },
+    "raise": {
+      "Type": "Fail",
+      "Error": "OutOfStock",
+      "Cause": "{% $string($items[$item_index].sku) & ' is out of stock' %}"
+    },
+    "item_index": {
+      "Type": "Pass",
+      "Assign": {
+        "item_index": "{% $item_index + 1 %}"
+      },
+      "Next": "for"
+    },
+    "receipt": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "charge",
+        "Payload": "{% $states.context.Execution.Input %}"
+      },
+      "Assign": {
+        "receipt": "{% $states.result %}"
+      },
+      "Next": "return"
+    },
+    "return": {
+      "Type": "Succeed",
+      "Output": {
+        "order": "{% $states.context.Execution.Input.id %}",
+        "receipt": "{% $receipt.Payload %}"
+      }
+    }
+  }
+}
+```
+
+## Why
+
+ASL is a JSON document of states that name each other, with the logic in JSONata strings. Writing it means choosing the right spelling for every operation (`+`, `&` or `$append`), wiring `Next` by hand, and repeating Retry and Catch on every Task. sfnx lets you write the flow as Python and does that part.
+
+- **The output is ASL you can read.** States split only where ASL needs them, independent assignments share one Pass, and each state is named after its variable, `return`, `if`, `for` or the API it calls, so execution histories and the console read like the source.
+- **Mistakes surface at compile time.** Every rejected line comes with what to write instead. SDK integration ARNs and their argument names are checked against the botocore service models (whether Step Functions integrates the action is not checked).
+- **Python control flow with a few workflow primitives.** The names sfnx exports make states (`task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes). Everything else is Python syntax, compiled to the JSONata you would write for it. [Where results differ from Python](https://github.com/iwamot/sfnx/blob/main/docs/language.md#where-results-differ-from-python) lists the few values that come out otherwise.
+
+sfnx compiles; it does not run workflows or mock tasks, and it does not deploy. The Python module stays importable, but the definition is the contract, not what CPython computes.
+
+## Setup
+
+```bash
+uv add sfnx
+```
+
+The workflow module imports `sfnx`, so it is a dependency of the project; `uv run sfnx compile app.py` runs the compiler.
+
+## What you write
+
+- **The machine** is a function marked `@state_machine` or `@state_machine(timeout=300)`. Its parameter is the execution input, read as `$states.context.Execution.Input`; its return value is the output.
+- **Assignments, `if` / `elif` / `else`, `for`, `while`, `break`, `continue`, `return`, `raise`, `try` / `except`** become Pass, Choice, loops through Choice, Succeed, Fail and Catch.
+- **`task(resource, arguments, timeout=, heartbeat=, role=, retry=)`** is a Task for any integration: SDK (`arn:aws:states:::aws-sdk:dynamodb:getItem`), optimized (`arn:aws:states:::lambda:invoke`, with `.sync` or `.waitForTaskToken`), HTTP, activities, or a `${Placeholder}` filled in at deploy time.
+- **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
+- **`wait(10)`** and **`wait(until=timestamp)`** are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
+- **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). `except Exception` is `States.ALL`.
+- **Expressions** are Python operators, `len`, `float`, `int`, `str`, `bool`, `isinstance`, conditional expressions, list comprehensions and f-strings.
+- **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. Literals, operator results and AWS API responses carry their types already.
+- **Anything else** (`with`, methods, slices, `lambda`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
+
+[docs/language.md](https://github.com/iwamot/sfnx/blob/main/docs/language.md) is the reference, and [docs/design.md](https://github.com/iwamot/sfnx/blob/main/docs/design.md) explains the design and the Step Functions behavior it relies on.
+
+## Rejected lines
+
+Success prints the definition on stdout and exits 0. A rejected line exits 1 with the location and what to write instead:
+
+```
+$ sfnx compile app.py
+app.py:6:12: + adds numbers, joins strings or lists, so the type of input['price'] must be known; assign it to an annotated variable first: value: float = input['price']
+
+$ sfnx compile app.py
+app.py:6:63: getItem has no argument Tablename; did you mean TableName?
+
+$ sfnx compile app.py
+app.py:6:12: calling abs() is not supported; write it with operators, or compute it in a Lambda task
+
+$ sfnx compile app.py
+app.py:6:9: loop over one variable: for item in items (unpack inside the loop)
+```
+
+A call that cannot proceed exits 2:
+
+```
+$ sfnx compile missing.py
+missing.py: No such file or directory
+
+$ sfnx compile app.py
+app.py defines 2 state machines (pay, refund); pass -o out/ to write one file each
+```
+
+## Reference
+
+```
+usage: sfnx [-h] [--version] [--instructions] command ...
+
+sfnx - write Step Functions workflows as Python functions and compile them to Amazon States Language.
+
+positional arguments:
+  command
+    compile       compile the @state_machine functions of a file to ASL
+
+options:
+  -h, --help      show this help message and exit
+  --version       show program's version number and exit
+  --instructions  print the paragraph for an agent instruction file and exit
+
+Examples:
+  sfnx compile app.py            print the ASL of the only @state_machine
+  sfnx compile app.py -o out/    write one <function>.asl.json per @state_machine
+
+Exit codes:
+  0  success
+  1  the source is not accepted; the message names the line and what to write instead
+  2  the call is wrong or a file cannot be read or written
+  3  internal error; report it with the source that caused it
+```
+
+- `compile` parses the file and never imports or runs it.
+- `-o` ending in `.json` writes the only machine to that file; any other path is a directory that receives `<function>.asl.json` per machine. Missing directories are created.
+- The first error stops the compilation, so one run reports one line.
+
+## Output
+
+| Stream | Shape | Stable |
+|---|---|---|
+| stdout (exit 0) | the definition as indented JSON in UTF-8, with text as written | valid JSON of a definition |
+| stderr (exit 1) | `<path>:<line>:<column>: <message>` | the location before the message |
+| stderr (exit 2) | `<path>: <reason>`, or a message naming the path | the path |
+
+The message text, including `; <what to write instead>`, is prose and may change between releases. So may state names when the source changes above them in the same scope (serial numbers such as `amount_2`).
+
+Before 1.0, the definition compiled from the same source, and what the language accepts, may change between releases; the release notes say so.
+
+## Deploying the definition
+
+sfnx stops at the definition. Write `${Name}` where a value comes from the deployment, as a resource ARN or inside an argument string, and fill it with CDK `definition_substitutions`, SAM or CloudFormation `DefinitionSubstitutions`. [docs/deployment.md](https://github.com/iwamot/sfnx/blob/main/docs/deployment.md) has the snippets, how to check a definition before deploying it, and the IAM actions each kind of task needs.
+
+## Development
+
+```bash
+env -u VIRTUAL_ENV ./validate.sh
+```
+
+`validate.sh` runs lint, formatting, type checking, the tests and a build. The tests evaluate the generated JSONata with jsonata-python and run whole definitions through a small interpreter, including random programs whose results must match CPython's.
+
+## License
+
+MIT

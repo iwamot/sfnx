@@ -1,14 +1,35 @@
+# Uses iwamot/actions (composite), not iwamot/workflows (reusable):
+# PyPI Trusted Publishing rejects reusable workflows because
+# job_workflow_ref points to the callee.
+# See https://github.com/pypi/warehouse/issues/11096
+
 name: Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    tags: ['v*.*.*']
 
 permissions: {}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
-    uses: iwamot/workflows/.github/workflows/release-only.yml@6dd705693b7a451242519165c90446d73a6870c8 # v8.10.0
+    name: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
     permissions:
-      contents: write  # to create the GitHub Release
+      contents: write  # to manage the GitHub Release lifecycle
+      id-token: write  # for PyPI Trusted Publishing OIDC
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          egress-policy: audit
+
+      - uses: iwamot/actions/release-draft@84a812c285cd6fd17539271e4e1f39617673a2de # v2.8.0
+      - uses: iwamot/actions/uv-publish@84a812c285cd6fd17539271e4e1f39617673a2de # v2.8.0
+      - uses: iwamot/actions/release-publish@84a812c285cd6fd17539271e4e1f39617673a2de # v2.8.0

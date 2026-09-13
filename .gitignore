@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.so
+dist/
+.venv/
+.coverage
+coverage.xml
+.pytest_cache/
+.ruff_cache/
+src/sfnx/_version.py
