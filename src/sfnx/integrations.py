@@ -1,0 +1,265 @@
+"""What a Task resource ARN calls, and what botocore knows about it."""
+
+import difflib
+import re
+from dataclasses import dataclass
+from functools import cache
+
+import botocore.session
+from botocore.model import (
+    ListShape,
+    MapShape,
+    OperationModel,
+    ServiceModel,
+    Shape,
+    StructureShape,
+)
+
+from sfnx.jsontypes import ARRAY, BOOLEAN, NUMBER, OBJECT, STRING, Type, of
+
+PARTITION = r"arn:aws(?:-cn|-us-gov)?"
+SDK = re.compile(PARTITION + r":states:::aws-sdk:([a-z0-9]+):(\w+)(\.\w+(?::\d+)?)?")
+OPTIMIZED = re.compile(PARTITION + r":states:::([a-z0-9-]+):(\w+)(\.\w+(?::\d+)?)?")
+ACTIVITY = re.compile(PARTITION + r":states:[a-z0-9-]+:\d{12}:activity:([\w-]+)")
+HTTP = re.compile(PARTITION + r":states:::http:invoke")
+FUNCTION = re.compile(
+    PARTITION + r":lambda:[a-z0-9-]+:\d{12}:function:([\w-]+)(:[\w-]+)?"
+)
+PATTERNS = {"", ".sync", ".sync:2", ".waitForTaskToken"}
+
+# Step Functions names SDK services after the AWS SDK for Java. These differ
+# from botocore's names by more than hyphens.
+SERVICES = {
+    "applicationdiscovery": "discovery",
+    "cloudwatchlogs": "logs",
+    "cognitoidentityprovider": "cognito-idp",
+    "costandusagereport": "cur",
+    "costexplorer": "ce",
+    "databasemigration": "dms",
+    "directory": "ds",
+    "directoryservicedata": "ds-data",
+    "elasticloadbalancing": "elb",
+    "elasticloadbalancingv2": "elbv2",
+    "elasticsearch": "es",
+    "eventbridge": "events",
+    "iotjobsdataplane": "iot-jobs-data",
+    "lexmodelsv2": "lexv2-models",
+    "lexruntimev2": "lexv2-runtime",
+    "marketplacemetering": "meteringmarketplace",
+    "migrationhub": "mgh",
+    "serverlessapplicationrepository": "serverlessrepo",
+    "sfn": "stepfunctions",
+    # An optimized integration.
+    "states": "stepfunctions",
+}
+
+# botocore's names, without hyphens, that SDK integrations spell otherwise,
+# and the name of the optimized Step Functions integration.
+RENAMED = {
+    **{
+        botocore.replace("-", ""): java
+        for java, botocore in SERVICES.items()
+        if java != "states"
+    },
+    "states": "sfn",
+}
+
+HTTP_REQUIRED = frozenset({"ApiEndpoint", "Method"})
+HTTP_ARGUMENTS = HTTP_REQUIRED | {
+    "Authentication",
+    "InvocationConfig",
+    "Headers",
+    "QueryParameters",
+    "RequestBody",
+    "Transform",
+}
+HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"}
+HTTP_RESULT = Type(
+    frozenset({OBJECT}),
+    fields=(
+        ("Headers", of(OBJECT)),
+        ("ResponseBody", None),
+        ("StatusCode", of(NUMBER)),
+        ("StatusText", of(STRING)),
+    ),
+)
+
+
+class ResourceError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class Integration:
+    """name is the base of the state name for a task() on a line of its own.
+    required and allowed are Arguments keys; allowed is None when the keys
+    cannot be checked. result is the type of $states.result."""
+
+    kind: str
+    name: str
+    pattern: str = ""
+    required: frozenset[str] = frozenset()
+    allowed: frozenset[str] | None = None
+    result: Type | None = None
+
+
+def integration(resource: str) -> Integration:
+    if "${" in resource:
+        # A definition substitution, filled in when the machine is deployed.
+        return Integration("substituted", "task")
+    if match := SDK.fullmatch(resource):
+        service, action, pattern = match.group(1), match.group(2), match.group(3) or ""
+        if pattern not in {"", ".waitForTaskToken"}:
+            raise ResourceError(
+                f"SDK integrations support only .waitForTaskToken, not {pattern}"
+            )
+        if service in RENAMED:
+            raise ResourceError(
+                f"SDK integrations name the service {RENAMED[service]}, not "
+                f"{service}: arn:aws:states:::aws-sdk:{RENAMED[service]}:{action}"
+            )
+        model = service_model(service)
+        if model is None:
+            close = difflib.get_close_matches(service, sorted(services()), n=3)
+            hint = f"; did you mean {' or '.join(close)}?" if close else ""
+            raise ResourceError(
+                f"no AWS SDK service is named {service}{hint} (the name is "
+                "lowercase without hyphens, such as dynamodb; a service newer "
+                "than the installed botocore needs an update)"
+            )
+        operation = find_operation(service, model, action)
+        return Integration(
+            "sdk",
+            action,
+            pattern,
+            required(operation),
+            arguments(operation),
+            shape_type(operation.output_shape, 0) if not pattern else None,
+        )
+    if HTTP.fullmatch(resource):
+        return Integration(
+            "http", "invoke", "", HTTP_REQUIRED, HTTP_ARGUMENTS, HTTP_RESULT
+        )
+    if match := OPTIMIZED.fullmatch(resource):
+        service, action, pattern = match.group(1), match.group(2), match.group(3) or ""
+        if pattern not in PATTERNS:
+            raise ResourceError(
+                f"{pattern} is not an integration pattern; use .sync, .sync:2 "
+                "or .waitForTaskToken"
+            )
+        model = service_model(service)
+        operations = operation_names(model) if model else {}
+        if model is None or action not in operations:
+            # Optimized integrations with actions of their own, such as
+            # apigateway:invoke, have nothing in botocore to check against.
+            return Integration("optimized", action, pattern)
+        operation = model.operation_model(operations[action])
+        result = shape_type(operation.output_shape, 0) if not pattern else None
+        return Integration(
+            "optimized",
+            action,
+            pattern,
+            required(operation),
+            arguments(operation),
+            result,
+        )
+    if match := ACTIVITY.fullmatch(resource):
+        return Integration("activity", match.group(1))
+    if match := FUNCTION.fullmatch(resource):
+        return Integration("function", match.group(1))
+    raise ResourceError(
+        "the resource is not a Task ARN; write one such as "
+        '"arn:aws:states:::aws-sdk:dynamodb:getItem" or '
+        '"arn:aws:states:::lambda:invoke"'
+    )
+
+
+@cache
+def session() -> botocore.session.Session:
+    return botocore.session.get_session()
+
+
+@cache
+def services() -> dict[str, str]:
+    names = session().get_available_services()
+    index = {name.replace("-", ""): name for name in names}
+    return {**index, **SERVICES}
+
+
+@cache
+def service_ids() -> dict[str, str]:
+    """Services by their service ID, the name the SDK for Java derives its own
+    from. Loading every model is slow, so this is only for names not known
+    otherwise."""
+    index = {}
+    for name in session().get_available_services():
+        service_id = session().get_service_model(name).service_id
+        key = re.sub(r"[^a-z0-9]", "", service_id.lower())
+        index[key] = name
+        index[key.removesuffix("service")] = name
+    return index
+
+
+def service_model(service: str) -> ServiceModel | None:
+    name = services().get(service) or service_ids().get(service)
+    return session().get_service_model(name) if name else None
+
+
+def operation_names(model: ServiceModel) -> dict[str, str]:
+    return {name[0].lower() + name[1:]: name for name in model.operation_names}
+
+
+def find_operation(service: str, model: ServiceModel, action: str) -> OperationModel:
+    names = operation_names(model)
+    if action not in names:
+        close = difflib.get_close_matches(action, names, n=3)
+        hint = f"; did you mean {' or '.join(close)}?" if close else ""
+        raise ResourceError(f"{service} has no API action {action}{hint}")
+    return model.operation_model(names[action])
+
+
+def pascal(member: str) -> str:
+    return member[0].upper() + member[1:]
+
+
+def required(operation: OperationModel) -> frozenset[str]:
+    """Required Arguments keys, idempotency tokens included: Step Functions
+    does not fill them in as the SDKs do."""
+    shape = operation.input_shape
+    if shape is None:
+        return frozenset()
+    return frozenset(pascal(name) for name in shape.required_members)
+
+
+def arguments(operation: OperationModel) -> frozenset[str]:
+    """Arguments keys, which Step Functions writes in PascalCase."""
+    shape = operation.input_shape
+    return frozenset(pascal(name) for name in shape.members) if shape else frozenset()
+
+
+def shape_type(shape: Shape | None, depth: int) -> Type | None:
+    """The JSON type of a botocore shape. Blobs and timestamps are left unknown,
+    and recursive shapes stop after a few levels."""
+    if shape is None or depth > 6:
+        return None
+    if isinstance(shape, StructureShape):
+        return Type(
+            frozenset({OBJECT}),
+            fields=tuple(
+                (pascal(name), shape_type(member, depth + 1))
+                for name, member in shape.members.items()
+            ),
+        )
+    if isinstance(shape, ListShape):
+        return of(ARRAY, items=shape_type(shape.member, depth + 1))
+    if isinstance(shape, MapShape):
+        return of(OBJECT, values=shape_type(shape.value, depth + 1))
+    kind = {
+        "string": STRING,
+        "integer": NUMBER,
+        "long": NUMBER,
+        "float": NUMBER,
+        "double": NUMBER,
+        "boolean": BOOLEAN,
+    }.get(shape.type_name)
+    return of(kind) if kind else None

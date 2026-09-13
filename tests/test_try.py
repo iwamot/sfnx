@@ -1,0 +1,378 @@
+import textwrap
+
+import pytest
+
+from sfnx.compiler import compile_source
+from sfnx.diagnostics import CompileError
+from tests import asl
+
+INPUT = "$states.context.Execution.Input"
+LAMBDA = "arn:aws:states:::lambda:invoke"
+PUBLISH = "arn:aws:states:::aws-sdk:sns:publish"
+CHARGE = f'task("{LAMBDA}", {{"FunctionName": "charge"}})'
+NOTIFY = f'task("{PUBLISH}", {{"Message": "m"}})'
+CLASSES = """class Declined(Exception):
+    pass
+
+
+class Expired(Exception):
+    pass
+
+
+class Lambda:
+    class ServiceException(Exception):
+        pass
+"""
+
+
+def source(body: str, preamble: str = CLASSES) -> str:
+    return (
+        "from sfnx import Timeout, TaskFailed, state_machine, task, wait\n"
+        + preamble
+        + "\n\n@state_machine\ndef pay(input):\n"
+        + textwrap.indent(body, "    ")
+    )
+
+
+def states(body: str, preamble: str = CLASSES) -> dict:
+    (compiled,) = compile_source(source(body, preamble)).values()
+    return compiled["States"]
+
+
+def run(body: str, execution_input: object, tasks: dict) -> object:
+    (compiled,) = compile_source(source(body)).values()
+    return asl.run(compiled, execution_input, tasks)
+
+
+def fails(error: str, cause: str = ""):
+    def task(arguments):
+        raise asl.Failure(error, cause)
+
+    return task
+
+
+def test_each_task_gets_a_catch_for_each_except():
+    body = f"try:\n    receipt = {CHARGE}\n    note = 1\n    {NOTIFY}\nexcept Declined as e:\n    return str(e)\nreturn receipt"
+    compiled = states(body)
+    assert compiled["receipt"]["Catch"] == [
+        {
+            "ErrorEquals": ["Declined"],
+            "Assign": {"e": "{% $states.errorOutput %}"},
+            "Next": "return",
+        }
+    ]
+    assert compiled["publish"]["Catch"] == compiled["receipt"]["Catch"]
+    assert "Catch" not in compiled["note"]
+    assert compiled["return"] == {"Type": "Succeed", "Output": "{% $e.Cause %}"}
+    assert list(compiled["receipt"]) == [
+        "Type",
+        "Resource",
+        "Arguments",
+        "Catch",
+        "Assign",
+        "Next",
+    ]
+
+
+def test_several_errors_and_clauses_in_order():
+    body = f"try:\n    {NOTIFY}\nexcept (Declined, Expired):\n    return 1\nexcept Lambda.ServiceException:\n    return 2\nexcept Exception:\n    return 3\nreturn 0"
+    assert [c["ErrorEquals"] for c in states(body)["publish"]["Catch"]] == [
+        ["Declined", "Expired"],
+        ["Lambda.ServiceException"],
+        ["States.ALL"],
+    ]
+
+
+def test_nested_try_puts_the_inner_catch_first():
+    body = f"try:\n    try:\n        {NOTIFY}\n    except Declined:\n        return 1\nexcept Expired:\n    return 2\nreturn 0"
+    assert [c["ErrorEquals"] for c in states(body)["publish"]["Catch"]] == [
+        ["Declined"],
+        ["Expired"],
+    ]
+    body = f"try:\n    try:\n        {NOTIFY}\n    except Exception:\n        return 1\nexcept Expired:\n    return 2\nreturn 0"
+    assert [c["ErrorEquals"] for c in states(body)["publish"]["Catch"]] == [
+        ["States.ALL"]
+    ]
+
+
+def test_tasks_in_branches_loops_and_handlers():
+    body = (
+        f'try:\n    if input["a"]:\n        {NOTIFY}\n    for i in range(2):\n        {NOTIFY}\n'
+        f"except Declined:\n    {NOTIFY}\nreturn 0"
+    )
+    compiled = states(body)
+    assert "Catch" in compiled["publish"] and "Catch" in compiled["publish_2"]
+    assert "Catch" not in compiled["publish_3"]
+
+
+def test_else_is_not_caught():
+    body = f"try:\n    {NOTIFY}\nexcept Declined:\n    return 1\nelse:\n    {NOTIFY}\nreturn 0"
+    compiled = states(body)
+    assert "Catch" in compiled["publish"]
+    assert "Catch" not in compiled["publish_2"]
+
+
+def test_the_message_of_a_caught_error_is_its_cause():
+    body = f'try:\n    {CHARGE}\nexcept Declined as e:\n    raise Expired(e)\nexcept Exception as e:\n    return f"failed: {{e}}"\nreturn None'
+    compiled = states(body)
+    assert compiled["raise"]["Cause"] == "{% $e.Cause %}"
+    assert compiled["return"]["Output"] == "{% 'failed: ' & $e.Cause %}"
+
+
+def test_bare_raise_raises_what_was_caught():
+    body = f'try:\n    {NOTIFY}\nexcept Declined:\n    wait(1)\n    if input["a"]:\n        raise\nreturn 0'
+    compiled = states(body)
+    assert compiled["publish"]["Catch"][0]["Assign"] == {
+        "error": "{% $states.errorOutput %}"
+    }
+    assert compiled["raise"] == {
+        "Type": "Fail",
+        "Error": "{% $error.Error %}",
+        "Cause": "{% $error.Cause %}",
+    }
+    body = f"try:\n    {NOTIFY}\nexcept Declined as e:\n    raise\nreturn 0"
+    assert states(body)["raise"]["Error"] == "{% $e.Error %}"
+    # A try around it that catches other errors lets it end the execution.
+    body = f"try:\n    try:\n        {NOTIFY}\n    except Declined:\n        raise\n    {CHARGE}\nexcept Timeout:\n    pass\nreturn 0"
+    assert states(body)["raise"]["Type"] == "Fail"
+
+
+def test_a_raise_that_nothing_catches_is_a_fail():
+    body = f'try:\n    {NOTIFY}\n    if input["a"]:\n        raise Expired()\nexcept Declined:\n    return 1\nreturn 0'
+    assert states(body)["raise"] == {"Type": "Fail", "Error": "Expired"}
+
+
+@pytest.mark.parametrize(
+    "preamble, error, name",
+    [
+        ("import errors", "errors.Lambda.ServiceException", "Lambda.ServiceException"),
+        (
+            "from app.errors import Lambda",
+            "Lambda.ServiceException",
+            "Lambda.ServiceException",
+        ),
+        ("from app import errors", "errors.too_large", "too_large"),
+        (CLASSES, "Lambda.ServiceException", "Lambda.ServiceException"),
+    ],
+)
+def test_dotted_error_names(preamble, error, name):
+    body = f"try:\n    {NOTIFY}\nexcept {error}:\n    return 1\nreturn 0"
+    assert states(body, preamble)["publish"]["Catch"][0]["ErrorEquals"] == [name]
+
+
+def test_retry():
+    body = (
+        f'r = task("{LAMBDA}", {{"FunctionName": "f"}}, retry=[\n'
+        '    {"ErrorEquals": [Timeout, Lambda.ServiceException], "IntervalSeconds": 2, "MaxAttempts": 0,\n'
+        '     "BackoffRate": 1.5, "MaxDelaySeconds": 30, "JitterStrategy": "FULL"},\n'
+        '    {"ErrorEquals": [Exception]},\n'
+        "])\nreturn r"
+    )
+    assert states(body)["r"]["Retry"] == [
+        {
+            "ErrorEquals": ["States.Timeout", "Lambda.ServiceException"],
+            "IntervalSeconds": 2,
+            "MaxAttempts": 0,
+            "BackoffRate": 1.5,
+            "MaxDelaySeconds": 30,
+            "JitterStrategy": "FULL",
+        },
+        {"ErrorEquals": ["States.ALL"]},
+    ]
+
+
+def test_retry_comes_before_catch():
+    body = f'try:\n    task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [TaskFailed]}}])\nexcept Declined:\n    return 1\nreturn 0'
+    assert list(states(body)["publish"]) == [
+        "Type",
+        "Resource",
+        "Arguments",
+        "Retry",
+        "Catch",
+        "Next",
+    ]
+
+
+def test_handlers_see_what_was_assigned_before_the_failing_task():
+    body = f'status = "new"\ntry:\n    {NOTIFY}\n    status = "sent"\n    receipt = {CHARGE}\nexcept Exception as e:\n    return {{"status": status, "error": e["Error"]}}\nreturn receipt["Payload"]'
+    ok = {
+        "publish": lambda arguments: {},
+        "receipt": lambda arguments: {"Payload": "paid"},
+    }
+    assert run(body, {}, ok) == "paid"
+    assert run(body, {}, {**ok, "publish": fails("Declined")}) == {
+        "status": "new",
+        "error": "Declined",
+    }
+    assert run(body, {}, {**ok, "receipt": fails("Lambda.Unknown")}) == {
+        "status": "sent",
+        "error": "Lambda.Unknown",
+    }
+
+
+def test_a_failed_task_leaves_the_declarations_from_before():
+    body = f'x: list = []\ntry:\n    x: str = {CHARGE}["Payload"]\nexcept Exception:\n    x = input["items"]\n    return len(x)\nreturn 0'
+    assert run(body, {"items": [1, 2]}, {"x_2": fails("Declined")}) == 2
+
+
+def test_a_name_bound_to_different_code_on_the_ways_in_is_not_joined():
+    # A Catch from each of two list loops reads x as a different expression.
+    body = f'a: list = input["a"]\nb: list = input["b"]\ntry:\n    for x in a:\n        task("{LAMBDA}", {{"FunctionName": "f", "Payload": x}})\n    for x in b:\n        task("{LAMBDA}", {{"FunctionName": "g", "Payload": x}})\nexcept Exception:\n    return x'
+    with pytest.raises(CompileError, match="x is the loop variable"):
+        states(body)
+
+
+def test_an_expression_that_fails_in_a_task_is_caught():
+    body = f'try:\n    x = {CHARGE}["Payload"] - 1\nexcept Exception:\n    return "caught"\nreturn x'
+    assert run(body, {}, {"x": lambda arguments: {"Payload": 2}}) == 1
+    assert run(body, {}, {"x": lambda arguments: {"Payload": "oops"}}) == "caught"
+    assert run(body, {}, {"x": lambda arguments: {}}) == "caught"
+
+
+def test_evaluation_of_rethrow_and_loops():
+    body = f'total = 0\nfor i in range(3):\n    try:\n        r = task("{LAMBDA}", {{"FunctionName": "f"}})\n        total = total + 1\n    except Declined:\n        continue\n    except Exception:\n        raise\nreturn total'
+    assert run(body, {}, {"r": lambda arguments: {}}) == 3
+    assert run(body, {}, {"r": fails("Declined")}) == 0
+    with pytest.raises(asl.Failure) as failure:
+        run(body, {}, {"r": fails("Lambda.Unknown", "boom")})
+    assert (failure.value.error, failure.value.cause) == ("Lambda.Unknown", "boom")
+
+
+def test_a_loop_inside_try_is_tried_again_with_its_catches():
+    body = f'xs: list[float] = input["xs"]\nacc = None\ntry:\n    for x in xs:\n        {NOTIFY}\n        if acc is None:\n            acc = x\n        else:\n            acc = acc + x\nexcept Declined:\n    return -1\nreturn acc'
+    compiled = states(body)
+    assert len(compiled["publish"]["Catch"]) == 1
+    assert run(body, {"xs": [1, 2]}, {"publish": lambda arguments: {}}) == 3
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            f"try:\n    {NOTIFY}\nexcept:\n    pass",
+            "name what to catch: except Exception",
+        ),
+        (
+            f"try:\n    {NOTIFY}\nexcept Declined:\n    pass\nfinally:\n    pass",
+            "finally is not supported",
+        ),
+        (
+            f"try:\n    {NOTIFY}\nexcept Exception:\n    pass\nexcept Declined:\n    pass",
+            "except Exception catches every error, so the clauses after it never run",
+        ),
+        (
+            f"try:\n    {NOTIFY}\nexcept (Exception, Declined):\n    pass",
+            "Exception matches every error; list it on its own",
+        ),
+        (
+            "try:\n    x = 1\nexcept Declined:\n    pass",
+            "nothing in this try reports an error to except",
+        ),
+        # Python would catch what the inner clause raises again.
+        (
+            f"try:\n    try:\n        {NOTIFY}\n    except Declined:\n        raise\nexcept Exception:\n    pass",
+            "raise ends the execution with a Fail state, which the except around it does not catch",
+        ),
+        (
+            f"try:\n    try:\n        {NOTIFY}\n    except Exception:\n        raise\nexcept Declined:\n    pass",
+            "raise ends the execution with a Fail state, which the except around it",
+        ),
+        (
+            f"try:\n    try:\n        {NOTIFY}\n    except Declined:\n        raise\nexcept Declined:\n    pass",
+            "raise ends the execution with a Fail state, which the except around it",
+        ),
+        (
+            f"try:\n    {NOTIFY}\n    raise Declined()\nexcept Declined:\n    pass",
+            "a raise ends the execution with a Fail state, which except does not catch",
+        ),
+        (
+            f"try:\n    {NOTIFY}\n    raise Declined()\nexcept Exception:\n    pass",
+            "which except does not catch",
+        ),
+        (
+            f"try:\n    {NOTIFY}\n    x = 1\nexcept Declined:\n    return x",
+            "x is not assigned here",
+        ),
+        (
+            f"try:\n    {NOTIFY}\nexcept Declined as e:\n    pass\nreturn e",
+            "e is not assigned",
+        ),
+        (
+            f"try:\n    {NOTIFY}\nexcept Declined as _e:\n    pass",
+            "cannot start with _",
+        ),
+        (
+            f"try:\n    {NOTIFY}\nexcept Lambda.Missing:\n    pass",
+            "Lambda has no class Missing; define it inside class Lambda",
+        ),
+        ("raise", "name the error to raise"),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry={{"ErrorEquals": [Timeout]}})',
+            "retry is a list of retriers",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[])',
+            "retry is a list of retriers",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[Timeout])',
+            "a retrier is a dict",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"MaxAttempts": 1}}])',
+            "a retrier needs ErrorEquals",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": Timeout}}])',
+            "ErrorEquals is a list of exception classes",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": []}}])',
+            "ErrorEquals is a list of exception classes",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [Timeout], "Tries": 1}}])',
+            "retrier fields are ErrorEquals",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{**input}}])',
+            "retrier fields are ErrorEquals",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [Timeout], "MaxAttempts": -1}}])',
+            "MaxAttempts is a whole number from 0 to 99,999,999",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [Timeout], "IntervalSeconds": input["i"]}}])',
+            "IntervalSeconds is a whole number from 1",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [Timeout], "MaxDelaySeconds": 31622401}}])',
+            "MaxDelaySeconds is a whole number from 1 to 31,622,400",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [Timeout], "BackoffRate": 0.5}}])',
+            "BackoffRate is a number of 1.0 or more",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [Timeout], "BackoffRate": True}}])',
+            "BackoffRate is a number of 1.0 or more",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [Timeout], "JitterStrategy": "SOME"}}])',
+            'JitterStrategy is "FULL" or "NONE"',
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [Exception]}}, {{"ErrorEquals": [Timeout]}}])',
+            "a retrier for Exception matches every error, so it comes last",
+        ),
+        (
+            f'task("{PUBLISH}", {{"Message": "m"}}, retry=[{{"ErrorEquals": [ValueError]}}])',
+            "ValueError is a Python exception",
+        ),
+    ],
+)
+def test_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        states(body)
+    assert message in raised.value.message
