@@ -27,7 +27,7 @@ class Lambda:
 
 def source(body: str, preamble: str = CLASSES) -> str:
     return (
-        "from sfnx import Timeout, TaskFailed, state_machine, task, wait\n"
+        "from sfnx import Timeout, TaskFailed, context, state_machine, task, wait\n"
         + preamble
         + "\n\n@state_machine\ndef pay(input):\n"
         + textwrap.indent(body, "    ")
@@ -191,6 +191,29 @@ def test_retry_comes_before_catch():
         "Catch",
         "Next",
     ]
+
+
+@pytest.mark.parametrize(
+    "errors, expected, retry_counts",
+    [
+        (["Lambda.ServiceException"], 1, [0, 1]),
+        (["Lambda.ServiceException"] * 2, "Lambda.ServiceException", [0, 1]),
+        (["Declined"], "Declined", [0]),
+    ],
+)
+def test_evaluation_of_retry(errors, expected, retry_counts):
+    body = f'try:\n    r = task("{LAMBDA}", {{"FunctionName": "f", "Payload": context["State"]["RetryCount"]}}, retry=[{{"ErrorEquals": [Lambda.ServiceException], "MaxAttempts": 1}}])\nexcept Exception as e:\n    return e["Error"]\nreturn r["Payload"]'
+    seen = []
+
+    def task(arguments):
+        """Fails with the errors in turn, then returns its arguments."""
+        seen.append(arguments["Payload"])
+        if len(seen) <= len(errors):
+            raise asl.Failure(errors[len(seen) - 1])
+        return arguments
+
+    assert run(body, {}, {"r": task}) == expected
+    assert seen == retry_counts
 
 
 def test_handlers_see_what_was_assigned_before_the_failing_task():
