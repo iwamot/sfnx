@@ -3,15 +3,18 @@ must agree on the result or on the error. The programs keep to what both mean
 the same way: whole numbers without / and **, ASCII strings and str() of
 numbers only, the edges where docs/language.md notes a difference. task() is a
 Lambda that doubles its payload and fails with Declined on a negative one, in
-both."""
+both. A distributed_map whose function raises fails with
+States.ExceedToleratedFailureThreshold in Step Functions, so the CPython side
+raises that error for it too."""
 
 import textwrap
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from sfnx import ExceedToleratedFailureThreshold, distributed_map
 from sfnx.compiler import compile_source
 from tests import asl
 
@@ -642,13 +645,26 @@ def in_cpython(program: str, execution_input: object) -> tuple[str, object]:
             raise declined(str(payload))
         return {"Payload": payload * 2}
 
+    def child_executions(
+        function: Callable[..., object], items: list, /, **options: object
+    ) -> list:
+        """A function that raises fails the map, as the generated maps set no
+        failure threshold."""
+        try:
+            return distributed_map(function, items, **options)
+        except declined as exc:
+            raise ExceedToleratedFailureThreshold(asl.EXCEEDED) from exc
+
     namespace["task"] = task
+    namespace["distributed_map"] = child_executions
     main = namespace["main"]
     assert callable(main)
     try:
         return "result", main(execution_input)
     except declined as exc:
         return "error", ["Declined", str(exc)]
+    except ExceedToleratedFailureThreshold as exc:
+        return "error", ["States.ExceedToleratedFailureThreshold", str(exc)]
 
 
 def in_asl(program: str, execution_input: object) -> tuple[str, object]:
