@@ -81,7 +81,7 @@ def inline_map(
 
 def distributed_map(
     function: Callable[..., object],
-    items: list | None = None,
+    items: list | dict | None = None,
     /,
     *,
     source: dict[str, object] | None = None,
@@ -96,12 +96,22 @@ def distributed_map(
     retry: list[dict[str, object]] | None = None,
 ) -> list:
     """A Map state in Distributed mode: each item, or each batch, runs as a
-    child execution of function with args. At run time the items given run in
-    turn; source= and result= only work in Step Functions."""
+    child execution of function with args. At run time function is called in
+    turn with each item, each value of a dict, or with batch= each list of up
+    to MaxItemsPerBatch items; MaxInputBytesPerBatch, source= and result= only
+    work in Step Functions."""
     if items is None:
         raise NotImplementedError("distributed_map(source=...) runs in Step Functions")
     arguments = args or {}
-    return [function(item, **arguments) for item in items]
+    values = list(items.values()) if isinstance(items, dict) else items
+    if batch is None:
+        return [function(item, **arguments) for item in values]
+    size = batch.get("MaxItemsPerBatch") or len(values) or 1
+    assert isinstance(size, int)
+    return [
+        function(values[start : start + size], **arguments)
+        for start in range(0, len(values), size)
+    ]
 
 
 # The Context Object: context["Execution"]["Id"] reads $states.context.Execution.Id.

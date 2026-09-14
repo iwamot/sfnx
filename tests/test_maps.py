@@ -221,6 +221,25 @@ def test_runtime_helpers_run_in_python():
         sfnx.distributed_map(lambda x: x, source={})
 
 
+def test_distributed_map_passes_what_step_functions_passes_in_python():
+    body = 'def f(v: int):\n    return v * 2\n\nreturn distributed_map(f, {"a": 1, "b": 2})'
+    assert run(body, {}) == [2, 4]
+    assert sfnx.distributed_map(lambda v: v * 2, {"a": 1, "b": 2}) == [2, 4]
+    batches = [
+        ({"MaxItemsPerBatch": 2}, [[1, 2], [3]]),
+        ({"MaxInputBytesPerBatch": 100}, [[1, 2, 3]]),
+    ]
+    for batch, expected in batches:
+        assert sfnx.distributed_map(lambda xs: xs, [1, 2, 3], batch=batch) == expected
+    assert sfnx.distributed_map(lambda xs: xs, [], batch={"MaxItemsPerBatch": 2}) == []
+    assert sfnx.distributed_map(
+        lambda xs, label: [label, *xs],
+        [1],
+        args={"label": "b"},
+        batch={"MaxInputBytesPerBatch": 100},
+    ) == [["b", 1]]
+
+
 @pytest.mark.parametrize(
     "body, message",
     [
