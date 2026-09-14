@@ -215,4 +215,4 @@ Declaring the type of a value that may be a list makes its truthiness follow Pyt
 
 ## At run time
 
-Importing the module works, and the names sfnx exports behave as plain Python where they can: `state_machine` returns the function, `wait` returns at once, `parallel` and `inline_map` call their functions in turn, and `distributed_map` does the same for the items given. `task()` and `distributed_map(source=...)` raise `NotImplementedError`, and `context` is an empty dict.
+Importing the module works, and the names sfnx exports behave as plain Python where they can: `state_machine` returns the function, `wait` returns at once, `parallel` and `inline_map` call their functions in turn, and `distributed_map` calls its function with each item, each value of a dict, or with `batch=` each list of up to `MaxItemsPerBatch` items. `task()` and `distributed_map(source=...)` raise `NotImplementedError`, and `context` is an empty dict. Functions get the arguments the definition gives them, but `retry=`, `tolerated_failure_count=`, `tolerated_failure_percentage=`, `result=` and `timeout` take effect only in Step Functions.
