@@ -187,7 +187,7 @@ except Exception:
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, slices, method calls, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, and built-in functions other than `len`, `float`, `int`, `str`, `bool`, `isinstance` and `range` in a `for`.
+- **Expressions**: tuples, sets, slices, method calls, `lambda`, `:=`, `*` and `**` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, and built-in functions other than `len`, `float`, `int`, `str`, `bool`, `isinstance` and `range` in a `for`.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -208,6 +208,7 @@ Some values come out differently from CPython. These are the differences known s
 | `str(x)`, `f"{x}"` | `True`, `None`, `1.0` | `"true"`, `"null"`, `"1"` | `"True"`, `"None"`, `"1.0"` |
 | `str(x)`, `f"{x}"` | `[1, 2]`, `{"a": 1}` | `"[1,2]"`, `"{\"a\":1}"` | `"[1, 2]"`, `"{'a': 1}"` |
 | `bool(x)`, `if x:` with `x` of unknown type | `[0]` | `false` (`$boolean`) | `True` |
+| `"k" in x` with `x` of unknown type | `"key"` or `["k"]` | `false` (`$exists($x.k)`, a key lookup) | `True` |
 | `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
 | `distributed_map(f, ...)` | `f` raises | within `tolerated_failure_count=` or `tolerated_failure_percentage=`, `{"Status": "FAILED", "Error": ..., "Cause": ...}` in the item's place in the list; otherwise `States.ExceedToleratedFailureThreshold`, which an `except` of the raised class does not catch | the exception `f` raised |
 
