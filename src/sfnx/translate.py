@@ -439,6 +439,12 @@ class Translator:
     def mapping(self, node: ast.Dict) -> Expr:
         entries = []
         for key, value in zip(node.keys, node.values, strict=True):
+            if key is None:
+                raise CompileError(
+                    "unpacking with ** is not supported; write the keys out, "
+                    'such as {"id": x["id"]}',
+                    value,
+                )
             if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
                 raise CompileError(
                     "JSON object keys are strings; write the key in quotes",

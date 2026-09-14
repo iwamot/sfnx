@@ -198,7 +198,7 @@ def test_asl_matches_python(body, execution_input):
         (machine("return b'x'"), "only JSON values", "6:12"),
         (machine("return 1e999"), "JSON numbers are finite", "6:12"),
         (machine("return {1: 2}"), "keys are strings", "6:13"),
-        (machine("return {**input}"), "keys are strings", "6:15"),
+        (machine("return {**input}"), "unpacking with ** is not supported", "6:15"),
         (machine("return input[True]"), "True is a boolean; keys are strings", "6:18"),
         (machine("with input:\n    pass"), "with is not supported", "6:5"),
         (machine("return input.x"), 'read a key with x["key"]', "6:12"),
