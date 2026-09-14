@@ -5,7 +5,7 @@ Why the language in [language.md](language.md) looks the way it does, and the St
 ## Principles
 
 1. **The product is the ASL.** sfnx is for people who find ASL tedious or hard to write. It stops at the definition: running, mocking and deploying belong to other tools.
-2. **The Python should run, but the contract is with the ASL.** The output is what someone writing ASL by hand would write for the intent of the source. Expressions are not grown to reproduce Python on edges such as the truthiness of `[0]` of unknown type or the spelling of `str(True)`. Two exceptions are worth the longer expression: the number of items in a list and how deeply lists nest are kept, and the truthiness of a value known to be a list, or declared as a union that includes one, follows Python.
+2. **The Python should run, but the contract is with the ASL.** The output is what someone writing ASL by hand would write for the intent of the source, not a reproduction of Python: `str(True)` is `"true"`, while a comprehension is a list for any number of results, as its author means. Known differences from CPython are listed in [Where results differ from Python](language.md#where-results-differ-from-python); others may remain.
 3. **No library of functions.** The names sfnx exports make states (`state_machine`, `task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes). ASL settings such as `Arguments`, `ItemReader` and retriers are passed through as the structures they are, with no builders.
 4. **As few control structures, operators and built-ins as the flows need.**
 
@@ -57,7 +57,7 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 ## What the compiler relies on
 
-From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13).
+From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13 and 2026-09-14).
 
 ### JSONata in Step Functions
 
@@ -74,6 +74,8 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - An array constructor merges the items of an array value that is not itself a constructor: `$count([$xs])` of `[1, 2]` is 2, and `[[$xs]]` and `$type($x) = 'array' ? [[$x]] : $x` keep one item for arrays, scalars, objects, one-item arrays, nested arrays and null (measured).
 - `$map` and `$filter` return a value for one result and undefined for none; in brackets they are `[2]` and `[]`, but a single array result loses a level. `$map(...)[]` keeps a single result as an array (but not in parentheses, `($map(...))[]`), and `$append([], $map(...)[])` is `[]` for none; for 0, 1 and several items, lists and nested lists, with and without `$filter`, CPython, jsonata-python and Step Functions agreed (measured).
 - `a % b` as `$a - $b * $floor($a / $b)` matches Python for negative operands; `$power` matches Python's `**` except for a negative base with a fractional exponent, where JSONata fails (measured).
+- Dividing by zero does not fail: `1 / 0`, `-1 / 0` and `0 / 0` are the strings `"Infinity"`, `"-Infinity"` and `"NaN"`, and so is `$floor` of them. Arithmetic on them fails, but a comparison does not (`1 / 0 > 5` is true; measured).
+- Numbers are doubles. A literal number in the definition keeps its digits, but read in an expression, from a variable or the input, an integer past 2^53 is rounded (`10000000000000000000000001` is `1.0E25`; measured). `+`, `-`, `*` and `/` past the range of a double give `"Infinity"` or `"-Infinity"` as division by zero does, and `$number` of a string past it fails (`"1e400"`; measured).
 - `? :` binds looser than `and` and `or`.
 - `$substring` counts a negative start in UTF-16 units in Step Functions but in code points in jsonata-python (`$substring('héllo😀', -1, 1)`); `$length` counts code points in both (measured). Only positions counted from the end past characters outside the Basic Multilingual Plane differ.
 - Variable names are Unicode identifiers (ID_Start, then ID_Continue), at most 80 characters; `$states` is reserved. Non-ASCII names work (measured).

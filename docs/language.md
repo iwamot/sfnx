@@ -2,7 +2,7 @@
 
 sfnx accepts the part of Python that has a counterpart in ASL and whose meaning JSONata can express. This page lists what that part is and what it compiles to. The reasons behind the decisions, and the Step Functions behavior they rely on, are in [design.md](design.md).
 
-The generated ASL is the contract: sfnx writes what someone would write in ASL for what the source intends, rather than reproducing every detail of Python. A module is still ordinary Python that imports and runs, and where the two would disagree, [Where results differ from Python](#where-results-differ-from-python) lists what to expect. The number of items in a list and how deeply lists nest are always kept, even when that takes a longer expression.
+The generated ASL is the contract: sfnx writes what someone would write in ASL for what the source intends, rather than reproducing every detail of Python. A module is still ordinary Python that imports and runs, and where the two would disagree, [Where results differ from Python](#where-results-differ-from-python) lists what to expect.
 
 ## The machine
 
@@ -192,14 +192,22 @@ Each of these is rejected with what to write instead:
 
 ## Where results differ from Python
 
-The ASL uses JSONata's own operations where they carry the intent, so a few values come out differently from CPython:
+Some values come out differently from CPython. These are the differences known so far; others may remain:
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
+| `a / b`, `a // b` | `b` is `0` | `"Infinity"`, `"-Infinity"` or `"NaN"`, a string; arithmetic on it fails with `States.QueryEvaluationError`, a comparison does not | `ZeroDivisionError` |
+| `a ** b` | a negative `a` and a fractional `b` | `States.QueryEvaluationError` | a complex number |
+| `a + b`, `a - b`, `a * b`, `a / b` | a result past the range of a double, such as `1e308 * 10` | `"Infinity"` or `"-Infinity"`, a string | `inf` or `-inf` |
+| a number from the input or a variable | an integer past 2^53, such as `10000000000000000000000001` | the nearest double (`1.0E25`) | the exact integer |
+| `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
 | `int(x)` | `-1.5` | `-2` (`$floor`) | `-1` |
+| `int(x)` | `"1.5"` | `1` | `ValueError` |
+| `float(x)` | `"0x10"` | `16` | `ValueError` |
+| `float(x)` | `"1e400"` | `States.QueryEvaluationError` | `inf` |
 | `str(x)`, `f"{x}"` | `True`, `None`, `1.0` | `"true"`, `"null"`, `"1"` | `"True"`, `"None"`, `"1.0"` |
+| `str(x)`, `f"{x}"` | `[1, 2]`, `{"a": 1}` | `"[1,2]"`, `"{\"a\":1}"` | `"[1, 2]"`, `"{'a': 1}"` |
 | `bool(x)`, `if x:` with `x` of unknown type | `[0]` | `false` (`$boolean`) | `True` |
-| `bool(x)`, `if x:` with `x: list` or `x: list \| None` | `[0]` | `true` (`$count($x) > 0`) | `True` |
 | `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
 
 Declaring the type of a value that may be a list makes its truthiness follow Python.
