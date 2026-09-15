@@ -1,6 +1,7 @@
 """Run compiled definitions without an emulator, evaluating JSONata with
 jsonata-python, so a program's ASL result can be compared with CPython's."""
 
+import hashlib
 import json
 import time
 import uuid
@@ -32,6 +33,8 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     expression.register_lambda("range", range_numbers)
     expression.register_lambda("now", now)
     expression.register_lambda("millis", lambda: int(time.time() * 1000))
+    expression.register_lambda("hash", digest)
+    expression.register_lambda("partition", partition)
     try:
         result = expression.evaluate(None, nulls({**variables, "states": states}))
     except jsonata.JException as exc:
@@ -53,6 +56,18 @@ def parse(text: str) -> object:
 def now() -> str:
     """$now(): the time in UTC to the millisecond, as Step Functions gives it."""
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def digest(text: str, algorithm: str) -> str:
+    """$hash: the hex digest of the UTF-8 text."""
+    name = algorithm.replace("-", "").lower()
+    return hashlib.new(name, text.encode()).hexdigest()
+
+
+def partition(items: list, size: int) -> list | None:
+    """$partition, which returns nothing for no items."""
+    batches = [items[i : i + size] for i in range(0, len(items), size)]
+    return batches or None
 
 
 def range_numbers(first: int, last: int, step: int) -> list[int]:

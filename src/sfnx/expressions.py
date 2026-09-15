@@ -43,10 +43,12 @@ FUNCTIONS = frozenset(
         "ceil",
         "contains",
         "count",
+        "distinct",
         "each",
         "exists",
         "filter",
         "floor",
+        "hash",
         "join",
         "keys",
         "length",
@@ -60,7 +62,9 @@ FUNCTIONS = frozenset(
         "not",
         "now",
         "number",
+        "pad",
         "parse",
+        "partition",
         "power",
         "random",
         "range",
@@ -77,6 +81,7 @@ FUNCTIONS = frozenset(
         "type",
         "uppercase",
         "uuid",
+        "zip",
     }
 )
 

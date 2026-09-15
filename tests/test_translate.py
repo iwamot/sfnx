@@ -903,3 +903,90 @@ def test_get_evaluates():
         "nested": {},
     }
     assert asl.run(definition(body), execution_input) == [1, 0, 1, None, None, 3]
+
+
+MORE = (
+    "import hashlib\nimport itertools\n",
+    's: str = input["s"]\nxs: list[float] = input["xs"]\nys: list = input["ys"]\n',
+)
+
+
+def more_definition(body: str) -> dict:
+    (compiled,) = compile_source(MORE[0] + source(MORE[1] + body)).values()
+    return compiled
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ('return s.ljust(5, "0")', "$pad($s, 5, '0')"),
+        ("return s.rjust(4)", "$pad($s, -4)"),
+        ('n: float = input["n"]\nreturn s.rjust(n, "0")', "$pad($s, -$n, '0')"),
+        ("return list(set(xs))", "$distinct($xs)"),
+        ("return sorted(set(xs))", "$sort($distinct($xs))"),
+        ("return list(zip(xs, ys))", "$zip($xs, $ys)"),
+        ("return hashlib.sha256(s.encode()).hexdigest()", "$hash($s, 'SHA-256')"),
+        ("return hashlib.md5(s.encode()).hexdigest()", "$hash($s, 'MD5')"),
+        ("return list(itertools.batched(xs, 2))", "[$partition($xs, 2)]"),
+    ],
+)
+def test_more_functions(body, code):
+    assert more_definition(body)["States"]["return"]["Output"] == "{% " + code + " %}"
+
+
+def test_more_functions_evaluate():
+    body = (
+        'return [s.ljust(5, "0"), s.rjust(5, "0"), list(set(xs)), list(zip(xs, ys)), '
+        "hashlib.sha1(s.encode()).hexdigest(), list(itertools.batched(xs, 3)), "
+        "list(itertools.batched(ys, 5)), list(itertools.batched([], 2))]"
+    )
+    execution_input = {"s": "ab", "xs": [3, 1, 3, 2], "ys": [[1], [2]]}
+    assert asl.run(more_definition(body), execution_input) == [
+        "ab000",
+        "000ab",
+        [3, 1, 2],
+        [[3, [1]], [1, [2]]],
+        "da23614e02469a0d7c7bd1bdab5c9c474b1904dc",
+        [[3, 1, 3], [2]],
+        [[[1], [2]]],
+        [],
+    ]
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            "return set(xs)",
+            "JSON has lists only; keep each item once with list(set(items))",
+        ),
+        ("return zip(xs, ys)", "zip() is a list here only as list(zip(a, b))"),
+        ("return list(zip(1, xs))", "1 is a number; zip() takes lists"),
+        ("return list(zip(xs, ys, strict=True))", "zip() takes no keyword arguments"),
+        (
+            "return itertools.batched(xs, 2)",
+            "itertools.batched() is a list here only as list(itertools.batched(items, n))",
+        ),
+        (
+            "return hashlib.sha256(s.encode())",
+            "hashlib.sha256() is a hash object, not JSON; write hashlib.sha256(s.encode()).hexdigest()",
+        ),
+        (
+            "return hashlib.sha256(s).hexdigest()",
+            "hexdigest() is written hashlib.sha256(s.encode()).hexdigest()",
+        ),
+        ("return s.hexdigest(1)", "hexdigest() is written hashlib.sha256"),
+        ('return s.ljust("a")', "the width of ljust() takes numbers"),
+        ("return s.ljust(5, 1)", "1 is a number; ljust() fills with a string"),
+    ],
+)
+def test_more_function_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        more_definition(body)
+    assert message in raised.value.message
+
+
+def test_hashlib_without_import():
+    with pytest.raises(CompileError) as raised:
+        compile_source(source('return hashlib.sha256(input["s"].encode()).hexdigest()'))
+    assert raised.value.message == "hashlib is not imported; write import hashlib"

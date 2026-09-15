@@ -167,6 +167,16 @@ MATH_FUNCTIONS = {
     "random.random": "random",
 }
 
+# The hashlib functions whose hexdigest() is $hash, and the name of each
+# algorithm there.
+HASHES = {
+    "hashlib.md5": "MD5",
+    "hashlib.sha1": "SHA-1",
+    "hashlib.sha256": "SHA-256",
+    "hashlib.sha384": "SHA-384",
+    "hashlib.sha512": "SHA-512",
+}
+
 # Calls whose value is an object that JSON holds as text, so they are written
 # in str() or an f-string: the JSONata function for the text, how the call is
 # written and what it returns in Python.
@@ -182,6 +192,8 @@ MODULE_IMPORTS = {
     "uuid.uuid4": "import uuid",
     "time.time": "import time",
     "datetime.now": "from datetime import datetime",
+    "itertools.batched": "import itertools",
+    **dict.fromkeys(HASHES, "import hashlib"),
     **{target: f"import {target.partition('.')[0]}" for target in MATH_FUNCTIONS},
 }
 
@@ -194,6 +206,8 @@ STRING_METHODS = {
     "join": "sep.join(items)",
     "startswith": "s.startswith(prefix)",
     "endswith": "s.endswith(suffix)",
+    "ljust": "s.ljust(width) or s.ljust(width, fill)",
+    "rjust": "s.rjust(width) or s.rjust(width, fill)",
 }
 
 # The methods of dict that compile to a JSONata function, and how each is written.
@@ -1005,6 +1019,20 @@ class Translator:
             raise CompileError(
                 f"{spelled} is {returned}, not JSON; write str({spelled})", node
             )
+        if target in HASHES:
+            raise CompileError(
+                f"{ast.unparse(node.func)}() is a hash object, not JSON; write "
+                f"{ast.unparse(node.func)}(s.encode()).hexdigest()",
+                node,
+            )
+        if target == "itertools.batched":
+            raise CompileError(
+                "itertools.batched() is a list here only as "
+                "list(itertools.batched(items, n))",
+                node,
+            )
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "hexdigest":
+            return self.hexdigest(node, node.func)
         if target == "time.time":
             if node.args or node.keywords:
                 raise CompileError("time.time() takes no arguments", node)
@@ -1087,11 +1115,21 @@ class Translator:
                 raise CompileError("reversed() takes one argument: reversed(xs)", node)
             listed = self.listed(node.args[0], name)
             return call("reverse", [listed], listed.type)
-        if name in {"enumerate", "zip"}:
+        if name == "enumerate":
             raise CompileError(
-                f"{name}() is not supported; count with range: "
+                "enumerate() is not supported; count with range: "
                 "for i in range(len(items)): item = items[i]",
                 node,
+            )
+        if name == "zip":
+            raise CompileError(
+                "zip() is a list here only as list(zip(a, b)); in a loop, count "
+                "with range: for i in range(len(items)): item = items[i]",
+                node,
+            )
+        if name == "set":
+            raise CompileError(
+                "JSON has lists only; keep each item once with list(set(items))", node
             )
         if name == "list":
             if len(node.args) != 1:
@@ -1280,6 +1318,17 @@ class Translator:
             if len(arguments) == 3:
                 values.append(self.numeric(arguments[2], "the count of replace()"))
             return call("replace", [receiver, *values], text)
+        if name in {"ljust", "rjust"} and len(arguments) in {1, 2}:
+            width = self.numeric(arguments[0], f"the width of {name}()")
+            if name == "rjust":
+                # $pad fills on the left for a negative width.
+                number = width.template
+                width = literal(-number) if type(number) is int else negate(width)
+            fill = [
+                self.operand(a, STRING, f"{name}() fills with a string")
+                for a in arguments[1:]
+            ]
+            return call("pad", [receiver, width, *fill], text)
         if name in {"startswith", "endswith"} and len(arguments) == 1:
             return self.affix(receiver, arguments[0], name)
         if name == "join" and len(arguments) == 1:
@@ -1333,7 +1382,11 @@ class Translator:
 
     def listed(self, node: ast.expr, name: str = "list") -> Expr:
         """list(x): the keys of a dict, the characters of a string, or a list
-        as it is, a JSON value being a copy already."""
+        as it is, a JSON value being a copy already; and the lists that set(),
+        zip() and itertools.batched() make."""
+        made = self.made_list(node) if isinstance(node, ast.Call) else None
+        if made is not None:
+            return made
         value = self.expr(node)
         kind = self.known(node, value, "dict", f"{name}() depends on the type")
         if kind == OBJECT:
@@ -1348,6 +1401,63 @@ class Translator:
             "string",
             node,
         )
+
+    def made_list(self, node: ast.Call) -> Expr | None:
+        """set(x) as $distinct, zip(a, b) as $zip and itertools.batched(xs, n)
+        as $partition: what Python makes a set or an iterator of is a list in
+        JSON."""
+        if node.keywords:
+            return None
+        function = node.func.id if isinstance(node.func, ast.Name) else None
+        if function == "set" and len(node.args) == 1:
+            items = self.listed(node.args[0], "set")
+            return call("distinct", [items], items.type)
+        if function == "zip" and len(node.args) >= 2:
+            lists = [self.operand(a, ARRAY, "zip() takes lists") for a in node.args]
+            return call("zip", lists, of(ARRAY, items=of(ARRAY)))
+        if (
+            qualified(node.func, self.names) == "itertools.batched"
+            and len(node.args) == 2
+        ):
+            items = self.operand(
+                node.args[0], ARRAY, "itertools.batched() takes a list"
+            )
+            size = self.numeric(node.args[1], "the size of itertools.batched()")
+            # $partition returns nothing for no items; brackets make that [].
+            batches = call("partition", [items, size], None)
+            return expression(
+                f"[{batches.code}]",
+                batches.variables,
+                type=of(ARRAY, items=items.type),
+                constructor=True,
+            )
+        return None
+
+    def hexdigest(self, node: ast.Call, method: ast.Attribute) -> Expr:
+        """hashlib.sha256(s.encode()).hexdigest() and the other algorithms, as
+        $hash of the text."""
+        digest = method.value
+        written = "hashlib.sha256(s.encode()).hexdigest()"
+        if not isinstance(digest, ast.Call) or node.args or node.keywords:
+            raise CompileError(f"hexdigest() is written {written}", node)
+        target = qualified(digest.func, self.names) or ""
+        if not target and ast.unparse(digest.func) in MODULE_IMPORTS:
+            raise CompileError(
+                "hashlib is not imported; write import hashlib", digest.func
+            )
+        encoded = digest.args[0] if len(digest.args) == 1 else None
+        if (
+            target not in HASHES
+            or digest.keywords
+            or not isinstance(encoded, ast.Call)
+            or not isinstance(encoded.func, ast.Attribute)
+            or encoded.func.attr != "encode"
+            or encoded.args
+            or encoded.keywords
+        ):
+            raise CompileError(f"hexdigest() is written {written}", node)
+        text = self.operand(encoded.func.value, STRING, "encode() is a string method")
+        return call("hash", [text, literal(HASHES[target])], of(STRING))
 
     def affix(self, text: Expr, node: ast.expr, name: str) -> Expr:
         """s.startswith(p) and s.endswith(p): the part of s as long as p,
