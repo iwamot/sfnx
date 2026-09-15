@@ -228,6 +228,18 @@ except Exception:
 - Pass, Choice and Wait states cannot catch, so a `try` whose body has no Task, Parallel or Map is rejected, and so is a `raise` in the body that its own `except` would catch, or a bare `raise` in a clause that an `except` around it would catch: a Fail ends the execution. `finally` and a bare `except:` are rejected.
 - **`retry=`** takes retriers as dicts: `ErrorEquals` (a list of classes), `IntervalSeconds`, `MaxAttempts`, `BackoffRate`, `MaxDelaySeconds`, `JitterStrategy`, each checked against its range. A retrier for `Exception` comes last.
 
+## JSONata expressions
+
+```python
+from sfnx import jsonata
+
+padded: str = jsonata("$pad($s, -$n, '0')", s=code, n=width)
+```
+
+- `jsonata(expression, name=value)` writes a JSONata expression as it is, for what has no Python spelling here. It compiles to `($s := $code; $n := $width; $pad($s, -$n, '0'))`: each value is bound to the variable of its name before the expression, as a Python variable does not always keep its name in the definition.
+- The expression is a literal string, and its values are given by name. A value named after a JSONata function or `states` would hide it inside the expression, and a value that reads the name of one bound before it would read the new value, so both are rejected. Step Functions checks the expression when it validates the definition.
+- The value has no type; declare one where it matters: `padded: str = jsonata(...)`. At run time in Python, `jsonata()` raises `NotImplementedError`.
+
 ## Wait and the Context Object
 
 `wait(10)` is `Seconds` (0 to 99,999,999) and `wait(until="2026-09-13T01:59:00Z")` is `Timestamp` (RFC 3339 with an uppercase `T` and `Z`); either may be an expression.

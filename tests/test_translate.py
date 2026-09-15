@@ -325,7 +325,10 @@ def test_evaluation(body, execution_input, expected):
             "dict() does not convert here; declare the type instead: x: dict = ...",
         ),
         ('return any(input["a"])', "calling any() is not supported"),
-        ('return input["a"].append("k")', "input['a'].append() is not supported"),
+        (
+            'return input["a"].append("k")',
+            "input['a'].append() is not supported; write the operation with operators, supported functions or jsonata(), or compute it in a Lambda task (the methods sfnx compiles are split, replace, lower, upper, join, startswith, endswith, ljust and rjust of strings and keys, values and get of dicts)",
+        ),
         ('return isinstance(input["a"])', "isinstance takes a value and a class"),
         ('return isinstance(input["a"], list[str])', "isinstance takes str, float"),
         ('return isinstance(input["a"], None)', "test None with `is None`"),

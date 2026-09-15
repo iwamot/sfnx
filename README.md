@@ -156,7 +156,7 @@ ASL is a JSON document of states that name each other, with the logic in JSONata
 
 - **The output is ASL you can read.** States split only where ASL needs them, independent assignments share one Pass, and each state is named after its variable, `return`, `if`, `for` or the API it calls, so execution histories and the console read like the source.
 - **Mistakes surface at compile time.** Every rejected line comes with what to write instead. SDK integration ARNs and their argument names are checked against the botocore service models (whether Step Functions integrates the action is not checked).
-- **Python control flow with a few workflow primitives.** The names sfnx exports make states (`task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes). Everything else is Python syntax, compiled to the JSONata you would write for it. [Where results differ from Python](https://github.com/iwamot/sfnx/blob/main/docs/language.md#where-results-differ-from-python) lists the values known to come out otherwise.
+- **Python control flow with a few workflow primitives.** The names sfnx exports make states (`task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes, `jsonata` for an expression written out). Everything else is Python syntax, compiled to the JSONata you would write for it. [Where results differ from Python](https://github.com/iwamot/sfnx/blob/main/docs/language.md#where-results-differ-from-python) lists the values known to come out otherwise.
 
 sfnx compiles; it does not run workflows or mock tasks, and it does not deploy. The Python module stays importable, but the definition is the contract, not what CPython computes.
 
@@ -175,6 +175,7 @@ The workflow module imports `sfnx`, so it is a dependency of the project; `uv ru
 - **`task(resource, arguments, timeout=, heartbeat=, role=, retry=)`** is a Task for any integration: SDK (`arn:aws:states:::aws-sdk:dynamodb:getItem`), optimized (`arn:aws:states:::lambda:invoke`, with `.sync` or `.waitForTaskToken`), HTTP, activities, or a `${Placeholder}` filled in at deploy time.
 - **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
 - **`wait(10)`** and **`wait(until=timestamp)`** are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
+- **`jsonata("$pad($s, -5, '0')", s=code)`** writes a JSONata expression out, for what has no Python spelling, with each value bound to the variable of its name.
 - **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). `except Exception` is `States.ALL`.
 - **Expressions** are Python operators, conditional expressions, list comprehensions, f-strings, slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
   - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`)
@@ -198,7 +199,7 @@ $ sfnx compile app.py
 app.py:6:63: getItem has no argument Tablename; did you mean TableName?
 
 $ sfnx compile app.py
-app.py:6:12: calling any() is not supported; write it with operators, or compute it in a Lambda task
+app.py:6:12: calling any() is not supported; write it with operators or jsonata(), or compute it in a Lambda task
 
 $ sfnx compile app.py
 app.py:6:9: loop over one variable: for item in items (unpack inside the loop)

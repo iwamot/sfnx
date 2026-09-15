@@ -10,9 +10,11 @@ from sfnx.diagnostics import CompileError
 from sfnx.expressions import (
     ADD,
     AND,
+    ATOM,
     COMPARE,
     MULTIPLY,
     OR,
+    WRITTEN,
     Expr,
     array,
     binary,
@@ -118,7 +120,7 @@ TASK_OPTIONS = ("timeout", "heartbeat", "role")
 # The names sfnx exports that a workflow calls or reads, so that one used
 # without an import is told apart from an unknown name.
 EXPORTS = frozenset(
-    {"context", "task", "wait", "parallel", "inline_map", "distributed_map"}
+    {"context", "task", "wait", "parallel", "inline_map", "distributed_map", "jsonata"}
 )
 
 
@@ -149,6 +151,82 @@ class Bound:
 Compose = Callable[[ast.Call, str], tuple[dict[str, object], Type | None]]
 
 COMPOSED = {"parallel": "Parallel", "inline_map": "Map", "distributed_map": "Map"}
+
+# Every function of JSONata 2.0.6 and those Step Functions adds, which a value
+# bound for jsonata() would hide.
+JSONATA_FUNCTIONS = frozenset(
+    [
+        "string",
+        "length",
+        "substring",
+        "substringBefore",
+        "substringAfter",
+        "uppercase",
+        "lowercase",
+        "trim",
+        "pad",
+        "contains",
+        "split",
+        "join",
+        "match",
+        "replace",
+        "eval",
+        "base64encode",
+        "base64decode",
+        "encodeUrlComponent",
+        "encodeUrl",
+        "decodeUrlComponent",
+        "decodeUrl",
+        "formatNumber",
+        "formatBase",
+        "formatInteger",
+        "parseInteger",
+        "number",
+        "abs",
+        "floor",
+        "ceil",
+        "round",
+        "power",
+        "sqrt",
+        "random",
+        "sum",
+        "max",
+        "min",
+        "average",
+        "boolean",
+        "not",
+        "exists",
+        "count",
+        "append",
+        "sort",
+        "reverse",
+        "shuffle",
+        "distinct",
+        "zip",
+        "keys",
+        "lookup",
+        "spread",
+        "merge",
+        "sift",
+        "each",
+        "error",
+        "assert",
+        "type",
+        "now",
+        "millis",
+        "fromMillis",
+        "toMillis",
+        "map",
+        "filter",
+        "single",
+        "reduce",
+        "partition",
+        "range",
+        "hash",
+        "uuid",
+        "parse",
+    ]
+)
 
 # How the built-in functions for numbers are written.
 NUMBER_FUNCTIONS = {
@@ -998,6 +1076,8 @@ class Translator:
             target = ""
         if target == "sfnx.task":
             return self.task_call(node)
+        if target == "sfnx.jsonata":
+            return self.jsonata(node)
         if target.startswith("sfnx.") and target[5:] in COMPOSED:
             return self.composed_call(node, target[5:])
         if target.startswith("sfnx."):
@@ -1061,9 +1141,10 @@ class Translator:
         if not isinstance(node.func, ast.Name):
             raise CompileError(
                 f"{ast.unparse(node.func)}() is not supported; write the operation "
-                "with operators or supported functions, or compute it in a Lambda "
-                "task (the methods sfnx compiles are split, replace, lower, upper "
-                "and join of strings, and keys and values of dicts)",
+                "with operators, supported functions or jsonata(), or compute it "
+                "in a Lambda task (the methods sfnx compiles are "
+                f"{spoken(list(STRING_METHODS))} of strings and "
+                f"{spoken(list(DICT_METHODS))} of dicts)",
                 node.func,
             )
         self.check_import(node.func)
@@ -1147,8 +1228,8 @@ class Translator:
                 node,
             )
         raise CompileError(
-            f"calling {name}() is not supported; write it with operators, or "
-            "compute it in a Lambda task",
+            f"calling {name}() is not supported; write it with operators or "
+            "jsonata(), or compute it in a Lambda task",
             node,
         )
 
@@ -1231,6 +1312,53 @@ class Translator:
             )
         ordered = call("sort", [listed], listed.type)
         return call("reverse", [ordered], listed.type) if descending else ordered
+
+    def jsonata(self, node: ast.Call) -> Expr:
+        """jsonata(expression, name=value): the expression as it is written, in
+        a block that binds each value to the variable of its name first, since
+        a Python variable does not always keep its name in the definition."""
+        usage = "jsonata(\"$pad($s, -5, '0')\", s=code)"
+        if len(node.args) != 1 or not (
+            isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            raise CompileError(
+                f"jsonata() takes the expression as a literal string: {usage}", node
+            )
+        bindings = []
+        values = []
+        bound: list[str] = []
+        for keyword in node.keywords:
+            name = keyword.arg
+            if name is None:
+                raise CompileError(
+                    f"jsonata() takes each value by its name: {usage}", keyword.value
+                )
+            if name == "states" or name in JSONATA_FUNCTIONS:
+                raise CompileError(
+                    f"{name} would hide ${name} in the expression; choose another name",
+                    keyword,
+                )
+            value = self.expr(keyword.value)
+            # The block binds in order, so a value cannot read a name bound
+            # before it, as Python would give it the variable of that name.
+            earlier = [
+                b for b in bound if b in {self.spelling(v) for v in value.variables}
+            ]
+            if earlier:
+                raise CompileError(
+                    f"{name} reads {earlier[0]}, which jsonata() binds before it; "
+                    "give the value to bind another name",
+                    keyword.value,
+                )
+            bound.append(name)
+            code = value.code if value.precedence == ATOM else f"({value.code})"
+            bindings.append(f"${name} := {code}; ")
+            values.append(value)
+        written = node.args[0].value
+        if not bindings:
+            return expression(written, precedence=WRITTEN)
+        return expression("(" + "".join(bindings) + written + ")", uses(values))
 
     def math_function(self, node: ast.Call, target: str) -> Expr:
         function = MATH_FUNCTIONS[target]
@@ -1836,6 +1964,11 @@ def text(value: Expr) -> Expr:
     if value.type == ERROR_OUTPUT:
         return field(value, "Cause")
     return call("string", [value], of(STRING))
+
+
+def spoken(names: list[str]) -> str:
+    """Names as a sentence lists them: a, b and c."""
+    return ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def reversed_value(value: Expr, kind: str) -> Expr:
