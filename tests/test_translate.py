@@ -321,7 +321,7 @@ def test_evaluation(body, execution_input, expected):
             "list() does not convert here; declare the type instead: x: list = ...",
         ),
         ('return abs(input["a"])', "calling abs() is not supported"),
-        ('return input["a"].upper()', "methods are not supported"),
+        ('return input["a"].get("k")', "input['a'].get() is not supported"),
         ('return isinstance(input["a"])', "isinstance takes a value and a class"),
         ('return isinstance(input["a"], list[str])', "isinstance takes str, float"),
         ('return isinstance(input["a"], None)', "test None with `is None`"),
@@ -451,3 +451,63 @@ def test_a_renamed_variable_takes_a_name_the_module_does_not_use():
         "count_val_2": "{% [$map($count_val, function($count_val_3) { $count_val_3 * 2 })] %}",
     }
     assert asl.run(compiled, {"xs": [1, 2]}) == [2, [2, 4]]
+
+
+STRINGS = 's: str = input["s"]\nparts: list = input["parts"]\n'
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ('return s.split("/")', "$split($s, '/')"),
+        ("return s.split()", "$split($trim($s), ' ')"),
+        ('return s.split("/")[-1]', "$split($s, '/')[-1]"),
+        ('return s.replace(".", "-")', "$replace($s, '.', '-')"),
+        ('return s.replace("a", "b", 2)', "$replace($s, 'a', 'b', 2)"),
+        ("return s.lower()", "$lowercase($s)"),
+        ('return "id-" + s.upper()', "'id-' & $uppercase($s)"),
+        ('return input["s"].upper()', f"$uppercase({INPUT}.s)"),
+        ('return ", ".join(parts)', "$join($parts, ', ')"),
+    ],
+)
+def test_string_methods(body, code):
+    assert output(STRINGS + body) == "{% " + code + " %}"
+
+
+def test_string_methods_evaluate():
+    body = (
+        'return [s.split("/"), s.split(), s.replace("/", "-", 1), s.lower(), '
+        '"+".join(parts), [p.upper() for p in s.split()]]'
+    )
+    execution_input = {"s": " a/B/c\td ", "parts": ["x", "y"]}
+    assert asl.run(definition(STRINGS + body), execution_input) == [
+        [" a", "B", "c\td "],
+        ["a/B/c", "d"],
+        " a-B/c\td ",
+        " a/b/c\td ",
+        "x+y",
+        ["A/B/C", "D"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ('return parts.split("/")', "parts is a array; split() is a string method"),
+        ("return s.split(1)", "1 is a number; split() splits at a string"),
+        ('return s.split("/", 1)', "split() takes no maximum"),
+        ('return s.split(sep="/")', "split() takes no keyword arguments here"),
+        ('return s.replace("a")', "replace() is written s.replace(old, new)"),
+        ('return s.replace("a", "b", "c")', "the count of replace() takes numbers"),
+        ("return s.lower(1)", "lower() is written s.lower()"),
+        ("return s.join(s)", "s is a string; join() takes a list of strings"),
+        (
+            'v: str | None = input["v"]\nreturn v.upper()',
+            "v may be null | string; narrow it first",
+        ),
+    ],
+)
+def test_string_method_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        compile_source(source(STRINGS + body))
+    assert message in raised.value.message
