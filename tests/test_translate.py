@@ -374,7 +374,10 @@ def test_diagnostics(body, message):
     assert message in raised.value.message
 
 
-IMPORTS = "import json\nimport uuid\nfrom uuid import uuid4\n"
+IMPORTS = (
+    "import json\nimport time\nimport uuid\nfrom datetime import datetime\n"
+    "from uuid import uuid4\n"
+)
 
 
 def imported(body: str) -> dict:
@@ -389,6 +392,9 @@ def imported(body: str) -> dict:
         ('raw: str = input["raw"]\nreturn json.loads(raw)["a"]', "$parse($raw).a"),
         ("return str(uuid.uuid4())", "$uuid()"),
         ('return f"order-{uuid4()}"', "'order-' & $uuid()"),
+        ("return str(datetime.now())", "$now()"),
+        ('return f"at {datetime.now()}"', "'at ' & $now()"),
+        ("return time.time()", "$millis() / 1000"),
     ],
 )
 def test_module_functions(body, code):
@@ -396,12 +402,19 @@ def test_module_functions(body, code):
 
 
 def test_module_functions_evaluate():
-    body = 'return [json.loads(input["raw"]), str(uuid.uuid4())]'
-    parsed, made = asl.run(imported(body), {"raw": '{"a": [1, null], "b": "x"}'})
+    body = (
+        'return [json.loads(input["raw"]), str(uuid.uuid4()), str(datetime.now()), '
+        "time.time() > 1e9]"
+    )
+    parsed, made, moment, later = asl.run(
+        imported(body), {"raw": '{"a": [1, null], "b": "x"}'}
+    )
     assert parsed == {"a": [1, None], "b": "x"}
     assert re.fullmatch(
         r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", made
     )
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", moment)
+    assert later is True
 
 
 @pytest.mark.parametrize(
@@ -415,6 +428,12 @@ def test_module_functions_evaluate():
         ),
         ("return str(uuid4(1))", "uuid.uuid4() takes no arguments"),
         (
+            "return datetime.now()",
+            "datetime.now() is a datetime object, not JSON; write str(datetime.now())",
+        ),
+        ("return str(datetime.now(None))", "datetime.now() takes no arguments here"),
+        ("return time.time(1)", "time.time() takes no arguments"),
+        (
             'raw: str | None = input["raw"]\nreturn json.loads(raw)',
             "raw may be null | string; narrow it first",
         ),
@@ -426,10 +445,21 @@ def test_module_function_diagnostics(body, message):
     assert message in raised.value.message
 
 
-def test_module_function_without_import():
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ('return json.loads(input["raw"])', "json is not imported; write import json"),
+        (
+            "return str(datetime.now())",
+            "datetime is not imported; write from datetime import datetime",
+        ),
+        ("return time.time()", "time is not imported; write import time"),
+    ],
+)
+def test_module_function_without_import(body, message):
     with pytest.raises(CompileError) as raised:
-        compile_source(source('return json.loads(input["raw"])'))
-    assert raised.value.message == "json is not imported; write import json"
+        compile_source(source(body))
+    assert raised.value.message == message
 
 
 def test_a_variable_named_after_a_function_is_renamed():
