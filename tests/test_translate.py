@@ -324,7 +324,7 @@ def test_evaluation(body, execution_input, expected):
             'return dict(input["a"])',
             "dict() does not convert here; declare the type instead: x: dict = ...",
         ),
-        ('return abs(input["a"])', "calling abs() is not supported"),
+        ('return any(input["a"])', "calling any() is not supported"),
         ('return input["a"].get("k")', "input['a'].get() is not supported"),
         ('return isinstance(input["a"])', "isinstance takes a value and a class"),
         ('return isinstance(input["a"], list[str])', "isinstance takes str, float"),
@@ -660,3 +660,81 @@ def test_keys_and_values_diagnostics(body, message):
     with pytest.raises(CompileError) as raised:
         compile_source(source(DICTS + body))
     assert message in raised.value.message
+
+
+NUMBERS = 'xs: list[float] = input["xs"]\na: float = input["a"]\n'
+MATH = "import math\nimport random\n"
+
+
+def numbers_definition(body: str) -> dict:
+    (compiled,) = compile_source(MATH + source(NUMBERS + body)).values()
+    return compiled
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ("return abs(a)", "$abs($a)"),
+        ("return round(a)", "$round($a)"),
+        ("return round(a, 2)", "$round($a, 2)"),
+        ("return math.floor(a)", "$floor($a)"),
+        ("return math.ceil(a)", "$ceil($a)"),
+        ("return math.sqrt(a)", "$sqrt($a)"),
+        ("return random.random()", "$random()"),
+        ("return sum(xs)", "$sum($xs)"),
+        ('return max(input["xs"])', f"$max({INPUT}.xs)"),
+        ("return min(a, xs[0], 3)", "$min([$a, $xs[0], 3])"),
+        ("return sum(xs) / len(xs)", "$average($xs)"),
+        ('ys: list = input["ys"]\nreturn sum(xs) / len(ys)', "$sum($xs) / $count($ys)"),
+    ],
+)
+def test_number_functions(body, code):
+    output = numbers_definition(body)["States"]["return"]["Output"]
+    assert output == "{% " + code + " %}"
+
+
+def test_number_functions_evaluate():
+    body = (
+        "return [abs(a), round(a), round(a, 1), math.floor(a), math.ceil(a), "
+        "math.sqrt(xs[0]), sum(xs), max(xs), min(a, xs[0]), sum(xs) / len(xs)]"
+    )
+    execution_input = {"xs": [4, 1, 2.5], "a": -2.25}
+    assert asl.run(numbers_definition(body), execution_input) == [
+        2.25,
+        -2,
+        -2.2,
+        -3,
+        -2,
+        2,
+        7.5,
+        4,
+        -2.25,
+        2.5,
+    ]
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            'return max(["a"])',
+            "the items of ['a'] are string; max() takes numbers here",
+        ),
+        ("return sum(xs, 1)", "sum() is written sum(xs)"),
+        ("return sum(1)", "1 is a number; sum() takes a list of numbers"),
+        ("return round()", "round() is written round(x) or round(x, digits)"),
+        ('return abs("x")', "'x' is a string, and abs() takes numbers"),
+        ("return math.sqrt()", "math.sqrt() takes one number"),
+        ("return random.random(1)", "random.random() takes no arguments"),
+    ],
+)
+def test_number_function_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        numbers_definition(body)
+    assert message in raised.value.message
+
+
+def test_math_without_import():
+    with pytest.raises(CompileError) as raised:
+        compile_source(source("return math.ceil(1.5)"))
+    assert raised.value.message == "math is not imported; write import math"
