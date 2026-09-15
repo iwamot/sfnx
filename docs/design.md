@@ -35,6 +35,8 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 **A variable named after a JSONata function is renamed.** A Step Functions variable hides the JSONata function of its name, and a definition that calls the function then fails only when it runs. Someone writing ASL by hand would pick another name, so sfnx does the same instead of rejecting the Python name: a name the generated expressions call as a function gets `_val` (`$count_val`), numbered when the module already uses that name, and state names keep the Python name. Only those names change, so the rest of the definition reads as written.
 
+**Comments come from the source.** `Comment` is the only documentation ASL keeps, and a docstring or a comment above a line is where a Python author already writes it. Taking what is there needs no new syntax, and a comment that should stay out of the definition goes where it is not taken, after the code or above a blank line.
+
 **Control flow is statements, not functions.** One ASL scope is a flat graph with jumps; `if`, `for` and `while` can produce any of it, while functions and closures only produce trees.
 
 **One `task()` for every integration.** A Task varies only in its `Resource` and `Arguments`, so there is no `aws.Service.api` library, which would contradict the third principle, and no separate `http` or `activity` names. The ARN still lets the compiler look up the botocore model. `Arguments` is the second positional argument and the state's own settings are keywords: AWS API parameter names collide with keywords (5,229 lowercase parameter names across 431 services, `name` in 679 places, `timeout` in 3), and a positional argument also takes keys that are not identifiers and non-object arguments.
@@ -97,6 +99,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$sort` without a function orders an array of numbers or of strings and fails on booleans, arrays and mixed items; it orders strings by UTF-16 units. `$reverse` and `$sort` return an array for any number of items (measured).
 - `[a..b]` is an array for any number of items, empty when `b` is less than `a`. `$range(a, b, step)` includes `b` when a step reaches it and returns one number as itself and none as nothing (measured).
 - `$xs[[a..b]]` returns the item itself for a range of one position and undefined for an empty range, while `$filter` passes each item's position as the second parameter of its function (measured).
+- `Comment` is accepted at the top level, on every state type, and on Choice rules, retriers, catchers, Parallel branches and Map processors (measured).
 - Variable names are Unicode identifiers (ID_Start, then ID_Continue), at most 80 characters; `$states` is reserved. Non-ASCII names work (measured).
 - A string is evaluated when it starts with `{%` and ends with `%}`, including strings inside objects and arrays; a half-open one fails validation.
 

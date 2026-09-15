@@ -168,6 +168,8 @@ class Checkpoint:
     partial: set[str]
     pending: dict[str, Expr]
     pending_node: ast.AST | None
+    pending_remarks: list[str]
+    remark: str | None
     hidden: set[str]
     names: set[str]
     labels: set[str]
@@ -216,6 +218,11 @@ class Scope:
         # Independent assignments wait here to share one Pass.
         self.pending: dict[str, Expr] = {}
         self.pending_node: ast.AST | None = None
+        # The comments above the pending assignments, for the Pass they share,
+        # and the comment of the statement being compiled, for the first state
+        # it adds.
+        self.pending_remarks: list[str] = []
+        self.remark: str | None = None
         self.loops: list[Loop] = []
         # Names in the source, and the variables loops and handlers added for
         # themselves, shared by every scope of the machine.
@@ -237,6 +244,12 @@ class Scope:
         return variable(name, self.module.identifiers, type)
 
     def add(self, base: str, state: dict[str, object], node: ast.AST) -> str:
+        if self.remark is not None:
+            state = commented(state, self.remark)
+            self.remark = None
+        return self.insert(base, state, node)
+
+    def insert(self, base: str, state: dict[str, object], node: ast.AST) -> str:
         try:
             return self.graph.add(base, state)
         except ValueError as exc:
@@ -249,9 +262,19 @@ class Scope:
         first = next(iter(self.pending))
         assign = {self.spelling(k): value.template for k, value in self.pending.items()}
         node = self.pending_node
+        state: dict[str, object] = {"Type": "Pass", "Assign": assign}
+        if self.pending_remarks:
+            state = commented(state, "\n".join(self.pending_remarks))
         self.pending = {}
         self.pending_node = None
-        self.add(first, {"Type": "Pass", "Assign": assign}, node)
+        self.pending_remarks = []
+        self.insert(first, state, node)
+
+    def hold_remark(self) -> None:
+        """The comment of an assignment waits for the Pass it will share."""
+        if self.remark is not None:
+            self.pending_remarks.append(self.remark)
+            self.remark = None
 
     def materialize(self, statements: list[ast.stmt], node: ast.AST) -> None:
         """Assign to variables the names bound to expressions, such as a map's
@@ -280,6 +303,16 @@ class Scope:
             self.statement(statement)
 
     def statement(self, node: ast.stmt) -> None:
+        """A statement, whose comment goes to the first state it adds; a
+        compound statement that adds none first leaves it to its body."""
+        own = self.module.comments.get(node.lineno)
+        self.remark = "\n".join(r for r in (self.remark, own) if r) or None
+        try:
+            self.compile_statement(node)
+        finally:
+            self.remark = None
+
+    def compile_statement(self, node: ast.stmt) -> None:
         if isinstance(node, ast.Assign):
             if len(node.targets) != 1:
                 raise CompileError(
@@ -456,6 +489,7 @@ class Scope:
         if not self.pending:
             self.pending_node = target
         self.pending[name] = value
+        self.hold_remark()
         self.bindings[name] = self.variable(name, known)
         self.partial.discard(name)
 
@@ -493,6 +527,7 @@ class Scope:
                 self.flush()
             self.pending_node = self.pending_node or target
             self.pending.update(zip(names, values, strict=True))
+            self.hold_remark()
         for name, value in zip(names, values, strict=True):
             known = value.type or self.declared.get(name)
             self.bindings[name] = self.variable(name, known)
@@ -633,7 +668,11 @@ class Scope:
         scope.block(function.body)
         if scope.graph.reachable:
             scope.finish(literal(None), None, function)
-        return scope.graph.definition(), scope.returns
+        definition = scope.graph.definition()
+        docstring = ast.get_docstring(function)
+        if docstring:
+            definition = {"Comment": docstring, **definition}
+        return definition, scope.returns
 
     def parallel_state(self, node: ast.Call) -> tuple[dict[str, object], Type | None]:
         """The branches of parallel(): each function's body as a scope of its
@@ -1190,6 +1229,8 @@ class Scope:
             set(self.partial),
             dict(self.pending),
             self.pending_node,
+            list(self.pending_remarks),
+            self.remark,
             set(self.hidden),
             set(self.graph.names),
             set(self.labels),
@@ -1217,6 +1258,8 @@ class Scope:
         self.partial.update(saved.partial)
         self.pending = dict(saved.pending)
         self.pending_node = saved.pending_node
+        self.pending_remarks = list(saved.pending_remarks)
+        self.remark = saved.remark
         self.hidden.intersection_update(saved.hidden)
         # A failed attempt can leave loops and try statements open.
         del self.loops[saved.depth[0] :]
@@ -1761,6 +1804,15 @@ def annotate(node: ast.expr | None) -> Type | None:
         raise CompileError(str(exc), exc.node) from exc
 
 
+def commented(state: dict[str, object], comment: str) -> dict[str, object]:
+    """The state with its Comment after its Type, where a person puts it. The
+    dict itself changes, as the transitions still to be linked hold on to it."""
+    fields = dict(state)
+    state.clear()
+    state.update({"Type": fields.pop("Type"), "Comment": comment, **fields})
+    return state
+
+
 def check_variable(name: str, node: ast.AST) -> None:
     """Names Step Functions would not accept."""
     if name in RESERVED:
@@ -1822,7 +1874,9 @@ def compile_machine(
     scope.block(function.body)
     if graph.reachable:
         scope.finish(literal(None), None, function)
-    return {"QueryLanguage": "JSONata", **options, **graph.definition()}
+    docstring = ast.get_docstring(function)
+    comment = {"Comment": docstring} if docstring else {}
+    return {**comment, "QueryLanguage": "JSONata", **options, **graph.definition()}
 
 
 def compile_source(
@@ -1831,7 +1885,7 @@ def compile_source(
     """Every state machine in a module, keyed by function name."""
     try:
         tree = ast.parse(source, filename)
-        context = module(tree)
+        context = module(tree, source)
         return {
             function.name: compile_machine(function, options, context)
             for function, options in machines(tree, context.names)

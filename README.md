@@ -56,6 +56,7 @@ The definition has the states a person would write by hand, named after what the
 
 ```json
 {
+  "Comment": "Reserve every item of an order, then charge for it.",
   "QueryLanguage": "JSONata",
   "TimeoutSeconds": 300,
   "StartAt": "items",
@@ -180,6 +181,7 @@ The workflow module imports `sfnx`, so it is a dependency of the project; `uv ru
   - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `json.loads` and `str(uuid.uuid4())`
   - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith` and `endswith`, and the dict methods `keys`, `values` and `get`
 - **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. Literals, operator results and AWS API responses carry their types already.
+- **Comments** go into the definition: a function's docstring is the `Comment` of the machine, a Parallel branch or a Map processor, and the comment lines right above a statement are the `Comment` of the first state it makes.
 - **Anything else** (`with`, other methods, `lambda`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
 
 [docs/language.md](https://github.com/iwamot/sfnx/blob/main/docs/language.md) is the reference, and [docs/design.md](https://github.com/iwamot/sfnx/blob/main/docs/design.md) explains the design and the Step Functions behavior it relies on.
