@@ -39,6 +39,7 @@ Most operators have one JSONata spelling. A few depend on the type of their oper
 | `x in c` | `in` for lists, `$exists` for dicts, `$contains` for strings |
 | `c[k]` with a variable key | position or `$lookup` |
 | `x[a:b]` | `$substring` for strings, `$filter` by position for lists |
+| `list(x)` | `$keys` for dicts, `$split` into characters for strings, the list itself |
 | `for x in c` and comprehensions | elements or keys |
 
 One side is enough (`input["name"] + "!"` is a string join), a literal string key needs no type (`"coupon" in input`), and the key's own type is enough for `c[k]`.
@@ -73,6 +74,9 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
 | `s.lower()`, `s.upper()` | `$lowercase($s)`, `$uppercase($s)` |
 | `sep.join(items)` | `$join($items, $sep)` |
+| `list(d)`, `d.keys()` | `[$keys($d)]` |
+| `d.values()` | `[$each($d, function($v) { $v })]`, or `$append([], $each(...)[])` when the values may be lists |
+| `list(s)` | `$split($s, '')` |
 | `json.loads(s)` | `$parse($s)` |
 | `str(uuid.uuid4())`, `f"{uuid.uuid4()}"` | `$uuid()` |
 | `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
@@ -85,7 +89,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 
 - A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
 - A slice bound written with a minus sign (`xs[-2:]`, `xs[-n:]`) counts back from the end; any other bound is a position from the start. A slice takes no step, and one of a list holding lists keeps them as items, as a comprehension does.
-- The string methods need no type: of the JSON types only strings have them. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
+- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper` and `join`, and only dicts `keys` and `values`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
 - `json.loads` and `uuid.uuid4` are recognized through the module's imports, such as `import json` or `from uuid import uuid4`.
 - f-strings take no conversions (`!r`, `{x=}`) and no format specs.
 - A string literal that starts with `{%` or ends with `%}` is written as a JSONata string, so Step Functions does not read it as an expression.
@@ -201,7 +205,7 @@ except Exception:
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, a slice with a step, methods other than `split`, `replace`, `lower`, `upper` and `join` of strings, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `isinstance` and `range` in a `for`, module functions other than `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
+- **Expressions**: tuples, sets, a slice with a step, methods other than `split`, `replace`, `lower`, `upper` and `join` of strings and `keys` and `values` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance` and `range` in a `for`, module functions other than `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -232,6 +236,7 @@ Some values come out differently from CPython. These are the differences known s
 | `bool(x)`, `if x:` with `x` of unknown type | `[0]` | `false` (`$boolean`) | `True` |
 | `"k" in x` with `x` of unknown type | `"key"` or `["k"]` | `false` (`$exists($x.k)`, a key lookup) | `True` |
 | `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
+| `list(s)` | a string with characters outside the Basic Multilingual Plane | two items for each such character, neither of them the character | one item for each character |
 | `s[a:b]` | a string with characters outside the Basic Multilingual Plane | may hold other characters or half of one | the characters between the positions |
 | `s[a:b]` | `a` written with a minus sign and past the start, such as `"hello"[-10:-8]` | counted from the start of `s` (`"he"`) | `""` |
 | `xs[a:b]`, or the end of `s[a:b]` | a negative number read from a variable with no minus sign written, such as `i` = -2 | not counted from the end: `xs[i:]` is the whole list, `s[:i]` is `""` | counted from the end |

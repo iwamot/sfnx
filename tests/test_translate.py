@@ -318,7 +318,11 @@ def test_evaluation(body, execution_input, expected):
         ("return float(x=1)", "takes no keyword arguments"),
         (
             'return list(input["a"])',
-            "list() does not convert here; declare the type instead: x: list = ...",
+            "list() depends on the type, so the type of input['a'] must be known",
+        ),
+        (
+            'return dict(input["a"])',
+            "dict() does not convert here; declare the type instead: x: dict = ...",
         ),
         ('return abs(input["a"])', "calling abs() is not supported"),
         ('return input["a"].get("k")', "input['a'].get() is not supported"),
@@ -587,3 +591,72 @@ def test_slices_evaluate():
         [30, 40],
         "hell",
     ]
+
+
+DICTS = (
+    'd: dict = input["d"]\nnested: dict[str, list] = input["nested"]\n'
+    'flat: dict[str, float] = input["flat"]\n'
+)
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ("return list(d)", "[$keys($d)]"),
+        ("return d.keys()", "[$keys($d)]"),
+        ('return input["d"].keys()', f"[$keys({INPUT}.d)]"),
+        (
+            "return nested.values()",
+            "$append([], $each($nested, function($v) { $v })[])",
+        ),
+        ("return flat.values()", "[$each($flat, function($v) { $v })]"),
+        ('s: str = input["s"]\nreturn list(s)', "$split($s, '')"),
+        ('xs: list = input["xs"]\nreturn list(xs)', "$xs"),
+    ],
+)
+def test_keys_and_values(body, code):
+    assert output(DICTS + body) == "{% " + code + " %}"
+
+
+def test_keys_and_values_evaluate():
+    body = DICTS + (
+        "return [list(d), d.keys(), d.values(), nested.values(), flat.values(), "
+        'list(str(input["s"])), [k + "!" for k in d.keys()]]'
+    )
+    execution_input = {
+        "d": {},
+        "nested": {"a": [1, 2]},
+        "flat": {"x": 1, "y": 2},
+        "s": "ab",
+    }
+    assert asl.run(definition(body), execution_input) == [
+        [],
+        [],
+        [],
+        [[1, 2]],
+        [1, 2],
+        ["a", "b"],
+        [],
+    ]
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ('n: float = input["n"]\nreturn list(n)', "n is a number; list() takes a dict"),
+        ("return list()", "list() takes one argument"),
+        (
+            'xs: list = input["xs"]\nreturn xs.keys()',
+            "xs is a array; keys() is a dict method",
+        ),
+        ("return d.keys(1)", "keys() takes no arguments"),
+        (
+            'v: dict | None = input["v"]\nreturn v.values()',
+            "v may be null | object; narrow it first",
+        ),
+    ],
+)
+def test_keys_and_values_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        compile_source(source(DICTS + body))
+    assert message in raised.value.message

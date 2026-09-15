@@ -40,6 +40,7 @@ FUNCTIONS = frozenset(
         "boolean",
         "contains",
         "count",
+        "each",
         "exists",
         "filter",
         "floor",
