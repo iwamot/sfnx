@@ -167,9 +167,23 @@ MATH_FUNCTIONS = {
     "random.random": "random",
 }
 
-# The standard library functions sfnx compiles, named in the message when their
-# module is not imported.
-MODULE_FUNCTIONS = frozenset({"json.loads", "uuid.uuid4", *MATH_FUNCTIONS})
+# Calls whose value is an object that JSON holds as text, so they are written
+# in str() or an f-string: the JSONata function for the text, how the call is
+# written and what it returns in Python.
+STRINGIFIED = {
+    "uuid.uuid4": ("uuid", "uuid.uuid4()", "a UUID object"),
+    "datetime.datetime.now": ("now", "datetime.now()", "a datetime object"),
+}
+
+# The standard library functions sfnx compiles, by how a call to one reads
+# without its import, and the import to write.
+MODULE_IMPORTS = {
+    "json.loads": "import json",
+    "uuid.uuid4": "import uuid",
+    "time.time": "import time",
+    "datetime.now": "from datetime import datetime",
+    **{target: f"import {target.partition('.')[0]}" for target in MATH_FUNCTIONS},
+}
 
 # The methods of str that compile to a JSONata function, and how each is written.
 STRING_METHODS = {
@@ -453,8 +467,9 @@ class Translator:
                     "differently, so build the text from the number",
                     value.format_spec,
                 )
-            if self.is_uuid4(value.value):
-                pieces.append(call("uuid", [], of(STRING)))
+            spelled = self.stringified(value.value)
+            if spelled is not None:
+                pieces.append(spelled)
                 continue
             part = self.expr(value.value)
             if part.type is None or part.type.kinds != {STRING}:
@@ -981,24 +996,28 @@ class Translator:
             return self.json_loads(node)
         if target in MATH_FUNCTIONS:
             return self.math_function(node, target)
-        if target == "uuid.uuid4":
+        if target in STRINGIFIED:
+            _, spelled, returned = STRINGIFIED[target]
             if node.args or node.keywords:
                 raise CompileError(
-                    "uuid.uuid4() takes no arguments: str(uuid.uuid4())", node
+                    f"{spelled} takes no arguments here: str({spelled})", node
                 )
             raise CompileError(
-                "uuid.uuid4() is a UUID object, not JSON; write str(uuid.uuid4())",
-                node,
+                f"{spelled} is {returned}, not JSON; write str({spelled})", node
             )
+        if target == "time.time":
+            if node.args or node.keywords:
+                raise CompileError("time.time() takes no arguments", node)
+            millis = call("millis", [], of(NUMBER))
+            return binary(millis, "/", literal(1000), MULTIPLY, of(NUMBER))
         if (
             not target
             and isinstance(node.func, ast.Attribute)
-            and ast.unparse(node.func) in MODULE_FUNCTIONS
+            and ast.unparse(node.func) in MODULE_IMPORTS
         ):
             module = ast.unparse(node.func.value)
-            raise CompileError(
-                f"{module} is not imported; write import {module}", node.func
-            )
+            written = MODULE_IMPORTS[ast.unparse(node.func)]
+            raise CompileError(f"{module} is not imported; write {written}", node.func)
         if (
             not target
             and isinstance(node.func, ast.Attribute)
@@ -1028,8 +1047,9 @@ class Translator:
         if name in {"len", "float", "int", "str", "bool"}:
             if len(node.args) != 1:
                 raise CompileError(f"{name}() takes one argument: {name}(x)", node)
-            if name == "str" and self.is_uuid4(node.args[0]):
-                return call("uuid", [], of(STRING))
+            spelled = self.stringified(node.args[0]) if name == "str" else None
+            if spelled is not None:
+                return spelled
             argument = self.expr(node.args[0])
             if name == "float":
                 return call("number", [argument], of(NUMBER))
@@ -1094,14 +1114,13 @@ class Translator:
             node,
         )
 
-    def is_uuid4(self, node: ast.expr) -> bool:
-        """uuid.uuid4() in str() or an f-string, the text $uuid() returns."""
-        return (
-            isinstance(node, ast.Call)
-            and qualified(node.func, self.names) == "uuid.uuid4"
-            and not node.args
-            and not node.keywords
-        )
+    def stringified(self, node: ast.expr) -> Expr | None:
+        """uuid.uuid4() or datetime.now() in str() or an f-string, as the text
+        $uuid() or $now() returns."""
+        if not isinstance(node, ast.Call) or node.args or node.keywords:
+            return None
+        found = STRINGIFIED.get(qualified(node.func, self.names) or "")
+        return call(found[0], [], of(STRING)) if found else None
 
     def range_arguments(self, node: ast.Call) -> tuple[Expr, Expr, Expr]:
         """The start, stop and step of range(), whose step is a whole number

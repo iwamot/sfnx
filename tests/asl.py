@@ -2,8 +2,10 @@
 jsonata-python, so a program's ASL result can be compared with CPython's."""
 
 import json
+import time
 import uuid
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 
 import jsonata
 from jsonata.utils import Utils
@@ -28,6 +30,8 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     expression.register_lambda("parse", parse)
     expression.register_lambda("uuid", lambda: str(uuid.uuid4()))
     expression.register_lambda("range", range_numbers)
+    expression.register_lambda("now", now)
+    expression.register_lambda("millis", lambda: int(time.time() * 1000))
     try:
         result = expression.evaluate(None, nulls({**variables, "states": states}))
     except jsonata.JException as exc:
@@ -44,6 +48,11 @@ def parse(text: str) -> object:
         return nulls(json.loads(text))
     except ValueError as exc:
         raise jsonata.JException(str(exc)) from exc
+
+
+def now() -> str:
+    """$now(): the time in UTC to the millisecond, as Step Functions gives it."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def range_numbers(first: int, last: int, step: int) -> list[int]:
