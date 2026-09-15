@@ -55,6 +55,13 @@ def task(
     raise NotImplementedError(f"task({resource!r}) runs in Step Functions")
 
 
+def jsonata(expression: str, /, **values: object) -> object:
+    """A JSONata expression, for what has no Python spelling here. Each value
+    is bound to the variable of its name: jsonata("$pad($s, -5, '0')", s=code).
+    It only runs in Step Functions."""
+    raise NotImplementedError(f"jsonata({expression!r}) runs in Step Functions")
+
+
 def parallel(
     *branches: Callable[[], object],
     retry: list[dict[str, object]] | None = None,

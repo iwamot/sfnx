@@ -18,7 +18,9 @@ from sfnx.jsontypes import (
 )
 
 # JSONata binding powers. A subexpression is parenthesized when it binds
-# looser than the place it is put in.
+# looser than the place it is put in; an expression written in jsonata() may
+# bind as loosely as any.
+WRITTEN = 0
 CONDITIONAL = 20
 OR = 25
 AND = 30

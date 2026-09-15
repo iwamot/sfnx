@@ -6,7 +6,7 @@ Why the language in [language.md](language.md) looks the way it does, and the St
 
 1. **The product is the ASL.** sfnx is for people who find ASL tedious or hard to write. It stops at the definition: running, mocking and deploying belong to other tools.
 2. **The Python should run, but the contract is with the ASL.** The output is what someone writing ASL by hand would write for the intent of the source, not a reproduction of Python: `str(True)` is `"true"`, while a comprehension is a list for any number of results, as its author means. Known differences from CPython are listed in [Where results differ from Python](language.md#where-results-differ-from-python); others may remain.
-3. **No library of functions.** The names sfnx exports make states (`state_machine`, `task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes). ASL settings such as `Arguments`, `ItemReader` and retriers are passed through as the structures they are, with no builders.
+3. **No library of functions.** The names sfnx exports make states (`state_machine`, `task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes, and `jsonata` for an expression written out). ASL settings such as `Arguments`, `ItemReader` and retriers are passed through as the structures they are, with no builders.
 4. **As few control structures, operators and built-ins as the flows need.**
 
 A construct is accepted when ASL or JSONata has a counterpart for it and its meaning can be written as a JSONata expression. The meaning is mapped, not the operator: JSONata has conditionals and arithmetic, so `a or b` is `$boolean($a) ? $a : $b` and `a % b` is `$a - $b * $floor($a / $b)`.
@@ -34,6 +34,8 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 **States split only where ASL requires it.** `Assign` evaluates every expression with the values from before the state, so an assignment that reads a pending one needs a new state; a Task is one state per call; a Choice is one state. Everything else shares a Pass, a Task's result goes in its own `Assign`, and a machine that returns a Task's result ends on it.
 
 **A variable named after a JSONata function is renamed.** A Step Functions variable hides the JSONata function of its name, and a definition that calls the function then fails only when it runs. Someone writing ASL by hand would pick another name, so sfnx does the same instead of rejecting the Python name: a name the generated expressions call as a function gets `_val` (`$count_val`), numbered when the module already uses that name, and state names keep the Python name. Only those names change, so the rest of the definition reads as written.
+
+**`jsonata()` covers what Python does not.** The functions and methods with a Python spelling are those a workflow reaches for often; the rest of JSONata stays reachable through one name instead of a Python spelling each. The values go in by name and are bound at the start of a block, because a Python variable does not always keep its name in the definition (`count` is `$count_val`, a loop's item is `$items[$item_index]`), and the text of the expression stays as it is written.
 
 **Comments come from the source.** `Comment` is the only documentation ASL keeps, and a docstring or a comment above a line is where a Python author already writes it. Taking what is there needs no new syntax, and a comment that should stay out of the definition goes where it is not taken, after the code or above a blank line.
 
@@ -103,6 +105,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$sort` without a function orders an array of numbers or of strings and fails on booleans, arrays and mixed items; it orders strings by UTF-16 units. `$reverse` and `$sort` return an array for any number of items (measured).
 - `[a..b]` is an array for any number of items, empty when `b` is less than `a`. `$range(a, b, step)` includes `b` when a step reaches it and returns one number as itself and none as nothing (measured).
 - `$xs[[a..b]]` returns the item itself for a range of one position and undefined for an empty range, while `$filter` passes each item's position as the second parameter of its function (measured).
+- A block binds variables for the expressions after them: `($s := $states.input.code; $pad($s, -5, "0"))` works in Step Functions (measured).
 - `Comment` is accepted at the top level, on every state type, and on Choice rules, retriers, catchers, Parallel branches and Map processors (measured).
 - Variable names are Unicode identifiers (ID_Start, then ID_Continue), at most 80 characters; `$states` is reserved. Non-ASCII names work (measured).
 - A string is evaluated when it starts with `{%` and ends with `%}`, including strings inside objects and arrays; a half-open one fails validation.
