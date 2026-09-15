@@ -3,6 +3,7 @@
 import json
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from sfnx.jsontypes import (
@@ -121,23 +122,39 @@ def expression(
     )
 
 
-def spelling(name: str, identifiers: frozenset[str]) -> str:
-    """The Step Functions variable, or JSONata parameter, for a Python name. A
-    variable hides the JSONata function of its name from every later state, so
-    a name the generated expressions call as a function gets _val, numbered
-    when the module already uses that name."""
-    if name not in FUNCTIONS:
-        return name
-    spelled = f"{name}_val"
-    serial = 1
-    while spelled in identifiers:
-        serial += 1
-        spelled = f"{name}_val_{serial}"
-    return spelled
+def spellings(identifiers: frozenset[str]) -> dict[str, str]:
+    """The Step Functions variable, or JSONata parameter, for each Python name
+    that cannot be one as it is. Step Functions variable names do not start
+    with _, so the underscores go (a digit or nothing left starts with value);
+    a variable hides $states and the JSONata function of its name from every
+    later state, so those names get _val. A name the module already uses, or
+    one given to another name, is numbered."""
+    taken = set(identifiers)
+    found: dict[str, str] = {}
+    for name in sorted(identifiers):
+        base = name.lstrip("_")
+        if not base or base[0].isdigit():
+            base = "value" + (f"_{base}" if base else "")
+        if base in FUNCTIONS or base == "states":
+            base += "_val"
+        if base == name:
+            continue
+        spelled = base
+        serial = 1
+        while spelled in taken:
+            serial += 1
+            spelled = f"{base}_{serial}"
+        taken.add(spelled)
+        found[name] = spelled
+    return found
 
 
-def variable(name: str, identifiers: frozenset[str], type: Type | None = None) -> Expr:
-    return expression("$" + spelling(name, identifiers), frozenset({name}), type=type)
+def spelling(name: str, spelled: Mapping[str, str]) -> str:
+    return spelled.get(name, name)
+
+
+def variable(name: str, spelled: Mapping[str, str], type: Type | None = None) -> Expr:
+    return expression("$" + spelling(name, spelled), frozenset({name}), type=type)
 
 
 def literal(value: object) -> Expr:

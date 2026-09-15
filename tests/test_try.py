@@ -321,10 +321,6 @@ def test_a_loop_inside_try_is_tried_again_with_its_catches():
             "e is not assigned",
         ),
         (
-            f"try:\n    {NOTIFY}\nexcept Declined as _e:\n    pass",
-            "cannot start with _",
-        ),
-        (
             f"try:\n    {NOTIFY}\nexcept Lambda.Missing:\n    pass",
             "Lambda has no class Missing; define it inside class Lambda",
         ),

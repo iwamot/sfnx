@@ -6,27 +6,31 @@ import tokenize
 from dataclasses import dataclass
 
 from sfnx.diagnostics import CompileError
+from sfnx.expressions import spellings
 
 
 @dataclass(frozen=True)
 class Module:
     """names maps imported local names to what they import (sfnx.wait);
     classes and functions hold what the module defines at its top level,
-    identifiers every name it binds or reads, and comments the comment lines
-    right above a line of code, by that line."""
+    identifiers every name it binds or reads, spellings the Step Functions
+    variable of each name that cannot be one as it is, and comments the
+    comment lines right above a line of code, by that line."""
 
     names: dict[str, str]
     classes: dict[str, ast.ClassDef]
     functions: dict[str, ast.FunctionDef]
     identifiers: frozenset[str]
+    spellings: dict[str, str]
     comments: dict[int, str]
 
 
 def module(tree: ast.Module, source: str) -> Module:
     classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
     functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    names = identifiers(tree)
     return Module(
-        imports(tree), classes, functions, identifiers(tree), comments(source)
+        imports(tree), classes, functions, names, spellings(names), comments(source)
     )
 
 
