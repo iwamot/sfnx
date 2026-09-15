@@ -82,6 +82,11 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$merge` of an array of objects gives a later object's key precedence over an earlier one's, null values included. An array among the items is merged as its objects, as the array constructor merges it (measured).
 - `$parse` fails on text JSON does not allow (`NaN`, `Infinity`), on a number past the range of a double (`1e400`) and on a repeated key, but reads single-quoted strings (`{'a': 1}`; measured).
 - `$uuid()` returns a new lowercase version 4 UUID on every call (measured).
+- `$split` with a string separator splits at that exact text (`.` and `*` are not patterns), keeps empty parts, and splits into characters at `''` (measured).
+- `$trim` turns every run of whitespace into one space and removes it from both ends: `$split($trim('  a  b\t\nc '), ' ')` is `["a", "b", "c"]`, and `[""]` for blank text (measured).
+- `$replace` with a string pattern takes `$0` in the replacement literally, fails on an empty pattern and on a negative limit, and replaces nothing with a limit of 0 (measured).
+- `$join` of `[]` is `""`, of a string is that string, and of an array holding a non-string fails (measured).
+- `$lowercase` and `$uppercase` changed `İ`, `ẞ`, `Σ`, `ß`, `ǆ` and `ﬁ` as Python's `lower()` and `upper()` do (measured).
 - `$substring` counts a negative start in UTF-16 units in Step Functions but in code points in jsonata-python (`$substring('héllo😀', -1, 1)`); `$length` counts code points in both (measured). Only positions counted from the end past characters outside the Basic Multilingual Plane differ.
 - Variable names are Unicode identifiers (ID_Start, then ID_Continue), at most 80 characters; `$states` is reserved. Non-ASCII names work (measured).
 - A string is evaluated when it starts with `{%` and ends with `%}`, including strings inside objects and arrays; a half-open one fails validation.

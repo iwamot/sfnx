@@ -68,6 +68,10 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `if x:` | `$boolean($x)`, or `$count($x) > 0` for a list (tested with `$type` when `x` may be a list) |
 | `float(x)`, `int(x)`, `str(x)`, `bool(x)` | `$number($x)`, `$floor($number($x))`, `$string($x)`, `$boolean($x)` |
 | `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
+| `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$split($trim($s), ' ')` |
+| `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
+| `s.lower()`, `s.upper()` | `$lowercase($s)`, `$uppercase($s)` |
+| `sep.join(items)` | `$join($items, $sep)` |
 | `json.loads(s)` | `$parse($s)` |
 | `str(uuid.uuid4())`, `f"{uuid.uuid4()}"` | `$uuid()` |
 | `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
@@ -77,6 +81,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `[a, xs, v]` in an expression | `[$a, [$xs], $type($v) = 'array' ? [[$v]] : $v]`: an item known to be a list, or one that may be, stays one item |
 
 - A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
+- The string methods need no type: of the JSON types only strings have them. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
 - `json.loads` and `uuid.uuid4` are recognized through the module's imports, such as `import json` or `from uuid import uuid4`.
 - f-strings take no conversions (`!r`, `{x=}`) and no format specs.
 - A string literal that starts with `{%` or ends with `%}` is written as a JSONata string, so Step Functions does not read it as an expression.
@@ -192,7 +197,7 @@ except Exception:
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, slices, method calls, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `isinstance` and `range` in a `for`, module functions other than `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
+- **Expressions**: tuples, sets, slices, methods other than `split`, `replace`, `lower`, `upper` and `join` of strings, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `isinstance` and `range` in a `for`, module functions other than `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -207,6 +212,11 @@ Some values come out differently from CPython. These are the differences known s
 | a number from the input, a variable or `json.loads(s)` | an integer past 2^53, such as `10000000000000000000000001` | the nearest double (`1.0E25`) | the exact integer |
 | `json.loads(s)` | `"NaN"`, `"Infinity"`, `"1e400"`, `'{"a": 1, "a": 2}'` | `States.QueryEvaluationError` | `nan`, `inf`, `inf`, `{"a": 2}` |
 | `json.loads(s)` | `"{'a': 1}"` | `{"a": 1}` | `JSONDecodeError` |
+| `s.split(sep)` | `sep` is `""` | the characters of `s` | `ValueError` |
+| `s.split()` | `s` is empty or only whitespace | `[""]` | `[]` |
+| `s.replace(old, new)` | `old` is `""` | `States.QueryEvaluationError` | `new` between every character and at both ends |
+| `s.replace(old, new, count)` | a negative `count` | `States.QueryEvaluationError` | every occurrence replaced |
+| `sep.join(x)` with `x` of unknown type | a string, such as `"ab"` | `x` itself (`"ab"`) | the characters joined (`"a,b"` for `","`) |
 | `{**x}`, `{**x, "k": v}` with `x` of unknown type | `[{"a": 1}, {"b": 2}]` | the list itself, `{"a": 1, "b": 2, "k": ...}` | `TypeError` |
 | `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
 | `int(x)` | `-1.5` | `-2` (`$floor`) | `-1` |

@@ -144,6 +144,15 @@ COMPOSED = {"parallel": "Parallel", "inline_map": "Map", "distributed_map": "Map
 # module is not imported.
 MODULE_FUNCTIONS = frozenset({"json.loads", "uuid.uuid4"})
 
+# The methods of str that compile to a JSONata function, and how each is written.
+STRING_METHODS = {
+    "split": "s.split(sep) or s.split()",
+    "replace": "s.replace(old, new) or s.replace(old, new, count)",
+    "lower": "s.lower()",
+    "upper": "s.upper()",
+    "join": "sep.join(items)",
+}
+
 
 class Translator:
     """Translate expressions against the variables bound where they appear.
@@ -852,10 +861,18 @@ class Translator:
             raise CompileError(
                 f"{module} is not imported; write import {module}", node.func
             )
+        if (
+            not target
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in STRING_METHODS
+        ):
+            return self.string_method(node, node.func)
         if not isinstance(node.func, ast.Name):
             raise CompileError(
-                "methods are not supported; write the operation with operators "
-                "or supported functions",
+                f"{ast.unparse(node.func)}() is not supported; write the operation "
+                "with operators or supported functions, or compute it in a Lambda "
+                "task (the methods sfnx compiles are split, replace, lower, upper "
+                "and join of strings)",
                 node.func,
             )
         self.check_import(node.func)
@@ -920,17 +937,69 @@ class Translator:
     def json_loads(self, node: ast.Call) -> Expr:
         if node.keywords or len(node.args) != 1:
             raise CompileError("json.loads() takes one string: json.loads(s)", node)
-        text_node = node.args[0]
-        value = self.expr(text_node)
+        value = self.string_operand(node.args[0], "json.loads() reads a string")
+        return call("parse", [value], None)
+
+    def string_method(self, node: ast.Call, method: ast.Attribute) -> Expr:
+        """A method of str as the JSONata function for it. Of the JSON types
+        only strings have these methods, so a receiver of unknown type needs no
+        annotation."""
+        name = method.attr
+        usage = STRING_METHODS[name]
+        receiver = self.string_operand(
+            method.value, f"{name}() is a string method: {usage}"
+        )
+        if node.keywords:
+            raise CompileError(
+                f"{name}() takes no keyword arguments here: {usage}", node
+            )
+        arguments = node.args
+        text = of(STRING)
+        if name in {"lower", "upper"} and not arguments:
+            return call(f"{name}case", [receiver], text)
+        if name == "split" and not arguments:
+            # At runs of whitespace: $trim makes each run one space and removes
+            # the runs at both ends.
+            trimmed = call("trim", [receiver], text)
+            return call("split", [trimmed, literal(" ")], of(ARRAY, items=text))
+        if name == "split" and len(arguments) == 1:
+            separator = self.string_operand(
+                arguments[0], f"{name}() splits at a string"
+            )
+            return call("split", [receiver, separator], of(ARRAY, items=text))
+        if name == "split" and len(arguments) == 2:
+            raise CompileError(
+                "split() takes no maximum; split it all and read the parts you need: "
+                "s.split(sep)[0]",
+                arguments[1],
+            )
+        if name == "replace" and len(arguments) in {2, 3}:
+            rule = f"{name}() replaces strings"
+            values = [self.string_operand(a, rule) for a in arguments[:2]]
+            if len(arguments) == 3:
+                values.append(self.numeric(arguments[2], "the count of replace()"))
+            return call("replace", [receiver, *values], text)
+        if name == "join" and len(arguments) == 1:
+            items = self.expr(arguments[0])
+            if items.type is not None and ARRAY not in items.type.kinds:
+                raise CompileError(
+                    f"{ast.unparse(arguments[0])} is a {items.type.describe()}; "
+                    "join() takes a list of strings",
+                    arguments[0],
+                )
+            return call("join", [items, receiver], text)
+        raise CompileError(f"{name}() is written {usage}", node)
+
+    def string_operand(self, node: ast.expr, rule: str) -> Expr:
+        """A value that must be a string when its type is known."""
+        value = self.expr(node)
         if value.type is not None and value.type.kinds != {STRING}:
             if value.type.kind is None:
-                raise CompileError(several(text_node, value.type), text_node)
+                raise CompileError(several(node, value.type), node)
             raise CompileError(
-                f"{ast.unparse(text_node)} is a {value.type.kind}; "
-                "json.loads() reads a string",
-                text_node,
+                f"{ast.unparse(node)} is a {value.type.kind}; {rule}", node
             )
-        return call("parse", [value], None)
+        return value
 
     def check_import(self, node: ast.Name) -> None:
         """A name sfnx exports, used without importing it and not defined here."""
