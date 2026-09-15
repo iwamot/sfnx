@@ -286,6 +286,7 @@ STRING_METHODS = {
     "endswith": "s.endswith(suffix)",
     "ljust": "s.ljust(width) or s.ljust(width, fill)",
     "rjust": "s.rjust(width) or s.rjust(width, fill)",
+    "strip": "s.strip()",
 }
 
 # The methods of dict that compile to a JSONata function, and how each is written.
@@ -1423,6 +1424,8 @@ class Translator:
         text = of(STRING)
         if name in {"lower", "upper"} and not arguments:
             return call(f"{name}case", [receiver], text)
+        if name == "strip" and not arguments:
+            return call("trim", [receiver], text)
         if name == "split" and not arguments:
             # At runs of whitespace: $trim makes each run one space and removes
             # the runs at both ends.
