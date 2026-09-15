@@ -175,7 +175,10 @@ The workflow module imports `sfnx`, so it is a dependency of the project; `uv ru
 - **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
 - **`wait(10)`** and **`wait(until=timestamp)`** are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
 - **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). `except Exception` is `States.ALL`.
-- **Expressions** are Python operators, `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `json.loads`, `str(uuid.uuid4())`, the string methods `split`, `replace`, `lower`, `upper` and `join`, the dict methods `keys` and `values`, slices, dicts with `**`, conditional expressions, list comprehensions and f-strings.
+- **Expressions** are Python operators, conditional expressions, list comprehensions, f-strings, slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
+  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max` and `min` (`sum(xs) / len(xs)` is `$average`)
+  - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `json.loads` and `str(uuid.uuid4())`
+  - the string methods `split`, `replace`, `lower`, `upper` and `join`, and the dict methods `keys` and `values`
 - **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. Literals, operator results and AWS API responses carry their types already.
 - **Anything else** (`with`, other methods, `lambda`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
 
@@ -193,7 +196,7 @@ $ sfnx compile app.py
 app.py:6:63: getItem has no argument Tablename; did you mean TableName?
 
 $ sfnx compile app.py
-app.py:6:12: calling abs() is not supported; write it with operators, or compute it in a Lambda task
+app.py:6:12: calling any() is not supported; write it with operators, or compute it in a Lambda task
 
 $ sfnx compile app.py
 app.py:6:9: loop over one variable: for item in items (unpack inside the loop)

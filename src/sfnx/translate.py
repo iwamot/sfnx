@@ -149,9 +149,26 @@ Compose = Callable[[ast.Call, str], tuple[dict[str, object], Type | None]]
 
 COMPOSED = {"parallel": "Parallel", "inline_map": "Map", "distributed_map": "Map"}
 
+# How the built-in functions for numbers are written.
+NUMBER_FUNCTIONS = {
+    "abs": "abs(x)",
+    "round": "round(x) or round(x, digits)",
+    "sum": "sum(xs)",
+    "max": "max(xs) or max(a, b, ...)",
+    "min": "min(xs) or min(a, b, ...)",
+}
+
+# Functions of math and random and the JSONata function of each.
+MATH_FUNCTIONS = {
+    "math.floor": "floor",
+    "math.ceil": "ceil",
+    "math.sqrt": "sqrt",
+    "random.random": "random",
+}
+
 # The standard library functions sfnx compiles, named in the message when their
 # module is not imported.
-MODULE_FUNCTIONS = frozenset({"json.loads", "uuid.uuid4"})
+MODULE_FUNCTIONS = frozenset({"json.loads", "uuid.uuid4", *MATH_FUNCTIONS})
 
 # The methods of str that compile to a JSONata function, and how each is written.
 STRING_METHODS = {
@@ -569,6 +586,10 @@ class Translator:
                 "JSONata has no bitwise or matrix operators; compute it in a Lambda task",
                 node,
             )
+        if symbol == "/" and self.is_average(node):
+            assert isinstance(node.left, ast.Call)
+            numbers = self.numbers(node.left.args[0], "sum")
+            return call("average", [numbers], of(NUMBER))
         left = self.numeric(node.left, symbol)
         right = self.numeric(node.right, symbol)
         number = of(NUMBER)
@@ -942,6 +963,8 @@ class Translator:
             )
         if target == "json.loads":
             return self.json_loads(node)
+        if target in MATH_FUNCTIONS:
+            return self.math_function(node, target)
         if target == "uuid.uuid4":
             if node.args or node.keywords:
                 raise CompileError(
@@ -1002,6 +1025,23 @@ class Translator:
             return self.length(node.args[0], argument)
         if name == "isinstance":
             return self.isinstance(node)
+        if name == "abs" and len(node.args) == 1:
+            return call("abs", [self.numeric(node.args[0], "abs()")], of(NUMBER))
+        if name == "round" and len(node.args) in {1, 2}:
+            numbers = [self.numeric(a, "round()") for a in node.args]
+            return call("round", numbers, of(NUMBER))
+        if name == "sum" and len(node.args) == 1:
+            return call("sum", [self.numbers(node.args[0], name)], of(NUMBER))
+        if name in {"max", "min"} and len(node.args) == 1:
+            return call(name, [self.numbers(node.args[0], name)], of(NUMBER))
+        if name in {"max", "min"} and len(node.args) > 1:
+            values = [self.numeric(a, f"{name}()") for a in node.args]
+            listed = expression(
+                "[" + ", ".join(v.code for v in values) + "]", uses(values)
+            )
+            return call(name, [listed], of(NUMBER))
+        if name in {"abs", "round", "sum", "max", "min"}:
+            raise CompileError(f"{name}() is written {NUMBER_FUNCTIONS[name]}", node)
         if name == "range":
             raise CompileError(
                 "range() is only for for loops: for i in range(10)", node
@@ -1040,6 +1080,47 @@ class Translator:
             and qualified(node.func, self.names) == "uuid.uuid4"
             and not node.args
             and not node.keywords
+        )
+
+    def math_function(self, node: ast.Call, target: str) -> Expr:
+        function = MATH_FUNCTIONS[target]
+        if function == "random":
+            if node.args or node.keywords:
+                raise CompileError("random.random() takes no arguments", node)
+            return call("random", [], of(NUMBER))
+        if node.keywords or len(node.args) != 1:
+            raise CompileError(f"{target}() takes one number: {target}(x)", node)
+        value = self.numeric(node.args[0], f"{target}()")
+        return call(function, [value], of(NUMBER))
+
+    def numbers(self, node: ast.expr, name: str) -> Expr:
+        """The list sum(), max() or min() takes: JSONata's functions take numbers
+        only, so a list known to hold anything else is rejected."""
+        value = self.operand(node, ARRAY, f"{name}() takes a list of numbers")
+        items = value.type.items if value.type else None
+        if items is not None and items.kinds != {NUMBER}:
+            raise CompileError(
+                f"the items of {ast.unparse(node)} are {items.describe()}; {name}() "
+                f"takes numbers here, as JSONata's ${name} does",
+                node,
+            )
+        return value
+
+    def is_average(self, node: ast.BinOp) -> bool:
+        """sum(xs) / len(xs) of one list, which is $average."""
+        left, right = node.left, node.right
+        return (
+            isinstance(left, ast.Call)
+            and isinstance(right, ast.Call)
+            and isinstance(left.func, ast.Name)
+            and isinstance(right.func, ast.Name)
+            and left.func.id == "sum"
+            and right.func.id == "len"
+            and len(left.args) == 1
+            and len(right.args) == 1
+            and not left.keywords
+            and not right.keywords
+            and ast.dump(left.args[0]) == ast.dump(right.args[0])
         )
 
     def json_loads(self, node: ast.Call) -> Expr:

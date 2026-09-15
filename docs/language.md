@@ -77,6 +77,11 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `list(d)`, `d.keys()` | `[$keys($d)]` |
 | `d.values()` | `[$each($d, function($v) { $v })]`, or `$append([], $each(...)[])` when the values may be lists |
 | `list(s)` | `$split($s, '')` |
+| `abs(x)`, `round(x)`, `round(x, 2)` | `$abs($x)`, `$round($x)`, `$round($x, 2)` |
+| `math.floor(x)`, `math.ceil(x)`, `math.sqrt(x)` | `$floor($x)`, `$ceil($x)`, `$sqrt($x)` |
+| `sum(xs)`, `max(xs)`, `min(a, b)` | `$sum($xs)`, `$max($xs)`, `$min([$a, $b])` |
+| `sum(xs) / len(xs)` | `$average($xs)` |
+| `random.random()` | `$random()` |
 | `json.loads(s)` | `$parse($s)` |
 | `str(uuid.uuid4())`, `f"{uuid.uuid4()}"` | `$uuid()` |
 | `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
@@ -90,7 +95,8 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 - A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
 - A slice bound written with a minus sign (`xs[-2:]`, `xs[-n:]`) counts back from the end; any other bound is a position from the start. A slice takes no step, and one of a list holding lists keeps them as items, as a comprehension does.
 - The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper` and `join`, and only dicts `keys` and `values`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
-- `json.loads` and `uuid.uuid4` are recognized through the module's imports, such as `import json` or `from uuid import uuid4`.
+- `sum`, `max` and `min` take numbers, as their JSONata functions do, so a list known to hold anything else is rejected, as are `sum(xs, start)` and keyword arguments such as `key=`. `sum(xs) / len(xs)` is `$average` when both read the same list.
+- Functions of `math`, `random`, `json` and `uuid` are recognized through the module's imports, such as `import math` or `from uuid import uuid4`.
 - f-strings take no conversions (`!r`, `{x=}`) and no format specs.
 - A string literal that starts with `{%` or ends with `%}` is written as a JSONata string, so Step Functions does not read it as an expression.
 
@@ -205,7 +211,7 @@ except Exception:
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, a slice with a step, methods other than `split`, `replace`, `lower`, `upper` and `join` of strings and `keys` and `values` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance` and `range` in a `for`, module functions other than `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
+- **Expressions**: tuples, sets, a slice with a step, methods other than `split`, `replace`, `lower`, `upper` and `join` of strings and `keys` and `values` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min` and `range` in a `for`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random` and `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -227,6 +233,8 @@ Some values come out differently from CPython. These are the differences known s
 | `sep.join(x)` with `x` of unknown type | a string, such as `"ab"` | `x` itself (`"ab"`) | the characters joined (`"a,b"` for `","`) |
 | `{**x}`, `{**x, "k": v}` with `x` of unknown type | `[{"a": 1}, {"b": 2}]` | the list itself, `{"a": 1, "b": 2, "k": ...}` | `TypeError` |
 | `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
+| `round(x, digits)` | `2.675` to 2 digits | `2.68` | `2.67` |
+| `max(xs)`, `min(xs)` with items of unknown type | strings | `States.QueryEvaluationError` | the greatest or least string |
 | `int(x)` | `-1.5` | `-2` (`$floor`) | `-1` |
 | `int(x)` | `"1.5"` | `1` | `ValueError` |
 | `float(x)` | `"0x10"` | `16` | `ValueError` |
