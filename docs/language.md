@@ -86,6 +86,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$split($trim($s), ' ')` |
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
 | `s.lower()`, `s.upper()` | `$lowercase($s)`, `$uppercase($s)` |
+| `s.strip()` | `$trim($s)` |
 | `sep.join(items)` | `$join($items, $sep)` |
 | `list(d)`, `d.keys()` | `[$keys($d)]` |
 | `d.values()` | `[$each($d, function($v) { $v })]`, or `$append([], $each(...)[])` when the values may be lists |
@@ -119,7 +120,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 
 - A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
 - A slice bound written with a minus sign (`xs[-2:]`, `xs[-n:]`) counts back from the end; any other bound is a position from the start. A slice takes no step other than `[::-1]`, and one of a list holding lists keeps them as items, as a comprehension does.
-- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust` and `rjust`, and only dicts `keys`, `values` and `get`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
+- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and only dicts `keys`, `values` and `get`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
 - `sum`, `max` and `min` take numbers, as their JSONata functions do, so a list known to hold anything else is rejected, as are `sum(xs, start)` and keyword arguments such as `key=`. `sum(xs) / len(xs)` is `$average` when both read the same list.
 - `sorted` orders numbers or strings, as `$sort` does without a function, so a list known to hold anything else is rejected, and it takes `reverse=` but no `key=`. `range()` outside a `for` is a list; a step, when given, is a nonzero whole number written in the source.
 - `set()`, `zip()` and `itertools.batched()` make lists in `list()`, `sorted()` or `reversed()`, and a digest is `hashlib.sha256(s.encode()).hexdigest()`, with `md5`, `sha1`, `sha384` or `sha512` in place of `sha256` for the others. `itertools.batched` needs Python 3.12 where the module is run.
@@ -251,7 +252,7 @@ padded: str = jsonata("$pad($s, -$n, '0')", s=code, n=width)
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust` and `rjust` of strings and `keys`, `values` and `get` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, `set` and `zip` outside `list()`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()` and the `hashlib` digests, and `uuid.uuid4()` or `datetime.now()` outside `str()` or an f-string.
+- **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip` of strings and `keys`, `values` and `get` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, `set` and `zip` outside `list()`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()` and the `hashlib` digests, and `uuid.uuid4()` or `datetime.now()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -268,6 +269,7 @@ Some values come out differently from CPython. These are the differences known s
 | `json.loads(s)` | `"{'a': 1}"` | `{"a": 1}` | `JSONDecodeError` |
 | `s.split(sep)` | `sep` is `""` | the characters of `s` | `ValueError` |
 | `s.split()` | `s` is empty or only whitespace | `[""]` | `[]` |
+| `s.strip()` | whitespace inside the text, such as `"a  b"` | each run made one space (`"a b"`) | kept (`"a  b"`) |
 | `s.replace(old, new)` | `old` is `""` | `States.QueryEvaluationError` | `new` between every character and at both ends |
 | `s.replace(old, new, count)` | a negative `count` | `States.QueryEvaluationError` | every occurrence replaced |
 | `sep.join(x)` with `x` of unknown type | a string, such as `"ab"` | `x` itself (`"ab"`) | the characters joined (`"a,b"` for `","`) |

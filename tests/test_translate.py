@@ -328,7 +328,7 @@ def test_evaluation(body, execution_input, expected):
         ('return any(input["a"])', "calling any() is not supported"),
         (
             'return input["a"].append("k")',
-            "input['a'].append() is not supported; write the operation with operators, supported functions or jsonata(), or compute it in a Lambda task (the methods sfnx compiles are split, replace, lower, upper, join, startswith, endswith, ljust and rjust of strings and keys, values and get of dicts)",
+            "input['a'].append() is not supported; write the operation with operators, supported functions or jsonata(), or compute it in a Lambda task (the methods sfnx compiles are split, replace, lower, upper, join, startswith, endswith, ljust, rjust and strip of strings and keys, values and get of dicts)",
         ),
         ('return isinstance(input["a"])', "isinstance takes a value and a class"),
         ('return isinstance(input["a"], list[str])', "isinstance takes str, float"),
@@ -508,6 +508,7 @@ STRINGS = 's: str = input["s"]\nparts: list = input["parts"]\n'
         ('return s.replace(".", "-")', "$replace($s, '.', '-')"),
         ('return s.replace("a", "b", 2)', "$replace($s, 'a', 'b', 2)"),
         ("return s.lower()", "$lowercase($s)"),
+        ("return s.strip()", "$trim($s)"),
         ('return "id-" + s.upper()', "'id-' & $uppercase($s)"),
         ('return input["s"].upper()', f"$uppercase({INPUT}.s)"),
         ('return ", ".join(parts)', "$join($parts, ', ')"),
@@ -520,7 +521,7 @@ def test_string_methods(body, code):
 def test_string_methods_evaluate():
     body = (
         'return [s.split("/"), s.split(), s.replace("/", "-", 1), s.lower(), '
-        '"+".join(parts), [p.upper() for p in s.split()]]'
+        '"+".join(parts), [p.upper() for p in s.split()], s.strip()]'
     )
     execution_input = {"s": " a/B/c\td ", "parts": ["x", "y"]}
     assert asl.run(definition(STRINGS + body), execution_input) == [
@@ -530,6 +531,7 @@ def test_string_methods_evaluate():
         " a/b/c\td ",
         "x+y",
         ["A/B/C", "D"],
+        "a/B/c d",
     ]
 
 
@@ -543,6 +545,7 @@ def test_string_methods_evaluate():
         ('return s.replace("a")', "replace() is written s.replace(old, new)"),
         ('return s.replace("a", "b", "c")', "the count of replace() takes numbers"),
         ("return s.lower(1)", "lower() is written s.lower()"),
+        ('return s.strip("x")', "strip() is written s.strip()"),
         ("return s.join(s)", "s is a string; join() takes a list of strings"),
         (
             'v: str | None = input["v"]\nreturn v.upper()',
