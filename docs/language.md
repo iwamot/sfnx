@@ -39,7 +39,7 @@ Most operators have one JSONata spelling. A few depend on the type of their oper
 | `x in c` | `in` for lists, `$exists` for dicts, `$contains` for strings |
 | `c[k]` with a variable key | position or `$lookup` |
 | `x[a:b]` | `$substring` for strings, `$filter` by position for lists |
-| `list(x)` | `$keys` for dicts, `$split` into characters for strings, the list itself |
+| `list(x)`, `sorted(x)`, `reversed(x)` | `$keys` for dicts, `$split` into characters for strings, the list itself |
 | `for x in c` and comprehensions | elements or keys |
 
 One side is enough (`input["name"] + "!"` is a string join), a literal string key needs no type (`"coupon" in input`), and the key's own type is enough for `c[k]`.
@@ -82,6 +82,10 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `sum(xs)`, `max(xs)`, `min(a, b)` | `$sum($xs)`, `$max($xs)`, `$min([$a, $b])` |
 | `sum(xs) / len(xs)` | `$average($xs)` |
 | `random.random()` | `$random()` |
+| `sorted(xs)`, `sorted(xs, reverse=True)` | `$sort($xs)`, `$reverse($sort($xs))` |
+| `list(reversed(xs))`, `xs[::-1]`, `s[::-1]` | `$reverse($xs)`, `$reverse($xs)`, `$join($reverse($split($s, '')), '')` |
+| `list(range(n))`, `list(range(0, n, 3))` | `[0..$n - 1]`, `[$range(0, $n - 1, 3)]` |
+| `s.startswith("arn:")`, `s.endswith(suffix)` | `$substring($s, 0, 4) = 'arn:'`, `$substring($s, $length($s) - $length($suffix), $length($suffix)) = $suffix` |
 | `json.loads(s)` | `$parse($s)` |
 | `str(uuid.uuid4())`, `f"{uuid.uuid4()}"` | `$uuid()` |
 | `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
@@ -93,9 +97,10 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `[a, xs, v]` in an expression | `[$a, [$xs], $type($v) = 'array' ? [[$v]] : $v]`: an item known to be a list, or one that may be, stays one item |
 
 - A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
-- A slice bound written with a minus sign (`xs[-2:]`, `xs[-n:]`) counts back from the end; any other bound is a position from the start. A slice takes no step, and one of a list holding lists keeps them as items, as a comprehension does.
-- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper` and `join`, and only dicts `keys` and `values`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
+- A slice bound written with a minus sign (`xs[-2:]`, `xs[-n:]`) counts back from the end; any other bound is a position from the start. A slice takes no step other than `[::-1]`, and one of a list holding lists keeps them as items, as a comprehension does.
+- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper`, `join`, `startswith` and `endswith`, and only dicts `keys` and `values`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
 - `sum`, `max` and `min` take numbers, as their JSONata functions do, so a list known to hold anything else is rejected, as are `sum(xs, start)` and keyword arguments such as `key=`. `sum(xs) / len(xs)` is `$average` when both read the same list.
+- `sorted` orders numbers or strings, as `$sort` does without a function, so a list known to hold anything else is rejected, and it takes `reverse=` but no `key=`. `range()` outside a `for` is a list; a step, when given, is a nonzero whole number written in the source.
 - Functions of `math`, `random`, `json` and `uuid` are recognized through the module's imports, such as `import math` or `from uuid import uuid4`.
 - f-strings take no conversions (`!r`, `{x=}`) and no format specs.
 - A string literal that starts with `{%` or ends with `%}` is written as a JSONata string, so Step Functions does not read it as an expression.
@@ -211,7 +216,7 @@ except Exception:
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, a slice with a step, methods other than `split`, `replace`, `lower`, `upper` and `join` of strings and `keys` and `values` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min` and `range` in a `for`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random` and `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
+- **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith` and `endswith` of strings and `keys` and `values` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random` and `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -245,7 +250,9 @@ Some values come out differently from CPython. These are the differences known s
 | `"k" in x` with `x` of unknown type | `"key"` or `["k"]` | `false` (`$exists($x.k)`, a key lookup) | `True` |
 | `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
 | `list(s)` | a string with characters outside the Basic Multilingual Plane | two items for each such character, neither of them the character | one item for each character |
-| `s[a:b]` | a string with characters outside the Basic Multilingual Plane | may hold other characters or half of one | the characters between the positions |
+| `s[a:b]`, `s.startswith(p)`, `s.endswith(p)` | a string with characters outside the Basic Multilingual Plane | may hold other characters or half of one, and compare accordingly | the characters between the positions |
+| `sorted(xs)` | strings with characters outside the Basic Multilingual Plane | ordered by UTF-16 units (`"😀"` before `"ﬁ"`) | ordered by code points |
+| `sorted(xs)` with items of unknown type | booleans or lists | `States.QueryEvaluationError` | a sorted list |
 | `s[a:b]` | `a` written with a minus sign and past the start, such as `"hello"[-10:-8]` | counted from the start of `s` (`"he"`) | `""` |
 | `xs[a:b]`, or the end of `s[a:b]` | a negative number read from a variable with no minus sign written, such as `i` = -2 | not counted from the end: `xs[i:]` is the whole list, `s[:i]` is `""` | counted from the end |
 | `distributed_map(f, ...)` | `f` raises | within `tolerated_failure_count=` or `tolerated_failure_percentage=`, `{"Status": "FAILED", "Error": ..., "Cause": ...}` in the item's place in the list; otherwise `States.ExceedToleratedFailureThreshold`, which an `except` of the raised class does not catch | the exception `f` raised |

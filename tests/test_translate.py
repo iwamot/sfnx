@@ -738,3 +738,100 @@ def test_math_without_import():
     with pytest.raises(CompileError) as raised:
         compile_source(source("return math.ceil(1.5)"))
     assert raised.value.message == "math is not imported; write import math"
+
+
+LISTS = (
+    's: str = input["s"]\nxs: list[float] = input["xs"]\nd: dict = input["d"]\n'
+    'n: float = input["n"]\np: str = input["p"]\n'
+)
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ("return sorted(xs)", "$sort($xs)"),
+        ("return sorted(xs, reverse=True)", "$reverse($sort($xs))"),
+        ("return sorted(d)", "$sort([$keys($d)])"),
+        ("return list(reversed(xs))", "$reverse($xs)"),
+        ("return xs[::-1]", "$reverse($xs)"),
+        ("return s[::-1]", "$join($reverse($split($s, '')), '')"),
+        ("return list(range(n))", "[0..$n - 1]"),
+        ("return list(range(2, 5))", "[2..4]"),
+        ("return list(range(0, n, 3))", "[$range(0, $n - 1, 3)]"),
+        ("return list(range(n, 0, -2))", "[$range($n, 1, -2)]"),
+        (
+            "return [i * 2 for i in range(n)]",
+            "[$map([0..$n - 1], function($i) { $i * 2 })]",
+        ),
+        ('return s.startswith("arn:")', "$substring($s, 0, 4) = 'arn:'"),
+        ('return s.endswith(".json")', "$substring($s, -5, 5) = '.json'"),
+        ("return s.startswith(p)", "$substring($s, 0, $length($p)) = $p"),
+        (
+            "return s.endswith(p)",
+            "$substring($s, $length($s) - $length($p), $length($p)) = $p",
+        ),
+    ],
+)
+def test_list_and_string_functions(body, code):
+    assert output(LISTS + body) == "{% " + code + " %}"
+
+
+def test_list_and_string_functions_evaluate():
+    body = LISTS + (
+        "return [sorted(xs), sorted(d, reverse=True), list(reversed(xs)), s[::-1], "
+        "list(range(n)), list(range(0)), list(range(0, 10, 3)), list(range(5, 0, -2)), "
+        "list(range(3, 4, 5)), s.startswith(p), s.endswith(p), s.endswith(''), "
+        '"lo".endswith("hello")]'
+    )
+    execution_input = {
+        "s": "hello",
+        "xs": [3, 1, 2],
+        "d": {"b": 1, "a": 2},
+        "n": 3,
+        "p": "llo",
+    }
+    assert asl.run(definition(body), execution_input) == [
+        [1, 2, 3],
+        ["b", "a"],
+        [2, 1, 3],
+        "olleh",
+        [0, 1, 2],
+        [],
+        [0, 3, 6, 9],
+        [5, 3, 1],
+        [3],
+        False,
+        True,
+        True,
+        False,
+    ]
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ("return sorted(xs, key=abs)", "sorted() takes reverse=True or reverse=False"),
+        (
+            'ls: list[list] = input["ls"]\nreturn sorted(ls)',
+            "the items of ls are array; sorted() orders numbers or strings",
+        ),
+        ("return sorted()", "sorted() takes one argument"),
+        (
+            "return sorted(n)",
+            "n is a number; sorted() takes a dict, a list or a string",
+        ),
+        ("return reversed(n)", "n is a number; reversed() takes a dict"),
+        ("return reversed(xs, s)", "reversed() takes one argument"),
+        ("return d[::-1]", "d is a object; slices take lists and strings"),
+        ("return xs[::2]", "a slice takes no step other than xs[::-1]"),
+        (
+            "return s.startswith(1)",
+            "1 is a number; startswith() compares with a string",
+        ),
+        ('return s.endswith("a", 1)', "endswith() is written s.endswith(suffix)"),
+    ],
+)
+def test_list_and_string_function_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        compile_source(source(LISTS + body))
+    assert message in raised.value.message

@@ -397,7 +397,7 @@ def test_a_failed_attempt_leaves_no_task_behind():
             'xs: list = input["xs"]\nfor x in enumerate(xs):\n    pass',
             "enumerate() is not supported; count with range",
         ),
-        ("return range(3)", "range() is only for for loops"),
+        ("return range(1, 2, 0)", "the step of range is a nonzero whole number"),
         ("for i in range():\n    pass", "range takes a stop"),
         ("for i in range(1, 2, 3, 4):\n    pass", "range takes a stop"),
         (

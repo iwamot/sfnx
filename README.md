@@ -176,9 +176,9 @@ The workflow module imports `sfnx`, so it is a dependency of the project; `uv ru
 - **`wait(10)`** and **`wait(until=timestamp)`** are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
 - **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). `except Exception` is `States.ALL`.
 - **Expressions** are Python operators, conditional expressions, list comprehensions, f-strings, slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
-  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max` and `min` (`sum(xs) / len(xs)` is `$average`)
+  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range` (`sum(xs) / len(xs)` is `$average`)
   - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `json.loads` and `str(uuid.uuid4())`
-  - the string methods `split`, `replace`, `lower`, `upper` and `join`, and the dict methods `keys` and `values`
+  - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith` and `endswith`, and the dict methods `keys` and `values`
 - **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. Literals, operator results and AWS API responses carry their types already.
 - **Anything else** (`with`, other methods, `lambda`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
 

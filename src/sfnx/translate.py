@@ -25,6 +25,7 @@ from sfnx.expressions import (
     negate,
     obj,
     spelling,
+    string,
     uses,
 )
 from sfnx.integrations import HTTP_METHODS, Integration, ResourceError, integration
@@ -177,6 +178,8 @@ STRING_METHODS = {
     "lower": "s.lower()",
     "upper": "s.upper()",
     "join": "sep.join(items)",
+    "startswith": "s.startswith(prefix)",
+    "endswith": "s.endswith(suffix)",
 }
 
 # The methods of dict that compile to a JSONata function, and how each is written.
@@ -855,16 +858,22 @@ class Translator:
     def slice(self, node: ast.expr, value: Expr, key: ast.Slice) -> Expr:
         """xs[a:b] and s[a:b]. A bound written with a minus sign counts back
         from the end; any other bound is a position from the start."""
-        if key.step is not None:
-            raise CompileError(
-                "a slice takes no step; loop with range() over the positions you "
-                "need: for i in range(0, len(xs), 2): x = xs[i]",
-                key.step,
-            )
         kind = self.known(node, value, "list", "a slice depends on the type")
         if kind not in {ARRAY, STRING}:
             raise CompileError(
                 f"{ast.unparse(node)} is a {kind}; slices take lists and strings", node
+            )
+        if key.step is not None:
+            if (
+                key.lower is None
+                and key.upper is None
+                and ast.unparse(key.step) == "-1"
+            ):
+                return reversed_value(value, kind)
+            raise CompileError(
+                "a slice takes no step other than xs[::-1]; loop with range() over "
+                "the positions you need: for i in range(0, len(xs), 2): x = xs[i]",
+                key.step,
             )
         lower = self.bound(key.lower)
         upper = self.bound(key.upper)
@@ -1005,6 +1014,8 @@ class Translator:
             )
         self.check_import(node.func)
         name = node.func.id
+        if name == "sorted":
+            return self.ordered(node)
         if node.keywords:
             raise CompileError(f"{name}() takes no keyword arguments here", node)
         if name in {"len", "float", "int", "str", "bool"}:
@@ -1043,9 +1054,12 @@ class Translator:
         if name in {"abs", "round", "sum", "max", "min"}:
             raise CompileError(f"{name}() is written {NUMBER_FUNCTIONS[name]}", node)
         if name == "range":
-            raise CompileError(
-                "range() is only for for loops: for i in range(10)", node
-            )
+            return self.range_list(node)
+        if name == "reversed":
+            if len(node.args) != 1:
+                raise CompileError("reversed() takes one argument: reversed(xs)", node)
+            listed = self.listed(node.args[0], name)
+            return call("reverse", [listed], listed.type)
         if name in {"enumerate", "zip"}:
             raise CompileError(
                 f"{name}() is not supported; count with range: "
@@ -1081,6 +1095,78 @@ class Translator:
             and not node.args
             and not node.keywords
         )
+
+    def range_arguments(self, node: ast.Call) -> tuple[Expr, Expr, Expr]:
+        """The start, stop and step of range(), whose step is a whole number
+        written in the source."""
+        arguments = node.args
+        if not 1 <= len(arguments) <= 3 or node.keywords:
+            raise CompileError(
+                "range takes a stop, or a start, a stop and a step: range(10)", node
+            )
+        values = [self.numeric(a, "range") for a in arguments]
+        step = literal(1)
+        if len(values) == 3:
+            step = values[2]
+            if not (type(step.template) is int and step.template != 0):
+                raise CompileError(
+                    "the step of range is a nonzero whole number, such as 2 or -1",
+                    arguments[2],
+                )
+        start, stop = (literal(0), values[0]) if len(values) == 1 else values[:2]
+        return start, stop, step
+
+    def range_list(self, node: ast.Call) -> Expr:
+        """range() as a value: [a..b] for a step of 1, and $range, which
+        includes its end and returns one number as itself, for any other."""
+        start, stop, step = self.range_arguments(node)
+        numbers = of(ARRAY, items=of(NUMBER))
+        assert type(step.template) is int
+        if step.template == 1:
+            end = difference(stop, literal(1))
+            bounds = [
+                v.code if v.precedence >= ADD else f"({v.code})" for v in (start, end)
+            ]
+            code = f"[{bounds[0]}..{bounds[1]}]"
+        else:
+            end = (
+                difference(stop, literal(1))
+                if step.template > 0
+                else sum_of(stop, literal(1))
+            )
+            code = f"[{call('range', [start, end, step], None).code}]"
+        return expression(code, uses([start, stop]), type=numbers, constructor=True)
+
+    def ordered(self, node: ast.Call) -> Expr:
+        """sorted(x), or with reverse=True, of numbers or strings, which are what
+        JSONata's $sort orders without a function."""
+        if len(node.args) != 1:
+            raise CompileError("sorted() takes one argument: sorted(xs)", node)
+        descending = False
+        for keyword in node.keywords:
+            if not (
+                keyword.arg == "reverse"
+                and isinstance(keyword.value, ast.Constant)
+                and isinstance(keyword.value.value, bool)
+            ):
+                raise CompileError(
+                    "sorted() takes reverse=True or reverse=False; JSONata's $sort "
+                    "orders numbers and strings as they are, with no key",
+                    keyword.value,
+                )
+            descending = keyword.value.value
+        listed = self.listed(node.args[0], "sorted")
+        items = listed.type.items if listed.type else None
+        if items is not None and (
+            items.kind is None or items.kind not in {NUMBER, STRING}
+        ):
+            raise CompileError(
+                f"the items of {ast.unparse(node.args[0])} are {items.describe()}; "
+                "sorted() orders numbers or strings, as JSONata's $sort does",
+                node.args[0],
+            )
+        ordered = call("sort", [listed], listed.type)
+        return call("reverse", [ordered], listed.type) if descending else ordered
 
     def math_function(self, node: ast.Call, target: str) -> Expr:
         function = MATH_FUNCTIONS[target]
@@ -1168,6 +1254,8 @@ class Translator:
             if len(arguments) == 3:
                 values.append(self.numeric(arguments[2], "the count of replace()"))
             return call("replace", [receiver, *values], text)
+        if name in {"startswith", "endswith"} and len(arguments) == 1:
+            return self.affix(receiver, arguments[0], name)
         if name == "join" and len(arguments) == 1:
             items = self.expr(arguments[0])
             if items.type is not None and ARRAY not in items.type.kinds:
@@ -1201,11 +1289,11 @@ class Translator:
             code, mapping.variables, type=of(ARRAY, items=values), constructor=True
         )
 
-    def listed(self, node: ast.expr) -> Expr:
+    def listed(self, node: ast.expr, name: str = "list") -> Expr:
         """list(x): the keys of a dict, the characters of a string, or a list
         as it is, a JSON value being a copy already."""
         value = self.expr(node)
-        kind = self.known(node, value, "dict", "list() depends on the type")
+        kind = self.known(node, value, "dict", f"{name}() depends on the type")
         if kind == OBJECT:
             return keys_of(value)
         if kind == STRING:
@@ -1214,9 +1302,34 @@ class Translator:
         if kind == ARRAY:
             return value
         raise CompileError(
-            f"{ast.unparse(node)} is a {kind}; list() takes a dict, a list or a string",
+            f"{ast.unparse(node)} is a {kind}; {name}() takes a dict, a list or a "
+            "string",
             node,
         )
+
+    def affix(self, text: Expr, node: ast.expr, name: str) -> Expr:
+        """s.startswith(p) and s.endswith(p): the part of s as long as p,
+        compared with p."""
+        affix = self.operand(node, STRING, f"{name}() compares with a string")
+        template = affix.template
+        spelled = (
+            template
+            if isinstance(template, str) and affix.code == string(template)
+            else None
+        )
+        size = (
+            literal(len(spelled))
+            if spelled is not None
+            else call("length", [affix], of(NUMBER))
+        )
+        if name == "startswith":
+            start = literal(0)
+        elif spelled is not None:
+            start = literal(-len(spelled))
+        else:
+            start = difference(call("length", [text], of(NUMBER)), size)
+        part = call("substring", [text, start, size], of(STRING))
+        return binary(part, "=", affix, COMPARE, of(BOOLEAN), True)
 
     def operand(self, node: ast.expr, kind: str, rule: str) -> Expr:
         """A value that must be of one kind when its type is known."""
@@ -1571,6 +1684,16 @@ def text(value: Expr) -> Expr:
     if value.type == ERROR_OUTPUT:
         return field(value, "Cause")
     return call("string", [value], of(STRING))
+
+
+def reversed_value(value: Expr, kind: str) -> Expr:
+    """xs[::-1] and s[::-1]: the list, or the characters of the string, in
+    reverse order."""
+    if kind == ARRAY:
+        return call("reverse", [value], value.type)
+    characters = call("split", [value, literal("")], None)
+    reverse = call("reverse", [characters], None)
+    return call("join", [reverse, literal("")], of(STRING))
 
 
 def keys_of(mapping: Expr) -> Expr:
