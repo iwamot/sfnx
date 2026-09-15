@@ -325,7 +325,12 @@ def test_evaluation(body, execution_input, expected):
         ('return isinstance(input["a"])', "isinstance takes a value and a class"),
         ('return isinstance(input["a"], list[str])', "isinstance takes str, float"),
         ('return isinstance(input["a"], None)', "test None with `is None`"),
-        ('return input["a"][1:2]', "slices are not supported"),
+        ('return input["a"][1:2]', "a slice depends on the type"),
+        ('d: dict = input["d"]\nreturn d[1:]', "d is a object; slices take lists"),
+        (
+            'xs: list = input["xs"]\nreturn xs["a":]',
+            "'a' is a string, and a slice takes numbers",
+        ),
         ('return input[input["k"]]', "a variable key depends on the container"),
         (
             'items: list = input["items"]\nreturn items["a"]',
@@ -511,3 +516,74 @@ def test_string_method_diagnostics(body, message):
     with pytest.raises(CompileError) as raised:
         compile_source(source(STRINGS + body))
     assert message in raised.value.message
+
+
+SLICES = 's: str = input["s"]\nxs: list[float] = input["xs"]\ni: float = input["i"]\n'
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ("return s[1:3]", "$substring($s, 1, 2)"),
+        ("return s[2:]", "$substring($s, 2, $length($s))"),
+        ("return s[-3:]", "$substring($s, -3, 3)"),
+        ("return s[1:-1]", "$substring($s, 1, $length($s) - 2)"),
+        ("return s[-3:4]", "$substring($s, -3, 7 - $length($s))"),
+        ("return s[i:-1]", "$substring($s, $i, $length($s) - (1 + $i))"),
+        ("return s[-2:i]", "$substring($s, -2, $i + 2 - $length($s))"),
+        ("return s[-i:]", "$substring($s, -$i, $i)"),
+        ("return s[:-i]", "$substring($s, 0, $length($s) - $i)"),
+        (
+            "return xs[-i:]",
+            "[$filter($xs, function($v, $i_2) { $i_2 >= $count($xs) - $i })]",
+        ),
+        ("return s[:]", "$s"),
+        ("return xs[1:3]", "[$filter($xs, function($v, $i) { $i >= 1 and $i < 3 })]"),
+        (
+            "return xs[-2:]",
+            "[$filter($xs, function($v, $i) { $i >= $count($xs) - 2 })]",
+        ),
+        ("return xs[i:]", "[$filter($xs, function($v, $i_2) { $i_2 >= $i })]"),
+        (
+            'nested: list = input["nested"]\nreturn nested[:1]',
+            "$append([], $filter($nested, function($v, $i) { $i < 1 })[])",
+        ),
+        ("return xs[0:]", "$xs"),
+    ],
+)
+def test_slices(body, code):
+    assert output(SLICES + body) == "{% " + code + " %}"
+
+
+def test_slices_evaluate():
+    body = SLICES + (
+        "return [s[1:3], s[:3], s[2:], s[-3:], s[:-1], s[1:-1], s[-3:-1], s[-3:4], "
+        "s[i:], s[:i], s[i:-1], s[-2:i], s[5:2], xs[1:3], xs[:2], xs[-2:], xs[:-1], "
+        "xs[i:], xs[-10:-8], xs[3:1], s[-i:], xs[-i:], s[:-i]]"
+    )
+    values = {"s": "hello!", "xs": [10, 20, 30, 40], "i": 2}
+    assert asl.run(definition(body), values) == [
+        "el",
+        "hel",
+        "llo!",
+        "lo!",
+        "hello",
+        "ello",
+        "lo",
+        "l",
+        "llo!",
+        "he",
+        "llo",
+        "",
+        "",
+        [20, 30],
+        [10, 20],
+        [30, 40],
+        [10, 20, 30],
+        [30, 40],
+        [],
+        [],
+        "o!",
+        [30, 40],
+        "hell",
+    ]

@@ -134,6 +134,15 @@ class StateCall:
     retry: ast.expr | None
 
 
+@dataclass(frozen=True)
+class Bound:
+    """A slice bound: amount is a position from the start, or with back, the
+    count back from the end that a minus sign in the source wrote."""
+
+    amount: Expr
+    back: bool
+
+
 # Builds the state of a call whose functions compile to scopes of their own,
 # parallel() and the maps, giving its fields and the type of its result.
 Compose = Callable[[ast.Call, str], tuple[dict[str, object], Type | None]]
@@ -786,11 +795,7 @@ class Translator:
         value = self.expr(node.value)
         key = node.slice
         if isinstance(key, ast.Slice):
-            raise CompileError(
-                "slices are not supported; loop with range() over the positions "
-                "you need: for i in range(1, len(xs)): x = xs[i]",
-                key,
-            )
+            return self.slice(node.value, value, key)
         if isinstance(key, ast.Constant) and isinstance(key.value, str):
             self.container(node.value, value, OBJECT, "string keys look into dicts")
             if value.type is not None and value.type in CONTEXT_OBJECTS:
@@ -822,6 +827,97 @@ class Translator:
             node.value, value, ARRAY, "positions look into lists and strings"
         )
         return index(value, position)
+
+    def slice(self, node: ast.expr, value: Expr, key: ast.Slice) -> Expr:
+        """xs[a:b] and s[a:b]. A bound written with a minus sign counts back
+        from the end; any other bound is a position from the start."""
+        if key.step is not None:
+            raise CompileError(
+                "a slice takes no step; loop with range() over the positions you "
+                "need: for i in range(0, len(xs), 2): x = xs[i]",
+                key.step,
+            )
+        kind = self.known(node, value, "list", "a slice depends on the type")
+        if kind not in {ARRAY, STRING}:
+            raise CompileError(
+                f"{ast.unparse(node)} is a {kind}; slices take lists and strings", node
+            )
+        lower = self.bound(key.lower)
+        upper = self.bound(key.upper)
+        if kind == STRING:
+            return self.substring(value, lower, upper)
+        size = call("count", [value], of(NUMBER))
+        reads = [value, *(b.amount for b in (lower, upper) if b)]
+        position = self.parameter("i", reads)
+        at = expression("$" + position, type=of(NUMBER))
+        tests = []
+        if lower is not None and (lower.back or written(lower) != 0):
+            start = offset(size, lower)
+            tests.append(binary(at, ">=", start, COMPARE, of(BOOLEAN), True))
+        if upper is not None:
+            end = offset(size, upper)
+            tests.append(binary(at, "<", end, COMPARE, of(BOOLEAN), True))
+        if not tests:
+            # A JSON value is a copy already.
+            return value
+        test = tests[0]
+        for more in tests[1:]:
+            test = binary(test, "and", more, AND, of(BOOLEAN), True)
+        item = value.type.items if value.type else None
+        predicate = expression(
+            f"function(${self.parameter('v', [value, test])}, ${position}) "
+            f"{{ {test.code} }}",
+            test.variables,
+        )
+        kept = call("filter", [value, predicate], value.type)
+        code = f"$append([], {kept.code}[])" if may_be_list(item) else f"[{kept.code}]"
+        return expression(
+            code, kept.variables, type=of(ARRAY, items=item), constructor=True
+        )
+
+    def substring(self, text: Expr, lower: Bound | None, upper: Bound | None) -> Expr:
+        """s[a:b] as $substring, which counts a negative start from the end,
+        with its length always given: without one, Step Functions fails at
+        most starts on text with characters outside the Basic Multilingual
+        Plane."""
+        if lower is None and upper is None:
+            return text
+        length = call("length", [text], of(NUMBER))
+        start = lower or Bound(literal(0), back=False)
+        if upper is None:
+            size = start.amount if start.back else length
+        elif start.back == upper.back:
+            # From the end, s[-a:-b] holds a - b characters.
+            size = (
+                difference(start.amount, upper.amount)
+                if start.back
+                else difference(upper.amount, start.amount)
+            )
+        elif upper.back:
+            size = difference(length, sum_of(upper.amount, start.amount))
+        else:
+            size = difference(sum_of(upper.amount, start.amount), length)
+        return call("substring", [text, signed(start), size], of(STRING))
+
+    def bound(self, node: ast.expr | None) -> Bound | None:
+        """A slice bound, a number; a minus sign written before it counts back
+        from the end."""
+        if node is None:
+            return None
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return Bound(self.numeric(node.operand, "a slice"), back=True)
+        return Bound(self.numeric(node, "a slice"), back=False)
+
+    def parameter(self, base: str, reads: list[Expr]) -> str:
+        """A name for a JSONata function parameter that hides nothing the
+        function reads."""
+        taken = {self.spelling(name) for name in uses(reads)}
+        name = base
+        serial = 1
+        while name in taken:
+            serial += 1
+            name = f"{base}_{serial}"
+        return name
 
     def container(self, node: ast.expr, value: Expr, kind: str, rule: str) -> None:
         if value.type is not None and kind not in value.type.kinds:
@@ -1343,6 +1439,45 @@ def text(value: Expr) -> Expr:
     if value.type == ERROR_OUTPUT:
         return field(value, "Cause")
     return call("string", [value], of(STRING))
+
+
+def written(bound: Bound) -> int | None:
+    """The whole number a bound's amount is written as in the source."""
+    template = bound.amount.template
+    return template if type(template) is int else None
+
+
+def offset(size: Expr, bound: Bound) -> Expr:
+    """A bound as a position from the start."""
+    return difference(size, bound.amount) if bound.back else bound.amount
+
+
+def signed(bound: Bound) -> Expr:
+    """A bound as $substring reads a start, negative when it counts back."""
+    if not bound.back:
+        return bound.amount
+    number = written(bound)
+    return literal(-number) if number is not None else negate(bound.amount)
+
+
+def difference(left: Expr, right: Expr) -> Expr:
+    """left - right, computed when both are numbers written in the source."""
+    first, second = left.template, right.template
+    if type(first) is int and type(second) is int:
+        return literal(first - second)
+    if type(second) is int and second == 0:
+        return left
+    return binary(left, "-", right, ADD, of(NUMBER))
+
+
+def sum_of(left: Expr, right: Expr) -> Expr:
+    """left + right, computed when both are numbers written in the source."""
+    first, second = left.template, right.template
+    if type(first) is int and type(second) is int:
+        return literal(first + second)
+    if type(second) is int and second == 0:
+        return left
+    return binary(left, "+", right, ADD, of(NUMBER))
 
 
 def may_be_list(kind: Type | None) -> bool:

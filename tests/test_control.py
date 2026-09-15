@@ -313,10 +313,7 @@ def test_declarations_join_after_branches():
         ("return {1, 2}", "JSON has lists only; write a list: [a, b]"),
         ("return (n := 1)", "assign the value on a line of its own first"),
         ('xs: list = input["xs"]\nreturn [*xs]', "unpacking with * is not supported"),
-        (
-            'xs: list = input["xs"]\nreturn xs[1:]',
-            "slices are not supported; loop with range()",
-        ),
+        ('xs: list = input["xs"]\nreturn xs[::2]', "a slice takes no step"),
         (
             "def f():\n    return 1\nreturn f()",
             "f() cannot be called directly; a function runs as states through parallel(f) or a map",
