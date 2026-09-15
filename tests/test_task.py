@@ -340,6 +340,10 @@ def test_accepted_resources(resource, arguments):
         ),
         (f'r = task("{GET_ITEM}", {{"Zzz": "t"}})', "getItem has no argument Zzz"),
         (
+            f'r = task("{GET_ITEM}", {{**input, "Zzz": "t"}})',
+            "getItem has no argument Zzz",
+        ),
+        (
             f'r = task("{GET_ITEM}", {{"TableName": "t"}})',
             "getItem needs Key in the arguments",
         ),
@@ -406,6 +410,13 @@ def test_diagnostics(body, message):
             )
         )
     assert message in raised.value.message
+
+
+def test_unpacked_arguments_leave_required_keys_to_run_time():
+    body = f'return task("{GET_ITEM}", {{**input["key"], "TableName": "t"}})'
+    assert states(body)["return"]["Arguments"] == (
+        f"{{% $merge([{INPUT}.key, {{'TableName': 't'}}]) %}}"
+    )
 
 
 def test_task_does_not_run_in_python():

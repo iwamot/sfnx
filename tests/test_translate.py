@@ -41,6 +41,12 @@ def output(body: str, parameter: str = "input") -> object:
         ('return input["a"] % 3', f"{INPUT}.a - 3 * $floor({INPUT}.a / 3)"),
         ('return input["a"] // 3', f"$floor({INPUT}.a / 3)"),
         ('return input["a"] ** 2', f"$power({INPUT}.a, 2)"),
+        ('return {**input, "a": 1}', f"$merge([{INPUT}, {{'a': 1}}])"),
+        (
+            'return {"a": 1, **input["b"], **input["c"], "d": 2, "e": 3}',
+            f"$merge([{{'a': 1}}, {INPUT}.b, {INPUT}.c, {{'d': 2, 'e': 3}}])",
+        ),
+        ('return {**input["b"]}', f"{INPUT}.b"),
         (
             'return (input["a"] + 1) % 3',
             f"{INPUT}.a + 1 - 3 * $floor(({INPUT}.a + 1) / 3)",
@@ -249,6 +255,11 @@ def test_annotations(annotation, body, code):
             [True, True, 2],
         ),
         ('key: str = input["k"]\nreturn input[key]', {"k": "x y", "x y": 1}, 1),
+        (
+            'return [{**input["a"], "x": 1}, {"x": 1, **input["a"]}]',
+            {"a": {"x": 2, "y": None}},
+            [{"x": 1, "y": None}, {"x": 2, "y": None}],
+        ),
     ],
 )
 def test_evaluation(body, execution_input, expected):
@@ -333,6 +344,10 @@ def test_evaluation(body, execution_input, expected):
             "k may be number | string",
         ),
         ("return (1, 2)", "JSON has no tuples"),
+        (
+            'v: dict | None = input["v"]\nreturn {**v}',
+            "v may be null | object; narrow it first",
+        ),
         ("return {x for x in input}", "JSON has lists only"),
         ('x: Any = input["x"]', "annotate with float, str, bool"),
         ('x: dict[int, str] = input["x"]', "annotate with float, str, bool"),
@@ -342,13 +357,97 @@ def test_evaluation(body, execution_input, expected):
             "an annotation declares the type of a value; assign it here: x: float = ...",
         ),
         ("input.x: float = 1", "assign one variable per statement"),
-        (
-            'count = input["a"]',
-            "would hide the JSONata function $count; choose another name, such as count_value",
-        ),
     ],
 )
 def test_diagnostics(body, message):
     with pytest.raises(CompileError) as raised:
         compile_source(source(body))
     assert message in raised.value.message
+
+
+IMPORTS = "import json\nimport uuid\nfrom uuid import uuid4\n"
+
+
+def imported(body: str) -> dict:
+    (compiled,) = compile_source(IMPORTS + source(body)).values()
+    return compiled
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ('return json.loads(input["raw"])', f"$parse({INPUT}.raw)"),
+        ('raw: str = input["raw"]\nreturn json.loads(raw)["a"]', "$parse($raw).a"),
+        ("return str(uuid.uuid4())", "$uuid()"),
+        ('return f"order-{uuid4()}"', "'order-' & $uuid()"),
+    ],
+)
+def test_module_functions(body, code):
+    assert imported(body)["States"]["return"]["Output"] == "{% " + code + " %}"
+
+
+def test_module_functions_evaluate():
+    body = 'return [json.loads(input["raw"]), str(uuid.uuid4())]'
+    parsed, made = asl.run(imported(body), {"raw": '{"a": [1, null], "b": "x"}'})
+    assert parsed == {"a": [1, None], "b": "x"}
+    assert re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", made
+    )
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ("return json.loads(1)", "1 is a number; json.loads() reads a string"),
+        ('return json.loads("{}", parse_float=float)', "json.loads() takes one string"),
+        (
+            "return uuid.uuid4()",
+            "uuid.uuid4() is a UUID object, not JSON; write str(uuid.uuid4())",
+        ),
+        ("return str(uuid4(1))", "uuid.uuid4() takes no arguments"),
+        (
+            'raw: str | None = input["raw"]\nreturn json.loads(raw)',
+            "raw may be null | string; narrow it first",
+        ),
+    ],
+)
+def test_module_function_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        compile_source(IMPORTS + source(body))
+    assert message in raised.value.message
+
+
+def test_module_function_without_import():
+    with pytest.raises(CompileError) as raised:
+        compile_source(source('return json.loads(input["raw"])'))
+    assert raised.value.message == "json is not imported; write import json"
+
+
+def test_a_variable_named_after_a_function_is_renamed():
+    body = (
+        'count: list = input["xs"]\n'
+        "merge = {**input}\n"
+        "type, keys = len(count), [map * 2 for map in count]\n"
+        'return [count, merge["xs"], type, keys, len(merge)]'
+    )
+    compiled = definition(body)
+    assert compiled["States"]["count"]["Assign"] == {
+        "count_val": f"{{% {INPUT}.xs %}}",
+        "merge_val": f"{{% {INPUT} %}}",
+    }
+    assert asl.run(compiled, {"xs": [1, 2]}) == [[1, 2], [1, 2], 2, [2, 4], 1]
+
+
+def test_a_renamed_variable_takes_a_name_the_module_does_not_use():
+    body = (
+        'count_val: list = input["xs"]\n'
+        "count = len(count_val)\n"
+        "count_val_2 = [count * 2 for count in count_val]\n"
+        "return [count, count_val_2]"
+    )
+    compiled = definition(body)
+    assert compiled["States"]["count"]["Assign"] == {
+        "count_val_3": "{% $count($count_val) %}",
+        "count_val_2": "{% [$map($count_val, function($count_val_3) { $count_val_3 * 2 })] %}",
+    }
+    assert asl.run(compiled, {"xs": [1, 2]}) == [2, [2, 4]]

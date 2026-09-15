@@ -33,6 +33,8 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 **States split only where ASL requires it.** `Assign` evaluates every expression with the values from before the state, so an assignment that reads a pending one needs a new state; a Task is one state per call; a Choice is one state. Everything else shares a Pass, a Task's result goes in its own `Assign`, and a machine that returns a Task's result ends on it.
 
+**A variable named after a JSONata function is renamed.** A Step Functions variable hides the JSONata function of its name, and a definition that calls the function then fails only when it runs. Someone writing ASL by hand would pick another name, so sfnx does the same instead of rejecting the Python name: a name the generated expressions call as a function gets `_val` (`$count_val`), numbered when the module already uses that name, and state names keep the Python name. Only those names change, so the rest of the definition reads as written.
+
 **Control flow is statements, not functions.** One ASL scope is a flat graph with jumps; `if`, `for` and `while` can produce any of it, while functions and closures only produce trees.
 
 **One `task()` for every integration.** A Task varies only in its `Resource` and `Arguments`, so there is no `aws.Service.api` library, which would contradict the third principle, and no separate `http` or `activity` names. The ARN still lets the compiler look up the botocore model. `Arguments` is the second positional argument and the state's own settings are keywords: AWS API parameter names collide with keywords (5,229 lowercase parameter names across 431 services, `name` in 679 places, `timeout` in 3), and a positional argument also takes keys that are not identifiers and non-object arguments.
@@ -64,7 +66,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - Step Functions implements JSONata 2.0.6 without `$eval`, and adds `$partition`, `$range`, `$hash`, `$random`, `$uuid` and `$parse`. An expression has a one-second limit and a memory limit; every failure is `States.QueryEvaluationError`.
 - An expression that returns undefined fails, in any field and inside objects, arrays and `Assign` (measured).
 - `Assign` evaluates all its expressions with the values from before the state, then assigns. `Assign` and `Output` of a state are evaluated in parallel.
-- Binding a variable hides the built-in function of the same name (`count` hides `$count`; measured).
+- Binding a variable hides the built-in function of the same name (`count` hides `$count`), and ValidateStateMachineDefinition does not report it: calling the function fails when it runs (`T1006: Attempted to invoke a non-function`; measured).
 - `and`, `or` and `$not` convert operands as `$boolean` does and return booleans. `$boolean` matches Python's `bool()` except on a non-empty array whose items are all falsy (`[0]`, `[[]]`), which is false (measured).
 - With undefined, both `=` and `!=` are false.
 - `$count` counts a non-array as one item, and null or a missing value as zero.
@@ -77,6 +79,9 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - Dividing by zero does not fail: `1 / 0`, `-1 / 0` and `0 / 0` are the strings `"Infinity"`, `"-Infinity"` and `"NaN"`, and so is `$floor` of them. Arithmetic on them fails, but a comparison does not (`1 / 0 > 5` is true; measured).
 - Numbers are doubles. A literal number in the definition keeps its digits, but read in an expression, from a variable or the input, an integer past 2^53 is rounded (`10000000000000000000000001` is `1.0E25`; measured). `+`, `-`, `*` and `/` past the range of a double give `"Infinity"` or `"-Infinity"` as division by zero does, and `$number` of a string past it fails (`"1e400"`; measured).
 - `? :` binds looser than `and` and `or`.
+- `$merge` of an array of objects gives a later object's key precedence over an earlier one's, null values included. An array among the items is merged as its objects, as the array constructor merges it (measured).
+- `$parse` fails on text JSON does not allow (`NaN`, `Infinity`), on a number past the range of a double (`1e400`) and on a repeated key, but reads single-quoted strings (`{'a': 1}`; measured).
+- `$uuid()` returns a new lowercase version 4 UUID on every call (measured).
 - `$substring` counts a negative start in UTF-16 units in Step Functions but in code points in jsonata-python (`$substring('héllo😀', -1, 1)`); `$length` counts code points in both (measured). Only positions counted from the end past characters outside the Basic Multilingual Plane differ.
 - Variable names are Unicode identifiers (ID_Start, then ID_Continue), at most 80 characters; `$states` is reserved. Non-ASCII names work (measured).
 - A string is evaluated when it starts with `{%` and ends with `%}`, including strings inside objects and arrays; a half-open one fails validation.
@@ -109,7 +114,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 
 - An SDK integration's resource is `arn:aws:states:::aws-sdk:<service>:<action>`, where the service follows the AWS SDK for Java (`sfn`, `eventbridge`, `cloudwatchlogs`) and the action is camelCase. Its arguments are PascalCase even for camelCase APIs, and so is its result, nested fields included (`logGroups[].arn` is `LogGroups[].Arn`); timestamps arrive as strings (measured).
 - An SDK integration's error name is `<ServiceName>.<ErrorName>`.
-- ValidateStateMachineDefinition rejects an SDK integration without `Arguments` (`{}` is needed), a resource that still contains `${...}`, and unknown keys and missing idempotency tokens of SDK integrations (measured). For the 16 optimized actions whose botocore model the compiler checks against, it rejected an unknown key, rejected some keys botocore has, and required some that botocore makes optional (measured).
+- ValidateStateMachineDefinition rejects an SDK integration without `Arguments` (`{}` is needed), a resource that still contains `${...}`, and unknown keys and missing idempotency tokens of SDK integrations (measured). `Arguments` written as one expression, such as `$merge`, passes for SDK integrations and HTTP Tasks (measured). For the 16 optimized actions whose botocore model the compiler checks against, it rejected an unknown key, rejected some keys botocore has, and required some that botocore makes optional (measured).
 - ValidateStateMachineDefinition checks the types of literal argument values: a Lambda `Payload` takes a string, object, array or null, and rejects a number or boolean literal. Expressions pass (measured).
 - `TimeoutSeconds` is a whole number from 1, `HeartbeatSeconds` a smaller one. `Credentials` applies only to Lambda functions and AWS service integrations. An HTTP Task needs `ApiEndpoint`, `Method` and a connection, and stops after 60 seconds.
 - botocore has no service model whose service ID disagrees with the AWS SDK for Java name; loading every model takes about four seconds.

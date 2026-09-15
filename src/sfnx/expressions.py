@@ -47,12 +47,15 @@ FUNCTIONS = frozenset(
         "length",
         "lookup",
         "map",
+        "merge",
         "not",
         "number",
+        "parse",
         "power",
         "string",
         "substring",
         "type",
+        "uuid",
     }
 )
 
@@ -90,8 +93,23 @@ def expression(
     )
 
 
-def variable(name: str, type: Type | None = None) -> Expr:
-    return expression("$" + name, frozenset({name}), type=type)
+def spelling(name: str, identifiers: frozenset[str]) -> str:
+    """The Step Functions variable, or JSONata parameter, for a Python name. A
+    variable hides the JSONata function of its name from every later state, so
+    a name the generated expressions call as a function gets _val, numbered
+    when the module already uses that name."""
+    if name not in FUNCTIONS:
+        return name
+    spelled = f"{name}_val"
+    serial = 1
+    while spelled in identifiers:
+        serial += 1
+        spelled = f"{name}_val_{serial}"
+    return spelled
+
+
+def variable(name: str, identifiers: frozenset[str], type: Type | None = None) -> Expr:
+    return expression("$" + spelling(name, identifiers), frozenset({name}), type=type)
 
 
 def literal(value: object) -> Expr:

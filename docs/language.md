@@ -68,12 +68,16 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `if x:` | `$boolean($x)`, or `$count($x) > 0` for a list (tested with `$type` when `x` may be a list) |
 | `float(x)`, `int(x)`, `str(x)`, `bool(x)` | `$number($x)`, `$floor($number($x))`, `$string($x)`, `$boolean($x)` |
 | `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
+| `json.loads(s)` | `$parse($s)` |
+| `str(uuid.uuid4())`, `f"{uuid.uuid4()}"` | `$uuid()` |
 | `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
+| `{**a, "key": v}` | `$merge([$a, {'key': $v}])`, where a later key wins |
 | `[f(x) for x in xs if c]` | `[$map($filter($xs, function($x) { c }), function($x) { f })]` |
 | `f"order {id}"` | `'order ' & $string($id)` |
 | `[a, xs, v]` in an expression | `[$a, [$xs], $type($v) = 'array' ? [[$v]] : $v]`: an item known to be a list, or one that may be, stays one item |
 
 - A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
+- `json.loads` and `uuid.uuid4` are recognized through the module's imports, such as `import json` or `from uuid import uuid4`.
 - f-strings take no conversions (`!r`, `{x=}`) and no format specs.
 - A string literal that starts with `{%` or ends with `%}` is written as a JSONata string, so Step Functions does not read it as an expression.
 
@@ -84,7 +88,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 - `x += v`, `x -= v` and the others are `x = x + v` and so on. A list is the exception: `xs += [...]` extends the list in place in Python, which a JSON value cannot do, so write `xs = xs + [...]`.
 - A key or a position cannot be assigned (`d["k"] = v`); build the new dict or list as a literal.
 
-Variable names become JSONata variable names, so they follow Step Functions' rules: no leading `_`, at most 80 characters, not `states`, and not the name of a JSONata function the generated code calls (`count`, `string`, `keys`, `map`, ...). A variable used after a branch must be assigned on every path to it.
+Variable names become JSONata variable names, so they follow Step Functions' rules: no leading `_`, at most 80 characters and not `states`. A variable named after a JSONata function the generated code calls (`count`, `string`, `keys`, `merge`, ...) would hide that function, so it gets `_val` appended (`$count_val`), or `_val_2`, `_val_3` and so on when the module already uses that name. A variable used after a branch must be assigned on every path to it.
 
 A `parallel` branch or a Map function cannot assign a name that its enclosing function assigns anywhere; Step Functions keeps those scopes apart. Return the value instead. Variables that sfnx adds for itself (loop counters, caught errors) never clash across scopes.
 
@@ -113,6 +117,7 @@ receipt = task(
 - A statement holds one `task()`, as an assignment (`Assign` gets `$states.result`), a `return` (the Task ends the machine) or a line of its own. It cannot sit in an `if` test, in a comprehension, or where it would run only sometimes (`a and task(...)`, `a < b < task(...)`).
 - SDK integrations (`arn:aws:states:::aws-sdk:<service>:<action>`) are checked against botocore: the service, the action, argument names in PascalCase and the required arguments. Service names follow the AWS SDK for Java (`sfn`, `eventbridge`, `cloudwatchlogs`); botocore's names that differ (`logs`) are rejected. Whether Step Functions supports a service or action that botocore has is not checked, nor are the types of argument values; ValidateStateMachineDefinition checks those it can, such as a number written as a Lambda `Payload`.
 - Optimized integrations (`arn:aws:states:::<service>:<action>`, with `.sync`, `.sync:2` or `.waitForTaskToken`) are checked for argument names and required arguments when botocore has the action. HTTP Tasks need `ApiEndpoint`, `Method` and a connection. Activity and Lambda function ARNs, and ARNs containing `${...}`, are passed as written.
+- Arguments that unpack a dict with `**` are checked only for the argument names written out; the required arguments and what an HTTP Task needs are left to Step Functions when the Task runs.
 - A `.waitForTaskToken` Task must pass `context["Task"]["Token"]` in its arguments, the only place it can be read.
 
 ## Parallel and maps
@@ -187,7 +192,7 @@ except Exception:
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, slices, method calls, `lambda`, `:=`, `*` and `**` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, and built-in functions other than `len`, `float`, `int`, `str`, `bool`, `isinstance` and `range` in a `for`.
+- **Expressions**: tuples, sets, slices, method calls, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `isinstance` and `range` in a `for`, module functions other than `json.loads`, and `uuid.uuid4()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -199,7 +204,10 @@ Some values come out differently from CPython. These are the differences known s
 | `a / b`, `a // b` | `b` is `0` | `"Infinity"`, `"-Infinity"` or `"NaN"`, a string; arithmetic on it fails with `States.QueryEvaluationError`, a comparison does not | `ZeroDivisionError` |
 | `a ** b` | a negative `a` and a fractional `b` | `States.QueryEvaluationError` | a complex number |
 | `a + b`, `a - b`, `a * b`, `a / b` | a result past the range of a double, such as `1e308 * 10` | `"Infinity"` or `"-Infinity"`, a string | `inf` or `-inf` |
-| a number from the input or a variable | an integer past 2^53, such as `10000000000000000000000001` | the nearest double (`1.0E25`) | the exact integer |
+| a number from the input, a variable or `json.loads(s)` | an integer past 2^53, such as `10000000000000000000000001` | the nearest double (`1.0E25`) | the exact integer |
+| `json.loads(s)` | `"NaN"`, `"Infinity"`, `"1e400"`, `'{"a": 1, "a": 2}'` | `States.QueryEvaluationError` | `nan`, `inf`, `inf`, `{"a": 2}` |
+| `json.loads(s)` | `"{'a': 1}"` | `{"a": 1}` | `JSONDecodeError` |
+| `{**x}`, `{**x, "k": v}` with `x` of unknown type | `[{"a": 1}, {"b": 2}]` | the list itself, `{"a": 1, "b": 2, "k": ...}` | `TypeError` |
 | `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
 | `int(x)` | `-1.5` | `-2` (`$floor`) | `-1` |
 | `int(x)` | `"1.5"` | `1` | `ValueError` |

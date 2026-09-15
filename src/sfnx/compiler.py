@@ -13,12 +13,12 @@ from sfnx.errors import EVERYTHING, caught, raised, retriers
 from sfnx.expressions import (
     ADD,
     COMPARE,
-    FUNCTIONS,
     Expr,
     binary,
     call,
     expression,
     literal,
+    spelling,
     variable,
 )
 from sfnx.expressions import field as step
@@ -196,7 +196,9 @@ class Scope:
         self.module = module
         self.parameters = parameters
         self.partial: set[str] = set()
-        self.translator = Translator(bindings, module.names, self.partial, self.compose)
+        self.translator = Translator(
+            bindings, module.names, module.identifiers, self.partial, self.compose
+        )
         self.translator.is_function = lambda name: (
             name in self.functions or name in module.functions
         )
@@ -228,6 +230,12 @@ class Scope:
         self.catchable = 0
         self.handling: list[Handler] = []
 
+    def spelling(self, name: str) -> str:
+        return spelling(name, self.module.identifiers)
+
+    def variable(self, name: str, type: Type | None) -> Expr:
+        return variable(name, self.module.identifiers, type)
+
     def add(self, base: str, state: dict[str, object], node: ast.AST) -> str:
         try:
             return self.graph.add(base, state)
@@ -239,7 +247,7 @@ class Scope:
             return
         assert self.pending_node is not None
         first = next(iter(self.pending))
-        assign = {name: value.template for name, value in self.pending.items()}
+        assign = {self.spelling(k): value.template for k, value in self.pending.items()}
         node = self.pending_node
         self.pending = {}
         self.pending_node = None
@@ -256,11 +264,11 @@ class Scope:
         and the names this scope assigns are not among them."""
         for name in sorted(assigned_names(statements) - self.parameters):
             binding = self.bindings.get(name)
-            if binding is None or binding == variable(name, binding.type):
+            if binding is None or binding == self.variable(name, binding.type):
                 continue
             self.pending[name] = binding
             self.pending_node = self.pending_node or node
-            self.bindings[name] = variable(name, binding.type)
+            self.bindings[name] = self.variable(name, binding.type)
 
     def block(self, statements: list[ast.stmt]) -> None:
         for statement in statements:
@@ -432,10 +440,11 @@ class Scope:
             # The state's own Assign takes its result. A Catch leaves with the
             # declarations from before, as the assignment did not happen.
             self.flush()
-            self.add_call(name, call, {"Assign": {name: value.template}}, target)
+            assign = {self.spelling(name): value.template}
+            self.add_call(name, call, {"Assign": assign}, target)
             if declared is not None:
                 self.declared[name] = declared
-            self.bindings[name] = variable(name, known)
+            self.bindings[name] = self.variable(name, known)
             self.partial.discard(name)
             return
         if declared is not None:
@@ -447,7 +456,7 @@ class Scope:
         if not self.pending:
             self.pending_node = target
         self.pending[name] = value
-        self.bindings[name] = variable(name, known)
+        self.bindings[name] = self.variable(name, known)
         self.partial.discard(name)
 
     def unpack(self, target: ast.Tuple, value_node: ast.expr) -> None:
@@ -472,7 +481,8 @@ class Scope:
             whole, call = self.translator.statement_value(value_node)
             values = [element_at(whole, literal(i)) for i in range(len(names))]
         assign = {
-            name: value.template for name, value in zip(names, values, strict=True)
+            self.spelling(name): value.template
+            for name, value in zip(names, values, strict=True)
         }
         if call is not None:
             self.flush()
@@ -485,7 +495,7 @@ class Scope:
             self.pending.update(zip(names, values, strict=True))
         for name, value in zip(names, values, strict=True):
             known = value.type or self.declared.get(name)
-            self.bindings[name] = variable(name, known)
+            self.bindings[name] = self.variable(name, known)
             self.partial.discard(name)
 
     def finish(self, value: Expr, call: StateCall | None, node: ast.AST) -> None:
@@ -516,7 +526,8 @@ class Scope:
             for handler in handlers:
                 catcher: dict[str, object] = {"ErrorEquals": handler.errors}
                 if handler.variable:
-                    catcher["Assign"] = {handler.variable: "{% $states.errorOutput %}"}
+                    error = self.spelling(handler.variable)
+                    catcher["Assign"] = {error: "{% $states.errorOutput %}"}
                 catchers.append(catcher)
                 # The state's own Assign does not happen when it fails.
                 flow = Flow(
@@ -724,7 +735,7 @@ class Scope:
             selector[name] = "{% " + source + " %}"
             declared = annotate(parameter.annotation) or kind
             if binds:
-                bindings[name] = variable(name, declared)
+                bindings[name] = self.variable(name, declared)
                 pending[name] = step(expression("$states.input"), name)
             else:
                 bindings[name] = replace(
@@ -1036,7 +1047,7 @@ class Scope:
                 continue
             self.join(handler.flows)
             if handler.variable:
-                self.bindings[handler.variable] = variable(
+                self.bindings[handler.variable] = self.variable(
                     handler.variable, ERROR_OUTPUT
                 )
                 self.partial.discard(handler.variable)
@@ -1427,13 +1438,13 @@ class Scope:
                 copy = self.fresh(f"{target}_items")
                 self.pending[copy] = items
                 self.pending_node = self.pending_node or node
-                source = variable(copy, items.type)
+                source = self.variable(copy, items.type)
             if kind == OBJECT:
                 source = call("keys", [source], of(ARRAY, items=of(STRING)))
             counter = self.fresh(f"{target}_index")
             self.pending[counter] = literal(0)
             self.pending_node = self.pending_node or node
-            index = variable(counter, of(NUMBER))
+            index = self.variable(counter, of(NUMBER))
             limit = call("count", [source], of(NUMBER))
             return self.counted(
                 node, target, element(source, index), counter, index, limit, literal(1)
@@ -1476,14 +1487,14 @@ class Scope:
                 copy = self.fresh(f"{target}_stop")
                 self.pending[copy] = stop
                 self.pending_node = self.pending_node or node
-                limit = variable(copy, of(NUMBER))
+                limit = self.variable(copy, of(NUMBER))
             if target in self.pending:
                 self.flush()
             self.pending[target] = start
             self.pending_node = self.pending_node or node
-            self.bindings[target] = variable(target, of(NUMBER))
+            self.bindings[target] = self.variable(target, of(NUMBER))
             self.partial.discard(target)
-            counter = variable(target, of(NUMBER))
+            counter = self.variable(target, of(NUMBER))
             assert isinstance(step.template, int)
             return self.counted(
                 node, target, counter, target, counter, limit, step, step.template < 0
@@ -1770,7 +1781,7 @@ def annotate(node: ast.expr | None) -> Type | None:
 
 
 def check_variable(name: str, node: ast.AST) -> None:
-    """Names Step Functions or the generated expressions would not accept."""
+    """Names Step Functions would not accept."""
     if name in RESERVED:
         raise CompileError(
             f"Step Functions reserves ${name}; choose another variable name", node
@@ -1787,12 +1798,6 @@ def check_variable(name: str, node: ast.AST) -> None:
         raise CompileError(
             f"Step Functions variable names are at most {MAX_VARIABLE} characters; "
             "use a shorter name",
-            node,
-        )
-    if name in FUNCTIONS:
-        raise CompileError(
-            f"a variable named {name} would hide the JSONata function ${name}; "
-            f"choose another name, such as {name}_value",
             node,
         )
 

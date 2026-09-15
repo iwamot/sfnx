@@ -175,7 +175,7 @@ The workflow module imports `sfnx`, so it is a dependency of the project; `uv ru
 - **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
 - **`wait(10)`** and **`wait(until=timestamp)`** are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
 - **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). `except Exception` is `States.ALL`.
-- **Expressions** are Python operators, `len`, `float`, `int`, `str`, `bool`, `isinstance`, conditional expressions, list comprehensions and f-strings.
+- **Expressions** are Python operators, `len`, `float`, `int`, `str`, `bool`, `isinstance`, `json.loads`, `str(uuid.uuid4())`, dicts with `**`, conditional expressions, list comprehensions and f-strings.
 - **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. Literals, operator results and AWS API responses carry their types already.
 - **Anything else** (`with`, methods, slices, `lambda`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
 

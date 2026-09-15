@@ -399,3 +399,10 @@ def test_diagnostics(body, message):
     with pytest.raises(CompileError) as raised:
         states(body)
     assert message in raised.value.message
+
+
+def test_a_caught_error_named_after_a_function_is_renamed():
+    body = f'try:\n    string = {CHARGE}\nexcept Exception as type:\n    return [str(type), type["Error"]]\nreturn string'
+    catcher = states(body)["string"]["Catch"][0]
+    assert catcher["Assign"] == {"type_val": "{% $states.errorOutput %}"}
+    assert run(body, {}, {"string": fails("Declined", "no")}) == ["no", "Declined"]
