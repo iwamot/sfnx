@@ -1,6 +1,8 @@
 """What a module binds at its top level: imports and classes."""
 
 import ast
+import io
+import tokenize
 from dataclasses import dataclass
 
 from sfnx.diagnostics import CompileError
@@ -9,19 +11,45 @@ from sfnx.diagnostics import CompileError
 @dataclass(frozen=True)
 class Module:
     """names maps imported local names to what they import (sfnx.wait);
-    classes and functions hold what the module defines at its top level, and
-    identifiers every name it binds or reads."""
+    classes and functions hold what the module defines at its top level,
+    identifiers every name it binds or reads, and comments the comment lines
+    right above a line of code, by that line."""
 
     names: dict[str, str]
     classes: dict[str, ast.ClassDef]
     functions: dict[str, ast.FunctionDef]
     identifiers: frozenset[str]
+    comments: dict[int, str]
 
 
-def module(tree: ast.Module) -> Module:
+def module(tree: ast.Module, source: str) -> Module:
     classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
     functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-    return Module(imports(tree), classes, functions, identifiers(tree))
+    return Module(
+        imports(tree), classes, functions, identifiers(tree), comments(source)
+    )
+
+
+def comments(source: str) -> dict[int, str]:
+    """The lines of comments with nothing else on them that come right above a
+    line of code, joined, by the number of that line. A blank line ends them."""
+    texts: dict[int, str] = {}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT and token.line.lstrip().startswith("#"):
+            text = token.string[1:]
+            texts[token.start[0]] = text.removeprefix(" ")
+    found: dict[int, str] = {}
+    block: list[str] = []
+    for number, line in enumerate(source.splitlines(), start=1):
+        if number in texts:
+            block.append(texts[number])
+        elif line.strip():
+            if block:
+                found[number] = "\n".join(block)
+            block = []
+        else:
+            block = []
+    return found
 
 
 def identifiers(tree: ast.Module) -> frozenset[str]:

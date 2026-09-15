@@ -19,12 +19,25 @@ def pay(input):
 - The parameter is the execution input. It compiles to `$states.context.Execution.Input` everywhere, because `$states.input` changes after a Task. A machine may take no parameter. Assigning to the parameter is rejected.
 - A function that ends without `return` returns `null`.
 - A file may hold several machines; the compiler reads it without importing it.
+- The docstring of the function is the `Comment` of the definition.
 
 ## Names of states
 
 A state is named after what it does: the variable it assigns, `return`, `raise`, `if`, `for`, `while`, `wait`, `map`, `parallel`, or the action of a Task on its own line (`getItem`, `invoke`). Repeated names get serials (`amount`, `amount_2`). States inside a Parallel branch or a Map are prefixed with the function that holds them (`email.return`).
 
 States split only where ASL requires it: an assignment that reads another pending assignment, a Task, a Choice. Independent assignments share one Pass, a Task's result goes in the Task's `Assign`, and a machine that returns a Task's result ends on that Task.
+
+## Comments
+
+```python
+# Charge the card once the stock is reserved.
+receipt = task("arn:aws:states:::lambda:invoke", {"FunctionName": "charge"})
+```
+
+- The comment lines right above a statement, with no blank line between, are the `Comment` of the first state the statement makes: the Choice of an `if`, `for` or `while`, the Task of a `task()`. Several lines are joined with line breaks.
+- Assignments that share a Pass share their comments too, one after another. A statement that makes no state of its own, such as `try:` or `while True:`, passes its comment to the first state of its body; one that makes none at all, such as `break`, drops it.
+- A comment at the end of a line of code stays in the source.
+- The docstring of a function run by `parallel()` or a map is the `Comment` of its branch or processor.
 
 ## Values and types
 
