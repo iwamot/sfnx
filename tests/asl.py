@@ -27,6 +27,7 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     # The functions Step Functions adds to JSONata.
     expression.register_lambda("parse", parse)
     expression.register_lambda("uuid", lambda: str(uuid.uuid4()))
+    expression.register_lambda("range", range_numbers)
     try:
         result = expression.evaluate(None, nulls({**variables, "states": states}))
     except jsonata.JException as exc:
@@ -43,6 +44,16 @@ def parse(text: str) -> object:
         return nulls(json.loads(text))
     except ValueError as exc:
         raise jsonata.JException(str(exc)) from exc
+
+
+def range_numbers(first: int, last: int, step: int) -> list[int]:
+    """$range: from first by step through last, included when reached."""
+    result = []
+    value = first
+    while (value <= last) if step > 0 else (value >= last):
+        result.append(value)
+        value += step
+    return result
 
 
 def nulls(data: object) -> object:

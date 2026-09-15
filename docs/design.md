@@ -93,6 +93,8 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$sum([])` is `0`; `$max([])`, `$min([])` and `$average([])` return nothing. `$sum` and `$max` failed on an array holding a string and took a number outside an array as a one-item array (measured).
 - `$keys` returns the one key of an object as itself and nothing for an empty object; `$each` does the same with the results of its function, and returns a single result that is an array as that array (measured).
 - `$split($s, '')` splits a character outside the Basic Multilingual Plane into two items, neither of them the character (measured).
+- `$sort` without a function orders an array of numbers or of strings and fails on booleans, arrays and mixed items; it orders strings by UTF-16 units. `$reverse` and `$sort` return an array for any number of items (measured).
+- `[a..b]` is an array for any number of items, empty when `b` is less than `a`. `$range(a, b, step)` includes `b` when a step reaches it and returns one number as itself and none as nothing (measured).
 - `$xs[[a..b]]` returns the item itself for a range of one position and undefined for an empty range, while `$filter` passes each item's position as the second parameter of its function (measured).
 - Variable names are Unicode identifiers (ID_Start, then ID_Continue), at most 80 characters; `$states` is reserved. Non-ASCII names work (measured).
 - A string is evaluated when it starts with `{%` and ends with `%}`, including strings inside objects and arrays; a half-open one fails validation.

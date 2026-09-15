@@ -1454,26 +1454,7 @@ class Scope:
 
     def range_loop(self, node: ast.For, target: str, assigned: set[str]) -> None:
         assert isinstance(node.iter, ast.Call)
-        arguments = node.iter.args
-        if not 1 <= len(arguments) <= 3 or node.iter.keywords:
-            raise CompileError(
-                "range takes a stop, or a start, a stop and a step: range(10)",
-                node.iter,
-            )
-        values = [self.translator.numeric(a, "range") for a in arguments]
-        step = literal(1)
-        if len(values) == 3:
-            step = values[2]
-            if not (
-                isinstance(step.template, int)
-                and not isinstance(step.template, bool)
-                and step.template != 0
-            ):
-                raise CompileError(
-                    "the step of range is a nonzero whole number, such as 2 or -1",
-                    arguments[2],
-                )
-        start, stop = (literal(0), values[0]) if len(values) == 1 else values[:2]
+        start, stop, step = self.translator.range_arguments(node.iter)
 
         def attempt() -> tuple[Loop, dict[str, Type | None]]:
             if start.variables & self.pending.keys():
