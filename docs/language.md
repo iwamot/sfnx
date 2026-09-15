@@ -104,6 +104,11 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `str(uuid.uuid4())`, `f"{uuid.uuid4()}"` | `$uuid()` |
 | `str(datetime.now())`, `f"{datetime.now()}"` | `$now()` |
 | `time.time()` | `$millis() / 1000` |
+| `s.ljust(5, "0")`, `s.rjust(5, "0")` | `$pad($s, 5, '0')`, `$pad($s, -5, '0')` |
+| `list(set(xs))` | `$distinct($xs)` |
+| `list(zip(a, b))` | `$zip($a, $b)` |
+| `list(itertools.batched(xs, n))` | `[$partition($xs, $n)]` |
+| `hashlib.sha256(s.encode()).hexdigest()` | `$hash($s, 'SHA-256')` |
 | `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
 | `s[1:3]`, `s[-3:]`, `s[1:-1]` | `$substring($s, 1, 2)`, `$substring($s, -3, 3)`, `$substring($s, 1, $length($s) - 2)` |
 | `xs[1:3]`, `xs[-2:]` | `[$filter($xs, function($v, $i) { $i >= 1 and $i < 3 })]`, `[$filter($xs, function($v, $i) { $i >= $count($xs) - 2 })]` |
@@ -114,10 +119,11 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 
 - A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
 - A slice bound written with a minus sign (`xs[-2:]`, `xs[-n:]`) counts back from the end; any other bound is a position from the start. A slice takes no step other than `[::-1]`, and one of a list holding lists keeps them as items, as a comprehension does.
-- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper`, `join`, `startswith` and `endswith`, and only dicts `keys`, `values` and `get`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
+- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust` and `rjust`, and only dicts `keys`, `values` and `get`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
 - `sum`, `max` and `min` take numbers, as their JSONata functions do, so a list known to hold anything else is rejected, as are `sum(xs, start)` and keyword arguments such as `key=`. `sum(xs) / len(xs)` is `$average` when both read the same list.
 - `sorted` orders numbers or strings, as `$sort` does without a function, so a list known to hold anything else is rejected, and it takes `reverse=` but no `key=`. `range()` outside a `for` is a list; a step, when given, is a nonzero whole number written in the source.
-- Functions of `math`, `random`, `time`, `json`, `uuid` and `datetime` are recognized through the module's imports, such as `import math` or `from datetime import datetime`.
+- `set()`, `zip()` and `itertools.batched()` make lists in `list()`, `sorted()` or `reversed()`, and a digest is `hashlib.sha256(s.encode()).hexdigest()`, with `md5`, `sha1`, `sha384` or `sha512` in place of `sha256` for the others. `itertools.batched` needs Python 3.12 where the module is run.
+- Functions of `math`, `random`, `time`, `json`, `uuid`, `datetime`, `hashlib` and `itertools` are recognized through the module's imports, such as `import math` or `from datetime import datetime`.
 - `context["State"]["EnteredTime"]` has the form `$now()` returns, so the date or the year a state was entered is a slice of it: `context["State"]["EnteredTime"][:10]` and `int(context["State"]["EnteredTime"][:4])`.
 - f-strings take no conversions (`!r`, `{x=}`) and no format specs.
 - A string literal that starts with `{%` or ends with `%}` is written as a JSONata string, so Step Functions does not read it as an expression.
@@ -233,7 +239,7 @@ except Exception:
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith` and `endswith` of strings and `keys`, `values` and `get` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time` and `json.loads`, and `uuid.uuid4()` or `datetime.now()` outside `str()` or an f-string.
+- **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust` and `rjust` of strings and `keys`, `values` and `get` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, `set` and `zip` outside `list()`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()` and the `hashlib` digests, and `uuid.uuid4()` or `datetime.now()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -257,6 +263,9 @@ Some values come out differently from CPython. These are the differences known s
 | `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
 | `str(datetime.now())` | any time | the time in UTC, such as `"2026-09-15T13:43:06.735Z"` | the local time, such as `"2026-09-15 22:43:06.735213"` |
 | `time.time()` | any time | seconds to the millisecond, such as `1789479402.245` | seconds to a finer digit, such as `1789479402.8365781` |
+| `s.ljust(n, fill)`, `s.rjust(n, fill)` | a `fill` of several characters | the fill repeated as far as it goes | `TypeError` |
+| `list(set(xs))` | `[2, 1, 2]`, `[True, 1]`, `[{"a": 1}, {"a": 1}]` | `[2, 1]` in the order first seen, `[true, 1]`, `[{"a": 1}]` | an order of its own, `[True]`, `TypeError` |
+| `list(itertools.batched(xs, n))` | `n` is `0` | `[]` | `ValueError` |
 | `round(x, digits)` | `2.675` to 2 digits | `2.68` | `2.67` |
 | `max(xs)`, `min(xs)` with items of unknown type | strings | `States.QueryEvaluationError` | the greatest or least string |
 | `int(x)` | `-1.5` | `-2` (`$floor`) | `-1` |
