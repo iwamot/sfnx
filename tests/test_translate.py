@@ -325,7 +325,7 @@ def test_evaluation(body, execution_input, expected):
             "dict() does not convert here; declare the type instead: x: dict = ...",
         ),
         ('return any(input["a"])', "calling any() is not supported"),
-        ('return input["a"].get("k")', "input['a'].get() is not supported"),
+        ('return input["a"].append("k")', "input['a'].append() is not supported"),
         ('return isinstance(input["a"])', "isinstance takes a value and a class"),
         ('return isinstance(input["a"], list[str])', "isinstance takes str, float"),
         ('return isinstance(input["a"], None)', "test None with `is None`"),
@@ -649,7 +649,10 @@ def test_keys_and_values_evaluate():
             'xs: list = input["xs"]\nreturn xs.keys()',
             "xs is a array; keys() is a dict method",
         ),
-        ("return d.keys(1)", "keys() takes no arguments"),
+        ("return d.keys(1)", "keys() is written d.keys()"),
+        ("return d.get()", "get() is written d.get(key) or d.get(key, default)"),
+        ('return d.get("a", default=1)', "get() is written d.get(key)"),
+        ("return d.get(1)", "1 is a number; keys are strings"),
         (
             'v: dict | None = input["v"]\nreturn v.values()',
             "v may be null | object; narrow it first",
@@ -835,3 +838,38 @@ def test_list_and_string_function_diagnostics(body, message):
     with pytest.raises(CompileError) as raised:
         compile_source(source(LISTS + body))
     assert message in raised.value.message
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ('return d.get("a")', "$exists($d.a) ? $d.a : null"),
+        ('return d.get("a", 0)', "$exists($d.a) ? $d.a : 0"),
+        (
+            'k: str = input["k"]\nreturn d.get(k, "none")',
+            "$exists($lookup($d, $k)) ? $lookup($d, $k) : 'none'",
+        ),
+        (
+            'return input.get("coupon")',
+            f"$exists({INPUT}.coupon) ? {INPUT}.coupon : null",
+        ),
+        ('return flat.get("x", 0) + 1', "($exists($flat.x) ? $flat.x : 0) + 1"),
+    ],
+)
+def test_get(body, code):
+    assert output(DICTS + body) == "{% " + code + " %}"
+
+
+def test_get_evaluates():
+    body = DICTS + (
+        'k: str = input["k"]\n'
+        'return [d.get("a"), d.get("b", 0), d.get(k, "none"), d.get("n", 5), '
+        'input.get("coupon"), flat.get("x", 0) + 1]'
+    )
+    execution_input = {
+        "d": {"a": 1, "n": None},
+        "k": "a",
+        "flat": {"x": 2},
+        "nested": {},
+    }
+    assert asl.run(definition(body), execution_input) == [1, 0, 1, None, None, 3]

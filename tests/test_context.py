@@ -33,6 +33,13 @@ def output(
             "$states.context.StateMachine.Name & '!'",
         ),
         ("context", "$states.context"),
+        (
+            'context["Execution"].get("RedriveTime")',
+            (
+                "$exists($states.context.Execution.RedriveTime) ? "
+                "$states.context.Execution.RedriveTime : null"
+            ),
+        ),
     ],
 )
 def test_context_reads_states_context(expression, code):
@@ -91,6 +98,14 @@ def test_the_task_token_in_a_callback():
         (
             'return context["Map"]["Item"]',
             "Map.Item is readable only where a Map selects its items",
+        ),
+        (
+            'return context["Execution"].get("Nmae")',
+            "the Context Object has no Nmae here; did you mean Name?",
+        ),
+        (
+            'return context.get("Task")',
+            "the task token exists only in the arguments of a .waitForTaskToken task",
         ),
     ],
 )
