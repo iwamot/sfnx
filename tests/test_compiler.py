@@ -194,7 +194,6 @@ def test_asl_matches_python(body, execution_input):
         (machine("return 1\nx = 2"), "never reached", "7:5"),
         (machine("x[0] = 1"), "one variable per statement", "6:5"),
         (machine("x = y = 1"), "one variable per statement", "6:9"),
-        (machine("states = 1"), "reserves $states", "6:5"),
         (machine("return b'x'"), "only JSON values", "6:12"),
         (machine("return 1e999"), "JSON numbers are finite", "6:12"),
         (machine("return {1: 2}"), "keys are strings", "6:13"),
@@ -204,8 +203,6 @@ def test_asl_matches_python(body, execution_input):
         (machine("return input.x"), 'read a key with x["key"]', "6:12"),
         (machine("x" * 81 + " = 1"), "at most 80 characters", "6:5"),
         (machine("x" * 80 + " = 1\n" + "x" * 80 + " = 2"), "longer than 80", "7:5"),
-        (machine("_tmp = 1"), "cannot start with _; rename it to tmp", "6:5"),
-        (machine("__ = 1"), "cannot start with _; rename it to value", "6:5"),
         (HEADER + "def pay(input):\n    return 1", "no state machine here", "1:1"),
         (
             HEADER + "@state_machine\nasync def pay(input):\n    return 1",

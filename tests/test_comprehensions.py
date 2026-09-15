@@ -220,10 +220,6 @@ def test_evaluation(body, execution_input, expected):
             's: str = input["s"]\nreturn [c for c in s]',
             "s is a string; a comprehension iterates lists and the keys of dicts",
         ),
-        (
-            'xs: list = input["xs"]\nreturn [states for states in xs]',
-            "states would hide a JSONata name",
-        ),
         ('xs: list = input["xs"]\nreturn (x for x in xs)', "JSON has lists only"),
         (
             'xs: list = input["xs"]\nreturn {x: 1 for x in xs}',

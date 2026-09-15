@@ -307,13 +307,13 @@ class Translator:
         self,
         bindings: dict[str, Expr],
         names: dict[str, str],
-        identifiers: frozenset[str],
+        spellings: dict[str, str],
         partial: set[str],
         compose: Compose,
     ):
         self.bindings = bindings
         self.names = names
-        self.identifiers = identifiers
+        self.spellings = spellings
         self.partial = partial
         # A statement that can become a Task lets one task() in; the call is
         # kept here. Inside a branch of an expression it would not always run.
@@ -336,7 +336,7 @@ class Translator:
         self.is_function: Callable[[str], bool] = lambda name: False
 
     def spelling(self, name: str) -> str:
-        return spelling(name, self.identifiers)
+        return spelling(name, self.spellings)
 
     def statement_value(self, node: ast.expr) -> tuple[Expr, StateCall | None]:
         """The value of an assignment, a return or an expression statement,
@@ -465,7 +465,6 @@ class Translator:
                 generator.target,
             )
         name = generator.target.id
-        check_name(name, generator.target)
         source = self.expr(generator.iter)
         kind = self.known(
             generator.iter,
@@ -2038,14 +2037,3 @@ def may_be_list(kind: Type | None) -> bool:
 
 def function(parameter: str, body: Expr) -> Expr:
     return expression(f"function(${parameter}) {{ {body.code} }}", body.variables)
-
-
-def check_name(name: str, node: ast.AST) -> None:
-    """A comprehension variable becomes a JSONata parameter, which hides
-    $states of the same name inside it."""
-    if name == "states" or name.startswith("_"):
-        raise CompileError(
-            f"{name} would hide a JSONata name inside the comprehension; "
-            "choose another name",
-            node,
-        )

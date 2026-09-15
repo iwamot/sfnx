@@ -41,7 +41,6 @@ from sfnx.module import Module, module, qualified
 from sfnx.translate import StateCall, Translator, text
 
 # Step Functions reserves $states for its own variables.
-RESERVED = {"states"}
 MAX_VARIABLE = 80
 # How often a loop is compiled again with wider types before a type that keeps
 # changing is taken as unknown.
@@ -199,7 +198,7 @@ class Scope:
         self.parameters = parameters
         self.partial: set[str] = set()
         self.translator = Translator(
-            bindings, module.names, module.identifiers, self.partial, self.compose
+            bindings, module.names, module.spellings, self.partial, self.compose
         )
         self.translator.is_function = lambda name: (
             name in self.functions or name in module.functions
@@ -238,10 +237,10 @@ class Scope:
         self.handling: list[Handler] = []
 
     def spelling(self, name: str) -> str:
-        return spelling(name, self.module.identifiers)
+        return spelling(name, self.module.spellings)
 
     def variable(self, name: str, type: Type | None) -> Expr:
-        return variable(name, self.module.identifiers, type)
+        return variable(name, self.module.spellings, type)
 
     def add(self, base: str, state: dict[str, object], node: ast.AST) -> str:
         if self.remark is not None:
@@ -1422,7 +1421,12 @@ class Scope:
         """A variable of the loop's own, named after what it counts."""
         name = base
         serial = 1
-        while name in self.taken or name in self.hidden or name in self.bindings:
+        while (
+            name in self.taken
+            or name in self.hidden
+            or name in self.bindings
+            or name in self.module.spellings.values()
+        ):
             serial += 1
             name = f"{base}_{serial}"
         self.hidden.add(name)
@@ -1814,19 +1818,8 @@ def commented(state: dict[str, object], comment: str) -> dict[str, object]:
 
 
 def check_variable(name: str, node: ast.AST) -> None:
-    """Names Step Functions would not accept."""
-    if name in RESERVED:
-        raise CompileError(
-            f"Step Functions reserves ${name}; choose another variable name", node
-        )
-    # Step Functions variable names start with a Unicode ID_Start character,
-    # which Python identifiers share except for the underscore.
-    if name.startswith("_"):
-        raise CompileError(
-            "Step Functions variable names cannot start with _; "
-            f"rename it to {name.lstrip('_') or 'value'}",
-            node,
-        )
+    """A name longer than Step Functions takes; spellings() renames the others
+    it would not accept."""
     if len(name) > MAX_VARIABLE:
         raise CompileError(
             f"Step Functions variable names are at most {MAX_VARIABLE} characters; "

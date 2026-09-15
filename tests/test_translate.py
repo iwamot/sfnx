@@ -5,6 +5,7 @@ import pytest
 
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
+from sfnx.expressions import spellings
 from tests import asl
 
 INPUT = "$states.context.Execution.Input"
@@ -993,3 +994,33 @@ def test_hashlib_without_import():
     with pytest.raises(CompileError) as raised:
         compile_source(source('return hashlib.sha256(input["s"].encode()).hexdigest()'))
     assert raised.value.message == "hashlib is not imported; write import hashlib"
+
+
+@pytest.mark.parametrize(
+    "identifiers, found",
+    [
+        (
+            ["_tmp", "states", "count", "x"],
+            {"_tmp": "tmp", "states": "states_val", "count": "count_val"},
+        ),
+        (["_tmp", "tmp", "__tmp"], {"__tmp": "tmp_2", "_tmp": "tmp_3"}),
+        (["__", "_1"], {"__": "value", "_1": "value_1"}),
+        (["_count", "count_val"], {"_count": "count_val_2"}),
+    ],
+)
+def test_names_step_functions_would_not_take_are_renamed(identifiers, found):
+    assert spellings(frozenset(identifiers)) == found
+
+
+def test_renamed_variables_run():
+    body = (
+        '_tmp = input["a"]\nstates = 2\n_ = 3\n'
+        "return [_tmp, states, _, [_x * 2 for _x in [_tmp]]]"
+    )
+    compiled = definition(body)
+    assert compiled["States"]["_tmp"]["Assign"] == {
+        "tmp": f"{{% {INPUT}.a %}}",
+        "states_val": 2,
+        "value": 3,
+    }
+    assert asl.run(compiled, {"a": 1}) == [1, 2, 3, [2]]
