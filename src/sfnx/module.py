@@ -9,17 +9,31 @@ from sfnx.diagnostics import CompileError
 @dataclass(frozen=True)
 class Module:
     """names maps imported local names to what they import (sfnx.wait);
-    classes and functions hold what the module defines at its top level."""
+    classes and functions hold what the module defines at its top level, and
+    identifiers every name it binds or reads."""
 
     names: dict[str, str]
     classes: dict[str, ast.ClassDef]
     functions: dict[str, ast.FunctionDef]
+    identifiers: frozenset[str]
 
 
 def module(tree: ast.Module) -> Module:
     classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
     functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-    return Module(imports(tree), classes, functions)
+    return Module(imports(tree), classes, functions, identifiers(tree))
+
+
+def identifiers(tree: ast.Module) -> frozenset[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+    return frozenset(names)
 
 
 def imports(tree: ast.Module) -> dict[str, str]:

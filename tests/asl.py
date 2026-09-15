@@ -1,6 +1,8 @@
 """Run compiled definitions without an emulator, evaluating JSONata with
 jsonata-python, so a program's ASL result can be compared with CPython's."""
 
+import json
+import uuid
 from collections.abc import Callable, Mapping
 
 import jsonata
@@ -22,6 +24,9 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     its null value, and an undefined result fails as it does in Step Functions."""
     expression = jsonata.Jsonata(code)
     expression.set_output_convert_nulls(False)
+    # The functions Step Functions adds to JSONata.
+    expression.register_lambda("parse", parse)
+    expression.register_lambda("uuid", lambda: str(uuid.uuid4()))
     try:
         result = expression.evaluate(None, nulls({**variables, "states": states}))
     except jsonata.JException as exc:
@@ -29,6 +34,15 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     if result is None:
         raise Failure("States.QueryEvaluationError", f"{code} is undefined")
     return Utils.convert_nulls(result)
+
+
+def parse(text: str) -> object:
+    """$parse as Python's json reads the text, which accepts NaN and rejects
+    single quotes where Step Functions does the opposite."""
+    try:
+        return nulls(json.loads(text))
+    except ValueError as exc:
+        raise jsonata.JException(str(exc)) from exc
 
 
 def nulls(data: object) -> object:

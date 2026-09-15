@@ -11,7 +11,6 @@ from sfnx.expressions import (
     ADD,
     AND,
     COMPARE,
-    FUNCTIONS,
     MULTIPLY,
     OR,
     Expr,
@@ -25,6 +24,7 @@ from sfnx.expressions import (
     literal,
     negate,
     obj,
+    spelling,
     uses,
 )
 from sfnx.integrations import HTTP_METHODS, Integration, ResourceError, integration
@@ -140,6 +140,10 @@ Compose = Callable[[ast.Call, str], tuple[dict[str, object], Type | None]]
 
 COMPOSED = {"parallel": "Parallel", "inline_map": "Map", "distributed_map": "Map"}
 
+# The standard library functions sfnx compiles, named in the message when their
+# module is not imported.
+MODULE_FUNCTIONS = frozenset({"json.loads", "uuid.uuid4"})
+
 
 class Translator:
     """Translate expressions against the variables bound where they appear.
@@ -152,11 +156,13 @@ class Translator:
         self,
         bindings: dict[str, Expr],
         names: dict[str, str],
+        identifiers: frozenset[str],
         partial: set[str],
         compose: Compose,
     ):
         self.bindings = bindings
         self.names = names
+        self.identifiers = identifiers
         self.partial = partial
         # A statement that can become a Task lets one task() in; the call is
         # kept here. Inside a branch of an expression it would not always run.
@@ -177,6 +183,9 @@ class Translator:
         self.expired: set[str] = set()
         # Whether a name is a function defined for parallel() or a map.
         self.is_function: Callable[[str], bool] = lambda name: False
+
+    def spelling(self, name: str) -> str:
+        return spelling(name, self.identifiers)
 
     def statement_value(self, node: ast.expr) -> tuple[Expr, StateCall | None]:
         """The value of an assignment, a return or an expression statement,
@@ -325,7 +334,7 @@ class Translator:
         saved = self.bindings.get(name)
         # The parameter of the JSONata function, not a Step Functions variable:
         # a variable of the same name that another binding reads would be hidden.
-        self.bindings[name] = expression("$" + name, type=item)
+        self.bindings[name] = expression("$" + self.spelling(name), type=item)
         self.comprehending += 1
         try:
             tests = []
@@ -354,13 +363,15 @@ class Translator:
             test = tests[0]
             for more in tests[1:]:
                 test = binary(test, "and", more, AND, of(BOOLEAN), True)
-            result = call("filter", [source, function(name, test)], source.type)
+            result = call(
+                "filter", [source, function(self.spelling(name), test)], source.type
+            )
         mapped = not (isinstance(node.elt, ast.Name) and node.elt.id == name)
         if mapped:
             if tests and may_be_list(item):
                 # $map would iterate the items of a single list $filter kept.
                 result = expression(result.code + "[]", result.variables)
-            result = call("map", [result, function(name, element)], None)
+            result = call("map", [result, function(self.spelling(name), element)], None)
         else:
             element = replace(element, type=item)
         # The functions leave out their parameter; what the source reads stays,
@@ -397,6 +408,9 @@ class Translator:
                     "differently, so build the text from the number",
                     value.format_spec,
                 )
+            if self.is_uuid4(value.value):
+                pieces.append(call("uuid", [], of(STRING)))
+                continue
             part = self.expr(value.value)
             if part.type is None or part.type.kinds != {STRING}:
                 part = text(part)
@@ -437,21 +451,41 @@ class Translator:
         )
 
     def mapping(self, node: ast.Dict) -> Expr:
-        entries = []
+        """A dict literal. With ** it is $merge of the unpacked dicts and the
+        runs of keys between them, where a later key wins."""
+        parts: list[Expr] = []
+        entries: list[tuple[str, Expr]] = []
         for key, value in zip(node.keys, node.values, strict=True):
             if key is None:
-                raise CompileError(
-                    "unpacking with ** is not supported; write the keys out, "
-                    'such as {"id": x["id"]}',
-                    value,
-                )
+                if entries:
+                    parts.append(obj(entries))
+                    entries = []
+                parts.append(self.unpacked(value))
+                continue
             if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
                 raise CompileError(
-                    "JSON object keys are strings; write the key in quotes",
-                    key or value,
+                    "JSON object keys are strings; write the key in quotes", key
                 )
             entries.append((key.value, self.expr(value)))
-        return obj(entries)
+        if not parts:
+            return obj(entries)
+        if entries:
+            parts.append(obj(entries))
+        elif len(parts) == 1:
+            # A JSON value is a copy already.
+            return replace(parts[0], type=parts[0].type or of(OBJECT))
+        listed = expression("[" + ", ".join(p.code for p in parts) + "]", uses(parts))
+        return call("merge", [listed], of(OBJECT))
+
+    def unpacked(self, node: ast.expr) -> Expr:
+        value = self.expr(node)
+        if value.type is not None and value.type.kinds != {OBJECT}:
+            if value.type.kind is None:
+                raise CompileError(several(node, value.type), node)
+            raise CompileError(
+                f"{ast.unparse(node)} is a {value.type.kind}; ** unpacks dicts", node
+            )
+        return value
 
     def known(self, node: ast.expr, value: Expr, hint: str, purpose: str) -> str:
         """The one type an operation depends on."""
@@ -798,6 +832,26 @@ class Translator:
                 "call it on its own line",
                 node,
             )
+        if target == "json.loads":
+            return self.json_loads(node)
+        if target == "uuid.uuid4":
+            if node.args or node.keywords:
+                raise CompileError(
+                    "uuid.uuid4() takes no arguments: str(uuid.uuid4())", node
+                )
+            raise CompileError(
+                "uuid.uuid4() is a UUID object, not JSON; write str(uuid.uuid4())",
+                node,
+            )
+        if (
+            not target
+            and isinstance(node.func, ast.Attribute)
+            and ast.unparse(node.func) in MODULE_FUNCTIONS
+        ):
+            module = ast.unparse(node.func.value)
+            raise CompileError(
+                f"{module} is not imported; write import {module}", node.func
+            )
         if not isinstance(node.func, ast.Name):
             raise CompileError(
                 "methods are not supported; write the operation with operators "
@@ -811,6 +865,8 @@ class Translator:
         if name in {"len", "float", "int", "str", "bool"}:
             if len(node.args) != 1:
                 raise CompileError(f"{name}() takes one argument: {name}(x)", node)
+            if name == "str" and self.is_uuid4(node.args[0]):
+                return call("uuid", [], of(STRING))
             argument = self.expr(node.args[0])
             if name == "float":
                 return call("number", [argument], of(NUMBER))
@@ -851,6 +907,30 @@ class Translator:
             "compute it in a Lambda task",
             node,
         )
+
+    def is_uuid4(self, node: ast.expr) -> bool:
+        """uuid.uuid4() in str() or an f-string, the text $uuid() returns."""
+        return (
+            isinstance(node, ast.Call)
+            and qualified(node.func, self.names) == "uuid.uuid4"
+            and not node.args
+            and not node.keywords
+        )
+
+    def json_loads(self, node: ast.Call) -> Expr:
+        if node.keywords or len(node.args) != 1:
+            raise CompileError("json.loads() takes one string: json.loads(s)", node)
+        text_node = node.args[0]
+        value = self.expr(text_node)
+        if value.type is not None and value.type.kinds != {STRING}:
+            if value.type.kind is None:
+                raise CompileError(several(text_node, value.type), text_node)
+            raise CompileError(
+                f"{ast.unparse(text_node)} is a {value.type.kind}; "
+                "json.loads() reads a string",
+                text_node,
+            )
+        return call("parse", [value], None)
 
     def check_import(self, node: ast.Name) -> None:
         """A name sfnx exports, used without importing it and not defined here."""
@@ -1138,15 +1218,20 @@ def check_arguments(node: ast.expr, called: Integration) -> None:
     """The keys of a literal arguments dict against the API."""
     if not isinstance(node, ast.Dict):
         return
-    # The dict has been translated, so its keys are literal strings.
+    # The dict has been translated, so its keys are literal strings or the
+    # dicts ** unpacks, whose keys are known only when it runs.
     keys: dict[str, ast.expr] = {}
     for key, value in zip(node.keys, node.values, strict=True):
+        if key is None:
+            continue
         assert isinstance(key, ast.Constant) and isinstance(key.value, str)
         keys[key.value] = value
         if called.allowed is not None and key.value not in called.allowed:
             close = difflib.get_close_matches(key.value, sorted(called.allowed), n=1)
             hint = f"; did you mean {close[0]}?" if close else ""
             raise CompileError(f"{called.name} has no argument {key.value}{hint}", key)
+    if None in node.keys:
+        return
     missing = called.required - keys.keys()
     if missing:
         raise CompileError(
@@ -1200,9 +1285,9 @@ def function(parameter: str, body: Expr) -> Expr:
 
 
 def check_name(name: str, node: ast.AST) -> None:
-    """A comprehension variable becomes a JSONata parameter, which hides a
-    function or $states of the same name inside it."""
-    if name == "states" or name in FUNCTIONS or name.startswith("_"):
+    """A comprehension variable becomes a JSONata parameter, which hides
+    $states of the same name inside it."""
+    if name == "states" or name.startswith("_"):
         raise CompileError(
             f"{name} would hide a JSONata name inside the comprehension; "
             "choose another name",

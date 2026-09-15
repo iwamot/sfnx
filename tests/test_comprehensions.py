@@ -221,10 +221,6 @@ def test_evaluation(body, execution_input, expected):
             "s is a string; a comprehension iterates lists and the keys of dicts",
         ),
         (
-            'xs: list = input["xs"]\nreturn [count for count in xs]',
-            "count would hide a JSONata name inside the comprehension",
-        ),
-        (
             'xs: list = input["xs"]\nreturn [states for states in xs]',
             "states would hide a JSONata name",
         ),
