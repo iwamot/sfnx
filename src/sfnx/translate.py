@@ -183,7 +183,11 @@ STRING_METHODS = {
 }
 
 # The methods of dict that compile to a JSONata function, and how each is written.
-DICT_METHODS = {"keys": "d.keys()", "values": "d.values()"}
+DICT_METHODS = {
+    "keys": "d.keys()",
+    "values": "d.values()",
+    "get": "d.get(key) or d.get(key, default)",
+}
 
 
 class Translator:
@@ -960,6 +964,9 @@ class Translator:
 
     def call(self, node: ast.Call) -> Expr:
         target = qualified(node.func, self.names) or ""
+        if target.startswith("sfnx.context."):
+            # A method of the Context Object, which is a dict.
+            target = ""
         if target == "sfnx.task":
             return self.task_call(node)
         if target.startswith("sfnx.") and target[5:] in COMPOSED:
@@ -1268,16 +1275,16 @@ class Translator:
         raise CompileError(f"{name}() is written {usage}", node)
 
     def dict_method(self, node: ast.Call, method: ast.Attribute) -> Expr:
-        """d.keys() and d.values(). Of the JSON types only dicts have these
-        methods, so a receiver of unknown type needs no annotation."""
+        """d.keys(), d.values() and d.get(). Of the JSON types only dicts have
+        these methods, so a receiver of unknown type needs no annotation."""
         name = method.attr
         mapping = self.operand(
             method.value, OBJECT, f"{name}() is a dict method: {DICT_METHODS[name]}"
         )
-        if node.args or node.keywords:
-            raise CompileError(
-                f"{name}() takes no arguments: {DICT_METHODS[name]}", node
-            )
+        if name == "get" and not node.keywords and len(node.args) in {1, 2}:
+            return self.get(mapping, node.args)
+        if name == "get" or node.args or node.keywords:
+            raise CompileError(f"{name}() is written {DICT_METHODS[name]}", node)
         if name == "keys":
             return keys_of(mapping)
         values = mapping.type.values if mapping.type else None
@@ -1288,6 +1295,22 @@ class Translator:
         return expression(
             code, mapping.variables, type=of(ARRAY, items=values), constructor=True
         )
+
+    def get(self, mapping: Expr, arguments: list[ast.expr]) -> Expr:
+        """d.get(key, default) as the value when the key exists, and otherwise
+        the default, or null without one."""
+        key = arguments[0]
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            if mapping.type is not None and mapping.type in CONTEXT_OBJECTS:
+                self.context_field(key, mapping.type, key.value)
+            value = field(mapping, key.value)
+        else:
+            name = self.operand(key, STRING, "keys are strings")
+            values = mapping.type.values if mapping.type else None
+            value = call("lookup", [mapping, name], values)
+        default = self.expr(arguments[1]) if len(arguments) == 2 else literal(None)
+        present = call("exists", [value], of(BOOLEAN), boolean=True)
+        return conditional(present, value, default, union(value.type, default.type))
 
     def listed(self, node: ast.expr, name: str = "list") -> Expr:
         """list(x): the keys of a dict, the characters of a string, or a list
