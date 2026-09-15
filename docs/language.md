@@ -88,7 +88,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 - `x += v`, `x -= v` and the others are `x = x + v` and so on. A list is the exception: `xs += [...]` extends the list in place in Python, which a JSON value cannot do, so write `xs = xs + [...]`.
 - A key or a position cannot be assigned (`d["k"] = v`); build the new dict or list as a literal.
 
-Variable names become JSONata variable names, so they follow Step Functions' rules: no leading `_`, at most 80 characters and not `states`. A variable named after a JSONata function the generated code calls (`count`, `string`, `keys`, `merge`, ...) would hide that function, so it gets `_val` appended (`$count_val`), or `_val_2`, `_val_3` and so on when the module already uses that name. A variable used after a branch must be assigned on every path to it.
+Variable names become JSONata variable names, so they follow Step Functions' rules: no leading `_`, at most 80 characters and not `states`. A variable's name in the generated ASL is the name in the Python, so choose the Python name for what you want to read there. A variable named after a JSONata function the generated code calls (`count`, `string`, `keys`, `merge`, ...) would hide that function, so it gets `_val` appended (`$count_val`), or `_val_2`, `_val_3` and so on when the module already uses that name. A variable used after a branch must be assigned on every path to it.
 
 A `parallel` branch or a Map function cannot assign a name that its enclosing function assigns anywhere; Step Functions keeps those scopes apart. Return the value instead. Variables that sfnx adds for itself (loop counters, caught errors) never clash across scopes.
 
