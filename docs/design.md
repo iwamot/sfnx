@@ -89,6 +89,8 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$lowercase` and `$uppercase` changed `İ`, `ẞ`, `Σ`, `ß`, `ǆ` and `ﬁ` as Python's `lower()` and `upper()` do (measured).
 - `$substring` counts a negative start in UTF-16 units in Step Functions but in code points in jsonata-python (`$substring('héllo😀', -1, 1)`); `$length` counts code points in both (measured). On text with characters outside the Basic Multilingual Plane, Step Functions also returned other characters or half of one for some positive positions and lengths (`$substring('a😀b', 1, 1)`), and without a length it failed at 30 of 35 starts, where with a length it failed at none (measured).
 - `$substring` with a negative start past the beginning starts at the beginning and takes the length from there (`$substring('hello', -10, 2)` is `"he"`); a negative length gives `""` (measured).
+- `$keys` returns the one key of an object as itself and nothing for an empty object; `$each` does the same with the results of its function, and returns a single result that is an array as that array (measured).
+- `$split($s, '')` splits a character outside the Basic Multilingual Plane into two items, neither of them the character (measured).
 - `$xs[[a..b]]` returns the item itself for a range of one position and undefined for an empty range, while `$filter` passes each item's position as the second parameter of its function (measured).
 - Variable names are Unicode identifiers (ID_Start, then ID_Continue), at most 80 characters; `$states` is reserved. Non-ASCII names work (measured).
 - A string is evaluated when it starts with `{%` and ends with `%}`, including strings inside objects and arrays; a half-open one fails validation.

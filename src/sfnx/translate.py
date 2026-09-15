@@ -162,6 +162,9 @@ STRING_METHODS = {
     "join": "sep.join(items)",
 }
 
+# The methods of dict that compile to a JSONata function, and how each is written.
+DICT_METHODS = {"keys": "d.keys()", "values": "d.values()"}
+
 
 class Translator:
     """Translate expressions against the variables bound where they appear.
@@ -963,12 +966,18 @@ class Translator:
             and node.func.attr in STRING_METHODS
         ):
             return self.string_method(node, node.func)
+        if (
+            not target
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in DICT_METHODS
+        ):
+            return self.dict_method(node, node.func)
         if not isinstance(node.func, ast.Name):
             raise CompileError(
                 f"{ast.unparse(node.func)}() is not supported; write the operation "
                 "with operators or supported functions, or compute it in a Lambda "
                 "task (the methods sfnx compiles are split, replace, lower, upper "
-                "and join of strings)",
+                "and join of strings, and keys and values of dicts)",
                 node.func,
             )
         self.check_import(node.func)
@@ -1003,10 +1012,13 @@ class Translator:
                 "for i in range(len(items)): item = items[i]",
                 node,
             )
-        if name in {"list", "dict"}:
+        if name == "list":
+            if len(node.args) != 1:
+                raise CompileError("list() takes one argument: list(d)", node)
+            return self.listed(node.args[0])
+        if name == "dict":
             raise CompileError(
-                f"{name}() does not convert here; declare the type instead: "
-                f"x: {name} = ...",
+                "dict() does not convert here; declare the type instead: x: dict = ...",
                 node,
             )
         if self.is_function(name):
@@ -1033,7 +1045,7 @@ class Translator:
     def json_loads(self, node: ast.Call) -> Expr:
         if node.keywords or len(node.args) != 1:
             raise CompileError("json.loads() takes one string: json.loads(s)", node)
-        value = self.string_operand(node.args[0], "json.loads() reads a string")
+        value = self.operand(node.args[0], STRING, "json.loads() reads a string")
         return call("parse", [value], None)
 
     def string_method(self, node: ast.Call, method: ast.Attribute) -> Expr:
@@ -1042,8 +1054,8 @@ class Translator:
         annotation."""
         name = method.attr
         usage = STRING_METHODS[name]
-        receiver = self.string_operand(
-            method.value, f"{name}() is a string method: {usage}"
+        receiver = self.operand(
+            method.value, STRING, f"{name}() is a string method: {usage}"
         )
         if node.keywords:
             raise CompileError(
@@ -1059,8 +1071,8 @@ class Translator:
             trimmed = call("trim", [receiver], text)
             return call("split", [trimmed, literal(" ")], of(ARRAY, items=text))
         if name == "split" and len(arguments) == 1:
-            separator = self.string_operand(
-                arguments[0], f"{name}() splits at a string"
+            separator = self.operand(
+                arguments[0], STRING, f"{name}() splits at a string"
             )
             return call("split", [receiver, separator], of(ARRAY, items=text))
         if name == "split" and len(arguments) == 2:
@@ -1071,7 +1083,7 @@ class Translator:
             )
         if name == "replace" and len(arguments) in {2, 3}:
             rule = f"{name}() replaces strings"
-            values = [self.string_operand(a, rule) for a in arguments[:2]]
+            values = [self.operand(a, STRING, rule) for a in arguments[:2]]
             if len(arguments) == 3:
                 values.append(self.numeric(arguments[2], "the count of replace()"))
             return call("replace", [receiver, *values], text)
@@ -1086,10 +1098,49 @@ class Translator:
             return call("join", [items, receiver], text)
         raise CompileError(f"{name}() is written {usage}", node)
 
-    def string_operand(self, node: ast.expr, rule: str) -> Expr:
-        """A value that must be a string when its type is known."""
+    def dict_method(self, node: ast.Call, method: ast.Attribute) -> Expr:
+        """d.keys() and d.values(). Of the JSON types only dicts have these
+        methods, so a receiver of unknown type needs no annotation."""
+        name = method.attr
+        mapping = self.operand(
+            method.value, OBJECT, f"{name}() is a dict method: {DICT_METHODS[name]}"
+        )
+        if node.args or node.keywords:
+            raise CompileError(
+                f"{name}() takes no arguments: {DICT_METHODS[name]}", node
+            )
+        if name == "keys":
+            return keys_of(mapping)
+        values = mapping.type.values if mapping.type else None
+        each = call("each", [mapping, expression("function($v) { $v }")], None)
+        code = (
+            f"$append([], {each.code}[])" if may_be_list(values) else f"[{each.code}]"
+        )
+        return expression(
+            code, mapping.variables, type=of(ARRAY, items=values), constructor=True
+        )
+
+    def listed(self, node: ast.expr) -> Expr:
+        """list(x): the keys of a dict, the characters of a string, or a list
+        as it is, a JSON value being a copy already."""
         value = self.expr(node)
-        if value.type is not None and value.type.kinds != {STRING}:
+        kind = self.known(node, value, "dict", "list() depends on the type")
+        if kind == OBJECT:
+            return keys_of(value)
+        if kind == STRING:
+            characters = of(ARRAY, items=of(STRING))
+            return call("split", [value, literal("")], characters)
+        if kind == ARRAY:
+            return value
+        raise CompileError(
+            f"{ast.unparse(node)} is a {kind}; list() takes a dict, a list or a string",
+            node,
+        )
+
+    def operand(self, node: ast.expr, kind: str, rule: str) -> Expr:
+        """A value that must be of one kind when its type is known."""
+        value = self.expr(node)
+        if value.type is not None and value.type.kinds != {kind}:
             if value.type.kind is None:
                 raise CompileError(several(node, value.type), node)
             raise CompileError(
@@ -1439,6 +1490,18 @@ def text(value: Expr) -> Expr:
     if value.type == ERROR_OUTPUT:
         return field(value, "Cause")
     return call("string", [value], of(STRING))
+
+
+def keys_of(mapping: Expr) -> Expr:
+    """The keys of a dict as a list: $keys returns one key as itself and none
+    as nothing, which brackets turn into a list."""
+    keys = call("keys", [mapping], None)
+    return expression(
+        f"[{keys.code}]",
+        keys.variables,
+        type=of(ARRAY, items=of(STRING)),
+        constructor=True,
+    )
 
 
 def written(bound: Bound) -> int | None:
