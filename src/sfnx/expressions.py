@@ -88,6 +88,9 @@ FUNCTIONS = frozenset(
     }
 )
 
+# The functions that give another value on every call.
+VOLATILE = frozenset({"millis", "now", "random", "uuid"})
+
 
 @dataclass(frozen=True)
 class Expr:
@@ -98,6 +101,8 @@ class Expr:
     what is known about the value; boolean says the code always yields a JSON
     boolean, so a condition can use it without $boolean. constructor says the
     code is an array constructor, which one around it keeps as one element.
+    volatile says the code may give another value when it is evaluated again,
+    as $random() and $uuid() do, so what writes it twice binds it once first.
     """
 
     code: str
@@ -107,6 +112,7 @@ class Expr:
     type: Type | None = None
     boolean: bool = False
     constructor: bool = False
+    volatile: bool = False
 
 
 def expression(
@@ -116,9 +122,17 @@ def expression(
     type: Type | None = None,
     boolean: bool = False,
     constructor: bool = False,
+    volatile: bool = False,
 ) -> Expr:
     return Expr(
-        code, "{% " + code + " %}", variables, precedence, type, boolean, constructor
+        code,
+        "{% " + code + " %}",
+        variables,
+        precedence,
+        type,
+        boolean,
+        constructor,
+        volatile,
     )
 
 
@@ -190,6 +204,11 @@ def uses(values: list[Expr]) -> frozenset[str]:
     return frozenset().union(*(value.variables for value in values))
 
 
+def changes(values: list[Expr]) -> bool:
+    """Whether a value among values may differ when it is evaluated again."""
+    return any(value.volatile for value in values)
+
+
 def array(items: list[Expr]) -> Expr:
     item_type: Type | None = None
     if items:
@@ -202,6 +221,7 @@ def array(items: list[Expr]) -> Expr:
         uses(items),
         type=Type(frozenset({ARRAY}), item_type, empty=not items),
         constructor=True,
+        volatile=changes(items),
     )
 
 
@@ -217,7 +237,9 @@ def element(item: Expr) -> str:
         return "[" + item.code + "]"
     kind = call("type", [item], of(STRING))
     test = binary(kind, "=", literal("array"), COMPARE, of(BOOLEAN), True)
-    wrapped = Expr("[[" + item.code + "]]", None, item.variables)
+    wrapped = Expr(
+        "[[" + item.code + "]]", None, item.variables, volatile=item.volatile
+    )
     return conditional(test, wrapped, item, item.type).code
 
 
@@ -236,6 +258,7 @@ def obj(entries: list[tuple[str, Expr]]) -> Expr:
             values=values,
             fields=tuple((k, v.type) for k, v in entries),
         ),
+        volatile=changes([v for _, v in entries]),
     )
 
 
@@ -249,7 +272,10 @@ def call(
 ) -> Expr:
     assert function in FUNCTIONS
     code = f"${function}(" + ", ".join(a.code for a in arguments) + ")"
-    return expression(code, uses(arguments), type=type, boolean=boolean)
+    volatile = function in VOLATILE or changes(arguments)
+    return expression(
+        code, uses(arguments), type=type, boolean=boolean, volatile=volatile
+    )
 
 
 def binary(
@@ -267,7 +293,14 @@ def binary(
     code = (
         f"{operand(left, left_precedence)} {operator} {operand(right, precedence + 1)}"
     )
-    return expression(code, uses([left, right]), precedence, type, boolean)
+    return expression(
+        code,
+        uses([left, right]),
+        precedence,
+        type,
+        boolean,
+        volatile=changes([left, right]),
+    )
 
 
 def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> Expr:
@@ -278,6 +311,26 @@ def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> E
         CONDITIONAL,
         type,
         then.boolean and otherwise.boolean,
+        volatile=changes([test, then, otherwise]),
+    )
+
+
+def block(bindings: list[tuple[str, Expr]], body: Expr) -> Expr:
+    """A block that binds each value to its variable, in order, before body:
+    `($v := $random(); $v - 3 * $floor($v / 3))`. A value bound once is read
+    as often as body needs it, evaluated once. Nothing to bind leaves body as
+    it is."""
+    if not bindings:
+        return body
+    bound = "".join(f"${name} := {operand(value, ATOM)}; " for name, value in bindings)
+    values = [value for _, value in bindings]
+    return expression(
+        "(" + bound + body.code + ")",
+        uses([*values, body]),
+        ATOM,
+        body.type,
+        body.boolean,
+        volatile=changes([*values, body]),
     )
 
 
@@ -286,7 +339,7 @@ def negate(value: Expr) -> Expr:
         code = "-" + value.code
     else:
         code = f"-({value.code})"
-    return expression(code, value.variables, UNARY, of(NUMBER))
+    return expression(code, value.variables, UNARY, of(NUMBER), volatile=value.volatile)
 
 
 def field(value: Expr, key: str) -> Expr:
@@ -295,7 +348,12 @@ def field(value: Expr, key: str) -> Expr:
     if "`" in key:
         return call("lookup", [value, literal(key)], values)
     step = key if NAME.fullmatch(key) and key not in LITERALS else "`" + key + "`"
-    return expression(f"{operand(value, ATOM)}.{step}", value.variables, type=values)
+    return expression(
+        f"{operand(value, ATOM)}.{step}",
+        value.variables,
+        type=values,
+        volatile=value.volatile,
+    )
 
 
 def index(value: Expr, position: Expr) -> Expr:
@@ -306,4 +364,6 @@ def index(value: Expr, position: Expr) -> Expr:
     base = value.code
     base = f"({base})" if base.endswith("]") else operand(value, ATOM)
     code = f"{base}[{position.code}]"
-    return expression(code, uses([value, position]), type=items)
+    return expression(
+        code, uses([value, position]), type=items, volatile=changes([value, position])
+    )

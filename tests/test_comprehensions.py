@@ -90,6 +90,17 @@ def test_the_comprehension_variable_cannot_hide_what_another_name_reads():
         compile_source(source(body))
 
 
+def test_a_slice_position_does_not_hide_the_comprehension_variable():
+    # i is the function's parameter, not a variable, and the slice counts
+    # positions under a name of its own.
+    body = 'idx: list[float] = input["idx"]\nxs: list = input["xs"]\nreturn [xs[i:] for i in idx]'
+    assert output(body) == (
+        "{% $append([], $map($idx, function($i) { $append([], $filter($xs, "
+        "function($v, $i_2) { $i_2 >= $i })[]) })[]) %}"
+    )
+    assert run(body, {"idx": [1, 2], "xs": [1, 2, 3]}) == [[2, 3], [3]]
+
+
 def test_types():
     body = (
         'xs: list[float] = input["xs"]\nys = [str(x) for x in xs]\nreturn ys[0] + "!"'

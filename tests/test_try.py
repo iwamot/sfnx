@@ -137,6 +137,23 @@ def test_bare_raise_raises_what_was_caught():
     assert states(body)["raise"]["Type"] == "Fail"
 
 
+@pytest.mark.parametrize("name, spelled", [("_err", "err"), ("states", "states_val")])
+def test_bare_raise_reads_the_error_under_its_spelling(name, spelled):
+    body = f"try:\n    {NOTIFY}\nexcept Declined as {name}:\n    raise\nreturn 0"
+    compiled = states(body)
+    assert compiled["publish"]["Catch"][0]["Assign"] == {
+        spelled: "{% $states.errorOutput %}"
+    }
+    assert compiled["raise"] == {
+        "Type": "Fail",
+        "Error": f"{{% ${spelled}.Error %}}",
+        "Cause": f"{{% ${spelled}.Cause %}}",
+    }
+    with pytest.raises(asl.Failure) as failure:
+        run(body, {}, {"publish": fails("Declined", "no")})
+    assert (failure.value.error, failure.value.cause) == ("Declined", "no")
+
+
 def test_a_raise_that_nothing_catches_is_a_fail():
     body = f'try:\n    {NOTIFY}\n    if input["a"]:\n        raise Expired()\nexcept Declined:\n    return 1\nreturn 0'
     assert states(body)["raise"] == {"Type": "Fail", "Error": "Expired"}

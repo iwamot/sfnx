@@ -863,6 +863,103 @@ def test_number_functions_evaluate():
     ]
 
 
+CHANGING = "import random\nimport uuid\nfrom sfnx import jsonata\n"
+
+
+def changing_definition(body: str) -> dict:
+    (compiled,) = compile_source(CHANGING + source(NUMBERS + body)).values()
+    return compiled
+
+
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        # An operand written twice is bound once when it changes on evaluation.
+        (
+            "return random.random() % 0.5",
+            "($v := $random(); $v - 0.5 * $floor($v / 0.5))",
+        ),
+        ("return a % random.random()", "($v := $random(); $a - $v * $floor($a / $v))"),
+        (
+            "return (random.random() + 1) % 2",
+            "($v := ($random() + 1); $v - 2 * $floor($v / 2))",
+        ),
+        (
+            "return jsonata('$random()') % 2",
+            "($v := ($random()); $v - 2 * $floor($v / 2))",
+        ),
+        (
+            "return 0.2 < random.random() < 0.8",
+            "($v := $random(); 0.2 < $v and $v < 0.8)",
+        ),
+        # The comparisons before it stay as they are, and c is evaluated only
+        # when a < b holds.
+        (
+            "return 0 <= a < random.random() < 1",
+            "0 <= $a and ($v := $random(); $a < $v and $v < 1)",
+        ),
+        (
+            "return 0 <= random.random() < random.random() + 1 < 9",
+            "($v := $random(); 0 <= $v and ($v_2 := ($random() + 1); $v < $v_2 and $v_2 < 9))",
+        ),
+        ("return random.random() or a", "($v := $random(); $boolean($v) ? $v : $a)"),
+        ("return random.random() and a", "($v := $random(); $boolean($v) ? $a : $v)"),
+        (
+            "return str(uuid.uuid4()) is not None",
+            "($v := $uuid(); $exists($v) and $v != null)",
+        ),
+        (
+            "return str(uuid.uuid4()) is None",
+            "$not(($v := $uuid(); $exists($v) and $v != null))",
+        ),
+        (
+            'd: dict = input["d"]\nreturn d.get(str(uuid.uuid4()), a)',
+            "($v := $lookup($d, $uuid()); $exists($v) ? $v : $a)",
+        ),
+        # The variable hides nothing the block reads: not a variable, and not
+        # the parameter of a comprehension, which is not counted as one.
+        (
+            'v: float = input["v"]\nreturn random.random() % v',
+            "($v_2 := $random(); $v_2 - $v * $floor($v_2 / $v))",
+        ),
+        (
+            'v: float = input["v"]\nreturn random.random() or v',
+            "($v_2 := $random(); $boolean($v_2) ? $v_2 : $v)",
+        ),
+        (
+            "return [x % random.random() for x in xs]",
+            "[$map($xs, function($x) { ($v := $random(); $x - $v * $floor($x / $v)) })]",
+        ),
+        (
+            "return [random.random() % 2 for v in xs]",
+            "[$map($xs, function($v) { ($v_2 := $random(); $v_2 - 2 * $floor($v_2 / 2)) })]",
+        ),
+        # A value that holds still is written as it is.
+        ("return a % 3", "$a - 3 * $floor($a / 3)"),
+        ("return 0 <= a < xs[0] < 1", "0 <= $a and $a < $xs[0] and $xs[0] < 1"),
+    ],
+)
+def test_a_value_that_changes_on_evaluation_is_bound_once(body, code):
+    output = changing_definition(body)["States"]["return"]["Output"]
+    assert output == "{% " + code + " %}"
+
+
+def test_bound_values_evaluate():
+    body = (
+        "return [random.random() % 0.5, 0 <= random.random() < 1, "
+        'str(uuid.uuid4()) or "none", str(uuid.uuid4()) is None, '
+        '{"a": random.random()}.get("a", 2) < 1, [str(uuid.uuid4())][0] == a]'
+    )
+    remainder, inside, chosen, missing, present, same = asl.run(
+        changing_definition(body), {"xs": [], "a": "x"}
+    )
+    # Evaluated twice, a random number is in [0, 0.5) only by chance.
+    assert 0 <= remainder < 0.5
+    assert inside is True
+    assert len(chosen) == 36
+    assert (missing, present, same) == (False, True, False)
+
+
 @pytest.mark.parametrize(
     "body, message",
     [

@@ -140,6 +140,35 @@ def test_a_range_stop_the_body_changes_is_copied_first():
     assert "$i < $i_stop" in compiled["for"]["Choices"][0]["Condition"]
 
 
+def test_a_list_that_changes_on_evaluation_is_copied_first():
+    # Read again at each item, [$uuid()] would give another item each time.
+    body = "for item in [str(uuid.uuid4())]:\n    return item == item\nreturn False"
+    (compiled,) = compile_source("import uuid\n" + source(body)).values()
+    assert compiled["States"]["item_items"]["Assign"] == {
+        "item_items": ["{% $uuid() %}"],
+        "item_index": 0,
+    }
+    assert asl.run(compiled, None) is True
+
+
+def test_a_range_stop_that_changes_on_evaluation_is_copied_first():
+    body = (
+        "n = 0\nfor i in range(int(random.random() * 3) + 1):\n    n = n + 1\nreturn n"
+    )
+    (compiled,) = compile_source("import random\n" + source(body)).values()
+    assert "$i < $i_stop" in compiled["States"]["for"]["Choices"][0]["Condition"]
+    assert asl.run(compiled, None) in {1, 2, 3}
+
+
+def test_loop_variables_take_the_spelling_of_the_loop_variable():
+    # _x is spelled x, and a variable named _x_index would start with _ too.
+    body = 'a: list = input["a"]\nfor _x in a:\n    wait(1)\nreturn 0'
+    compiled = states(body)
+    assert compiled["for"]["Choices"][0]["Condition"] == "{% $x_index < $count($a) %}"
+    assigned = {k for state in compiled.values() for k in state.get("Assign", {})}
+    assert assigned == {"a", "x_index"}
+
+
 def test_loop_variables_do_not_clash():
     body = 'value_index = 5\na: list = input["a"]\nfor value in a:\n    for value in a:\n        wait(1)\nreturn value_index'
     compiled = states(body)
