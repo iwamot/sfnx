@@ -2,6 +2,7 @@
 
 import ast
 import difflib
+import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
@@ -14,7 +15,6 @@ from sfnx.expressions import (
     COMPARE,
     MULTIPLY,
     OR,
-    VOLATILE,
     WRITTEN,
     Expr,
     array,
@@ -331,6 +331,11 @@ CONVERSIONS = frozenset({"s", "d", "i"})
 
 # The built-in functions that give a loop or a comprehension two variables.
 UNPACKING = frozenset({"enumerate", "zip"})
+
+# A variable as JSONata writes one, a function among them. An expression
+# written by hand names variables the program never declared, so what a piece
+# of code reads is found in the code itself.
+VARIABLE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
 class Translator:
@@ -1156,9 +1161,13 @@ class Translator:
 
     def hides(self, reads: list[Expr]) -> set[str]:
         """The names a parameter or a block's variable would hide: the
-        variables of reads, and what the comprehensions and blocks around it
-        bind."""
-        return {self.spelling(name) for name in uses(reads)} | set(self.inner)
+        variables of reads, any other name their code reads, and what the
+        comprehensions and blocks around it bind."""
+        return (
+            {self.spelling(name) for name in uses(reads)}
+            | {name for read in reads for name in VARIABLE.findall(read.code)}
+            | set(self.inner)
+        )
 
     @contextmanager
     def once(
@@ -1505,13 +1514,12 @@ class Translator:
             bindings.append(f"${name} := {code}; ")
             values.append(value)
         written = node.args[0].value
-        # The text is not parsed; one that names a function such as $random
-        # may call it.
-        volatile = changes(values) or any(f"${f}(" in written for f in VOLATILE)
+        # The text is not parsed, so what it calls is unknown: it may call
+        # $random under that name, or under one it binds the function to.
         if not bindings:
-            return expression(written, precedence=WRITTEN, volatile=volatile)
+            return expression(written, precedence=WRITTEN, volatile=True)
         return expression(
-            "(" + "".join(bindings) + written + ")", uses(values), volatile=volatile
+            "(" + "".join(bindings) + written + ")", uses(values), volatile=True
         )
 
     def math_function(self, node: ast.Call, target: str) -> Expr:

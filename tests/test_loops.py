@@ -151,6 +151,18 @@ def test_a_list_that_changes_on_evaluation_is_copied_first():
     assert asl.run(compiled, None) is True
 
 
+def test_a_list_holding_a_written_expression_is_copied_first():
+    # The expression jsonata() takes is not parsed, so it may call $uuid under
+    # a spelling no search of the text finds.
+    body = 'for item in [jsonata("$uuid ()")]:\n    return item == item\nreturn False'
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    assert compiled["States"]["item_items"]["Assign"] == {
+        "item_items": ["{% $uuid () %}"],
+        "item_index": 0,
+    }
+    assert asl.run(compiled, None) is True
+
+
 def test_a_range_stop_that_changes_on_evaluation_is_copied_first():
     body = (
         "n = 0\nfor i in range(int(random.random() * 3) + 1):\n    n = n + 1\nreturn n"
