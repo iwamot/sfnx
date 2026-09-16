@@ -884,10 +884,29 @@ def changing_definition(body: str) -> dict:
             "return (random.random() + 1) % 2",
             "($v := ($random() + 1); $v - 2 * $floor($v / 2))",
         ),
+        # The expression jsonata() takes is not parsed, so it counts as
+        # changing however the call is written, or bound to a name first, and
+        # even when it calls nothing.
         (
             "return jsonata('$random()') % 2",
             "($v := ($random()); $v - 2 * $floor($v / 2))",
         ),
+        (
+            "return jsonata('$random ()') % 2",
+            "($v := ($random ()); $v - 2 * $floor($v / 2))",
+        ),
+        (
+            "return jsonata('($f := $random; $f())') % 2",
+            "($v := (($f := $random; $f())); $v - 2 * $floor($v / 2))",
+        ),
+        ("return jsonata('1 + 1') % 2", "($v := (1 + 1); $v - 2 * $floor($v / 2))"),
+        (
+            "return jsonata('$random() + $n', n=a) % 2",
+            "($v := ($n := $a; $random() + $n); $v - 2 * $floor($v / 2))",
+        ),
+        # The operand written once is left where it is, so it is evaluated
+        # only when the first one is falsy.
+        ("return a or jsonata('$random ()')", "$boolean($a) ? $a : $random ()"),
         (
             "return 0.2 < random.random() < 0.8",
             "($v := $random(); 0.2 < $v and $v < 0.8)",
@@ -926,6 +945,12 @@ def changing_definition(body: str) -> dict:
             'v: float = input["v"]\nreturn random.random() or v',
             "($v_2 := $random(); $boolean($v_2) ? $v_2 : $v)",
         ),
+        # A name the expression written in jsonata() reads is one the variable
+        # must not hide, though the program never declared it.
+        (
+            'v: float = input["v"]\nreturn jsonata("$v + 1") % 2',
+            "($v_2 := ($v + 1); $v_2 - 2 * $floor($v_2 / 2))",
+        ),
         (
             "return [x % random.random() for x in xs]",
             "[$map($xs, function($x) { ($v := $random(); $x - $v * $floor($x / $v)) })]",
@@ -942,6 +967,22 @@ def changing_definition(body: str) -> dict:
 def test_a_value_that_changes_on_evaluation_is_bound_once(body, code):
     output = changing_definition(body)["States"]["return"]["Output"]
     assert output == "{% " + code + " %}"
+
+
+def test_a_written_expression_is_read_once():
+    """The expression jsonata() takes is read once wherever the code would
+    write it twice, and the variable holding it hides no name it reads."""
+    body = (
+        'v: float = input["v"]\n'
+        'return [jsonata("$v + 10") % jsonata("$v - 4"), '
+        'jsonata("$uuid ()") != jsonata("$uuid ()")]'
+    )
+    remainder, apart = asl.run(
+        changing_definition(body), {"xs": [], "a": 0.0, "v": 7.0}
+    )
+    assert remainder == (7 + 10) % (7 - 4)
+    # Two expressions written apart are read apart.
+    assert apart is True
 
 
 def test_bound_values_evaluate():
