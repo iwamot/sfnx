@@ -325,10 +325,104 @@ def test_evaluation(body, execution_input, expected):
             'return dict(input["a"])',
             "dict() does not convert here; declare the type instead: x: dict = ...",
         ),
-        ('return any(input["a"])', "calling any() is not supported"),
+        ('return divmod(input["a"], 2)', "calling divmod() is not supported"),
+        (
+            'return input["a"].title()',
+            "input['a'].title() is not supported; write the operation with operators, supported functions or jsonata(), or compute it in a Lambda task (the methods sfnx compiles are split, replace, lower, upper, join, startswith, endswith, ljust, rjust and strip of strings and keys, values and get of dicts)",
+        ),
+        # Rejected spellings whose messages name what to write instead.
+        (
+            'return any(input["a"])',
+            (
+                "any() is not supported; count what matches: "
+                'len([x for x in xs if x["failed"]]) > 0'
+            ),
+        ),
+        (
+            'return all(input["a"])',
+            (
+                "all() is not supported; count what does not match: "
+                'len([x for x in xs if not x["ok"]]) == 0'
+            ),
+        ),
+        (
+            'return map(str, input["a"])',
+            "map() is not supported; write a comprehension: [str(x) for x in xs]",
+        ),
+        (
+            'return filter(None, input["a"])',
+            "filter() is not supported; write a comprehension: [x for x in xs if x]",
+        ),
         (
             'return input["a"].append("k")',
-            "input['a'].append() is not supported; write the operation with operators, supported functions or jsonata(), or compute it in a Lambda task (the methods sfnx compiles are split, replace, lower, upper, join, startswith, endswith, ljust, rjust and strip of strings and keys, values and get of dicts)",
+            (
+                "input['a'].append() is not supported; a list is a value here, "
+                "so write xs = xs + [x]"
+            ),
+        ),
+        (
+            'return input["a"].extend(input["b"])',
+            (
+                "input['a'].extend() is not supported; a list is a value here, "
+                "so write xs = xs + ys"
+            ),
+        ),
+        (
+            'return input["a"].insert(0, "k")',
+            (
+                "input['a'].insert() is not supported; a list is a value here, "
+                "so write xs = xs[:i] + [x] + xs[i:]"
+            ),
+        ),
+        (
+            'return input["a"].format(1)',
+            (
+                "input['a'].format() is not supported; write an f-string, "
+                'such as f"{n} items"'
+            ),
+        ),
+        # % on a string is formatting, not the remainder. The message writes
+        # out the f-string when every conversion carries over, and gives an
+        # example of one when it does not.
+        (
+            'n: float = input["n"]\nreturn "%d items" % n',
+            "old-style % formatting is not supported; write an f-string: f'{n} items'",
+        ),
+        (
+            'a: str = input["a"]\nb: str = input["b"]\nreturn "%s: %s" % (a, b)',
+            "old-style % formatting is not supported; write an f-string: f'{a}: {b}'",
+        ),
+        (
+            'n: float = input["n"]\nreturn "%.2f" % n',
+            (
+                "old-style % formatting is not supported; write an f-string, "
+                'such as f"{n} items"'
+            ),
+        ),
+        (
+            'd: dict = input["d"]\nreturn "%(name)s" % d',
+            (
+                "old-style % formatting is not supported; write an f-string, "
+                'such as f"{n} items"'
+            ),
+        ),
+        (
+            'n: float = input["n"]\nreturn "%d%% done" % n',
+            "old-style % formatting is not supported; write an f-string: f'{n}% done'",
+        ),
+        (
+            'a: str = input["a"]\nreturn "%s %s" % (a,)',
+            (
+                "old-style % formatting is not supported; write an f-string, "
+                'such as f"{n} items"'
+            ),
+        ),
+        (
+            'a: str = input["a"]\nb: str = input["b"]\nreturn "%s" % (a, b)',
+            (
+                "old-style % formatting is not supported; write an f-string, "
+                'such as f"{n} items"'
+            ),
         ),
         ('return isinstance(input["a"])', "isinstance takes a value and a class"),
         ('return isinstance(input["a"], list[str])', "isinstance takes str, float"),
@@ -379,8 +473,8 @@ def test_diagnostics(body, message):
 
 
 IMPORTS = (
-    "import json\nimport time\nimport uuid\nfrom datetime import datetime\n"
-    "from uuid import uuid4\n"
+    "import json\nimport math\nimport os\nimport time\nimport uuid\n"
+    "from datetime import datetime\nfrom uuid import uuid4\n"
 )
 
 
@@ -440,6 +534,22 @@ def test_module_functions_evaluate():
         (
             'raw: str | None = input["raw"]\nreturn json.loads(raw)',
             "raw may be null | string; narrow it first",
+        ),
+        # Rejected spellings whose messages name what to write instead.
+        (
+            'return json.dumps(input["a"])',
+            (
+                "json.dumps() is not supported; write str(x), the JSON text of a "
+                "dict or a list"
+            ),
+        ),
+        (
+            'return math.pow(input["n"], 2)',
+            "math.pow() is not supported; write x ** y",
+        ),
+        (
+            'return os.path.basename(input["key"])',
+            'os.path.basename() is not supported; write path.split("/")[-1]',
         ),
     ],
 )
