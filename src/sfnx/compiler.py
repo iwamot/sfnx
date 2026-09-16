@@ -38,7 +38,7 @@ from sfnx.jsontypes import (
     union,
 )
 from sfnx.module import Module, module, qualified
-from sfnx.translate import StateCall, Translator, text
+from sfnx.translate import StateCall, Translator, text, unpacking
 
 # Step Functions reserves $states for its own variables.
 MAX_VARIABLE = 80
@@ -1437,6 +1437,10 @@ class Scope:
         body leads back to through its increment."""
         self.no_else(node)
         if not isinstance(node.target, ast.Name):
+            if unpacking(node.iter):
+                # Raise the advice of enumerate() or zip(), which says what to
+                # count with, rather than the message below.
+                self.translator.expr(node.iter)
             raise CompileError(
                 "loop over one variable: for item in items (unpack inside the loop)",
                 node.target,

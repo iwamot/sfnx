@@ -296,6 +296,39 @@ DICT_METHODS = {
     "get": "d.get(key) or d.get(key, default)",
 }
 
+# The module functions sfnx does not compile that have one spelling here, by
+# how a call to one reads, and what to write instead.
+MODULE_REWRITES = {
+    "json.dumps": "write str(x), the JSON text of a dict or a list",
+    "math.pow": "write x ** y",
+    "os.path.basename": 'write path.split("/")[-1]',
+}
+
+# The methods sfnx does not compile that have one spelling here, by the name of
+# the method, and what to write instead.
+METHOD_REWRITES = {
+    "format": 'write an f-string, such as f"{n} items"',
+    "append": "a list is a value here, so write xs = xs + [x]",
+    "extend": "a list is a value here, so write xs = xs + ys",
+    "insert": "a list is a value here, so write xs = xs[:i] + [x] + xs[i:]",
+}
+
+# The built-in functions sfnx does not compile that have one spelling here, by
+# name, and what to write instead.
+BUILTIN_REWRITES = {
+    "any": 'count what matches: len([x for x in xs if x["failed"]]) > 0',
+    "all": 'count what does not match: len([x for x in xs if not x["ok"]]) == 0',
+    "map": "write a comprehension: [str(x) for x in xs]",
+    "filter": "write a comprehension: [x for x in xs if x]",
+}
+
+# The conversions of % formatting that an f-string writes as a plain {x}. For
+# the rest the message gives an example of an f-string rather than write one.
+CONVERSIONS = frozenset({"s", "d", "i"})
+
+# The built-in functions that give a loop or a comprehension two variables.
+UNPACKING = frozenset({"enumerate", "zip"})
+
 
 class Translator:
     """Translate expressions against the variables bound where they appear.
@@ -461,6 +494,10 @@ class Translator:
             )
         generator = node.generators[0]
         if not isinstance(generator.target, ast.Name):
+            if unpacking(generator.iter):
+                # Raise the advice of enumerate() or zip(), which says what to
+                # count with, rather than the message below.
+                self.expr(generator.iter)
             raise CompileError(
                 "a comprehension iterates one variable: [x for x in xs]",
                 generator.target,
@@ -704,6 +741,14 @@ class Translator:
             assert isinstance(node.left, ast.Call)
             numbers = self.numbers(node.left.args[0], "sum")
             return call("average", [numbers], of(NUMBER))
+        if (
+            symbol == "%"
+            and isinstance(node.left, ast.Constant)
+            and isinstance(node.left.value, str)
+        ):
+            # A string on the left is formatting, not the remainder, and the
+            # message about numbers would send the writer to convert it.
+            raise CompileError(formatting(node.left.value, node.right), node)
         left = self.numeric(node.left, symbol)
         right = self.numeric(node.right, symbol)
         number = of(NUMBER)
@@ -1139,6 +1184,14 @@ class Translator:
         ):
             return self.dict_method(node, node.func)
         if not isinstance(node.func, ast.Name):
+            called = target or ast.unparse(node.func)
+            advice = MODULE_REWRITES.get(called)
+            if advice is None and isinstance(node.func, ast.Attribute):
+                advice = METHOD_REWRITES.get(node.func.attr)
+            if advice is not None:
+                raise CompileError(
+                    f"{ast.unparse(node.func)}() is not supported; {advice}", node.func
+                )
             raise CompileError(
                 f"{ast.unparse(node.func)}() is not supported; write the operation "
                 "with operators, supported functions or jsonata(), or compute it "
@@ -1226,6 +1279,10 @@ class Translator:
                 f"{name}() cannot be called directly; a function runs as states "
                 f"through parallel({name}) or a map, or write its body here",
                 node,
+            )
+        if name in BUILTIN_REWRITES:
+            raise CompileError(
+                f"{name}() is not supported; {BUILTIN_REWRITES[name]}", node
             )
         raise CompileError(
             f"calling {name}() is not supported; write it with operators or "
@@ -1864,6 +1921,62 @@ def several(node: ast.expr, declared: Type) -> str:
     return (
         f"{text} may be {declared.describe()}; narrow it first with "
         f"isinstance({text}, ...) or {text} is not None"
+    )
+
+
+def as_fstring(template: str, values: list[ast.expr]) -> str | None:
+    """The f-string that writes what template % values writes, or None when a
+    conversion has no spelling as {x}, or the conversions and the values do not
+    match in number."""
+    pieces: list[ast.expr] = []
+    plain = ""
+    taken = 0
+    index = 0
+    while index < len(template):
+        if template[index] != "%":
+            plain += template[index]
+            index += 1
+            continue
+        conversion = template[index + 1 : index + 2]
+        index += 2
+        if conversion == "%":
+            plain += "%"
+            continue
+        if conversion not in CONVERSIONS or taken == len(values):
+            return None
+        if plain:
+            pieces.append(ast.Constant(plain))
+            plain = ""
+        pieces.append(ast.FormattedValue(values[taken], conversion=-1))
+        taken += 1
+    if taken != len(values):
+        return None
+    if plain:
+        pieces.append(ast.Constant(plain))
+    return ast.unparse(ast.JoinedStr(pieces))
+
+
+def formatting(template: str, right: ast.expr) -> str:
+    """The message for "..." % values: the f-string that writes the same text,
+    or an example of one when the conversions have no spelling here."""
+    values = right.elts if isinstance(right, ast.Tuple) else [right]
+    written = as_fstring(template, values)
+    advice = (
+        f"write an f-string: {written}"
+        if written
+        else 'write an f-string, such as f"{n} items"'
+    )
+    return f"old-style % formatting is not supported; {advice}"
+
+
+def unpacking(node: ast.expr) -> bool:
+    """Whether an iterable is the enumerate() or zip() two variables come from.
+    Each says what to count with instead, which the message about unpacking
+    would hide."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in UNPACKING
     )
 
 

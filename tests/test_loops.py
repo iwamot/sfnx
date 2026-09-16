@@ -390,12 +390,25 @@ def test_a_failed_attempt_leaves_no_task_behind():
             "y is not assigned on every path",
         ),
         (
-            'xs: list = input["xs"]\nfor i, x in enumerate(xs):\n    pass',
+            'xs: list = input["xs"]\nfor i, x in xs:\n    pass',
             "loop over one variable",
         ),
         (
             'xs: list = input["xs"]\nfor x in enumerate(xs):\n    pass',
             "enumerate() is not supported; count with range",
+        ),
+        # The loop a writer counts with unpacks two variables, so enumerate()
+        # and zip() say what to count with before the message about unpacking.
+        (
+            'xs: list = input["xs"]\nfor i, x in enumerate(xs):\n    pass',
+            "enumerate() is not supported; count with range",
+        ),
+        (
+            (
+                'xs: list = input["xs"]\nys: list = input["ys"]\n'
+                "for x, y in zip(xs, ys):\n    pass"
+            ),
+            "zip() is a list here only as list(zip(a, b))",
         ),
         ("return range(1, 2, 0)", "the step of range is a nonzero whole number"),
         ("for i in range():\n    pass", "range takes a stop"),

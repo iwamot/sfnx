@@ -318,6 +318,12 @@ def test_declarations_join_after_branches():
             "def f():\n    return 1\nreturn f()",
             "f() cannot be called directly; a function runs as states through parallel(f) or a map",
         ),
+        # A function of the writer's own keeps its own message, even under the
+        # name of a built-in that says what to write instead.
+        (
+            "def filter(item):\n    return item\nreturn filter(input)",
+            "filter() cannot be called directly; a function runs as states",
+        ),
         (
             'if input["a"] + input["b"]:\n    pass',
             "the type of input['a'] must be known",
