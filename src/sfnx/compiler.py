@@ -430,7 +430,7 @@ class Scope:
                 "name, such as data",
                 node,
             )
-        check_variable(name, node)
+        self.check_variable(name, node)
         if name in self.outer:
             raise CompileError(
                 f"{name} is assigned outside this function too, and Step Functions "
@@ -786,7 +786,7 @@ class Scope:
             if binds:
                 scope.claim(parameter.arg, parameter)
             else:
-                check_variable(parameter.arg, parameter)
+                self.check_variable(parameter.arg, parameter)
         scope.pending = pending
         scope.pending_node = function if pending else None
         # What the first state binds is the function's to assign.
@@ -906,7 +906,7 @@ class Scope:
             for name in parameters[1:]:
                 bindings[name] = step(read, name)
         for parameter in function.args.args:
-            check_variable(parameter.arg, parameter)
+            self.check_variable(parameter.arg, parameter)
             declared = annotate(parameter.annotation)
             if declared is not None:
                 bindings[parameter.arg] = replace(
@@ -995,7 +995,9 @@ class Scope:
                             "this clause instead",
                             node,
                         )
-            caught_error = handling.variable
+            # The Catch assigned the error under the variable's spelling.
+            assert handling.variable is not None
+            caught_error = self.spelling(handling.variable)
             self.flush()
             state: dict[str, object] = {
                 "Type": "Fail",
@@ -1061,7 +1063,7 @@ class Scope:
             if variable_name is not None:
                 self.claim(variable_name, clause)
             elif reraises(clause.body):
-                variable_name = self.fresh("error")
+                variable_name = self.fresh("error", clause)
             handlers.append(Handler(clause, errors, variable_name))
         self.flush()
         self.tries.append(handlers)
@@ -1417,8 +1419,30 @@ class Scope:
             set(start.partial),
         )
 
-    def fresh(self, base: str) -> str:
-        """A variable of the loop's own, named after what it counts."""
+    def check_variable(self, name: str, node: ast.AST) -> None:
+        """A name longer than Step Functions takes, as written or as spelled
+        in the definition; spellings() renames the others it would not
+        accept."""
+        spelled = self.spelling(name)
+        if len(spelled) <= MAX_VARIABLE:
+            return
+        if spelled != name:
+            raise CompileError(
+                f"{name} is written {spelled} in the definition, and Step Functions "
+                f"variable names are at most {MAX_VARIABLE} characters; use a "
+                "shorter name",
+                node,
+            )
+        raise CompileError(
+            f"Step Functions variable names are at most {MAX_VARIABLE} characters; "
+            "use a shorter name",
+            node,
+        )
+
+    def fresh(self, base: str, node: ast.AST) -> str:
+        """A variable of the loop's or the handler's own, named after what it
+        holds. The callers build base on the spelling of the Python name, as
+        `_x_index` for `_x` would start with `_`."""
         name = base
         serial = 1
         while (
@@ -1429,6 +1453,13 @@ class Scope:
         ):
             serial += 1
             name = f"{base}_{serial}"
+        if len(name) > MAX_VARIABLE:
+            raise CompileError(
+                f"the definition needs a variable {name} here, and Step Functions "
+                f"variable names are at most {MAX_VARIABLE} characters; use a "
+                "shorter name",
+                node,
+            )
         self.hidden.add(name)
         return name
 
@@ -1458,7 +1489,7 @@ class Scope:
                     "otherwise",
                     node.target,
                 )
-            check_variable(target, node.target)
+            self.check_variable(target, node.target)
         assigned = assigned_names(node.body)
         if counting:
             if target in assigned:
@@ -1481,18 +1512,19 @@ class Scope:
 
         def attempt() -> tuple[Loop, dict[str, Type | None]]:
             source = items
-            if items.variables & assigned:
+            if items.variables & assigned or items.volatile:
                 if items.variables & self.pending.keys():
                     self.flush()
-                # The body changes what the loop iterates, so the loop keeps
-                # the value it started with, as Python does.
-                copy = self.fresh(f"{target}_items")
+                # The body changes what the loop iterates, or evaluating it
+                # again would give other items, so the loop keeps the value it
+                # started with, as Python does.
+                copy = self.fresh(f"{self.spelling(target)}_items", node)
                 self.pending[copy] = items
                 self.pending_node = self.pending_node or node
                 source = self.variable(copy, items.type)
             if kind == OBJECT:
                 source = call("keys", [source], of(ARRAY, items=of(STRING)))
-            counter = self.fresh(f"{target}_index")
+            counter = self.fresh(f"{self.spelling(target)}_index", node)
             self.pending[counter] = literal(0)
             self.pending_node = self.pending_node or node
             index = self.variable(counter, of(NUMBER))
@@ -1512,11 +1544,12 @@ class Scope:
                 self.flush()
             limit = stop
             # The loop assigns its variable too, so a stop that reads it is
-            # kept from before the first assignment.
-            if stop.variables & (assigned | {target}):
+            # kept from before the first assignment, as is one that would give
+            # another number when it is evaluated again.
+            if stop.variables & (assigned | {target}) or stop.volatile:
                 if stop.variables & self.pending.keys():
                     self.flush()
-                copy = self.fresh(f"{target}_stop")
+                copy = self.fresh(f"{self.spelling(target)}_stop", node)
                 self.pending[copy] = stop
                 self.pending_node = self.pending_node or node
                 limit = self.variable(copy, of(NUMBER))
@@ -1819,17 +1852,6 @@ def commented(state: dict[str, object], comment: str) -> dict[str, object]:
     state.clear()
     state.update({"Type": fields.pop("Type"), "Comment": comment, **fields})
     return state
-
-
-def check_variable(name: str, node: ast.AST) -> None:
-    """A name longer than Step Functions takes; spellings() renames the others
-    it would not accept."""
-    if len(name) > MAX_VARIABLE:
-        raise CompileError(
-            f"Step Functions variable names are at most {MAX_VARIABLE} characters; "
-            "use a shorter name",
-            node,
-        )
 
 
 def compile_machine(

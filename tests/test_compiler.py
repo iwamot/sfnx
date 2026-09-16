@@ -203,6 +203,23 @@ def test_asl_matches_python(body, execution_input):
         (machine("return input.x"), 'read a key with x["key"]', "6:12"),
         (machine("x" * 81 + " = 1"), "at most 80 characters", "6:5"),
         (machine("x" * 80 + " = 1\n" + "x" * 80 + " = 2"), "longer than 80", "7:5"),
+        # The spelling is checked too: a renamed name grows, as does one
+        # numbered past a name the module uses.
+        (
+            machine("_" + "1" * 79 + " = 1"),
+            "is written value_" + "1" * 79 + " in the definition",
+            "6:5",
+        ),
+        (
+            machine("x" * 79 + " = 1\n_" + "x" * 79 + " = 2"),
+            "is written " + "x" * 79 + "_2 in the definition",
+            "7:5",
+        ),
+        (
+            machine("a: list = input\nfor " + "x" * 76 + " in a:\n    pass"),
+            "needs a variable " + "x" * 76 + "_index here",
+            "7:5",
+        ),
         (HEADER + "def pay(input):\n    return 1", "no state machine here", "1:1"),
         (
             HEADER + "@state_machine\nasync def pay(input):\n    return 1",

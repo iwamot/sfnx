@@ -2,7 +2,7 @@
 
 import ast
 import difflib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 
@@ -14,11 +14,14 @@ from sfnx.expressions import (
     COMPARE,
     MULTIPLY,
     OR,
+    VOLATILE,
     WRITTEN,
     Expr,
     array,
     binary,
+    block,
     call,
+    changes,
     conditional,
     expression,
     field,
@@ -360,6 +363,10 @@ class Translator:
         self.local: set[str] = set()
         self.conditional = 0
         self.comprehending = 0
+        # The names JSONata binds inside the expression being translated, the
+        # parameters of comprehensions and the variables of blocks, innermost
+        # last. They are read as themselves, so nothing else may take them.
+        self.inner: list[str] = []
         # Whether the arguments of a .waitForTaskToken task are being
         # translated, and whether they read the task token.
         self.token_readable = False
@@ -524,6 +531,7 @@ class Translator:
         # a variable of the same name that another binding reads would be hidden.
         self.bindings[name] = expression("$" + self.spelling(name), type=item)
         self.comprehending += 1
+        self.inner.append(self.spelling(name))
         try:
             tests = []
             narrowed: dict[str, Type] = {}
@@ -536,6 +544,7 @@ class Translator:
                 element = self.expr(node.elt)
         finally:
             self.comprehending -= 1
+            self.inner.pop()
             if saved is None:
                 del self.bindings[name]
             else:
@@ -558,7 +567,9 @@ class Translator:
         if mapped:
             if tests and may_be_list(item):
                 # $map would iterate the items of a single list $filter kept.
-                result = expression(result.code + "[]", result.variables)
+                result = expression(
+                    result.code + "[]", result.variables, volatile=result.volatile
+                )
             result = call("map", [result, function(self.spelling(name), element)], None)
         else:
             element = replace(element, type=item)
@@ -575,6 +586,7 @@ class Translator:
             result.variables,
             type=of(ARRAY, items=element.type),
             constructor=True,
+            volatile=result.volatile,
         )
 
     def formatted(self, node: ast.JoinedStr) -> Expr:
@@ -663,7 +675,11 @@ class Translator:
         elif len(parts) == 1:
             # A JSON value is a copy already.
             return replace(parts[0], type=parts[0].type or of(OBJECT))
-        listed = expression("[" + ", ".join(p.code for p in parts) + "]", uses(parts))
+        listed = expression(
+            "[" + ", ".join(p.code for p in parts) + "]",
+            uses(parts),
+            volatile=changes(parts),
+        )
         return call("merge", [listed], of(OBJECT))
 
     def unpacked(self, node: ast.expr) -> Expr:
@@ -757,12 +773,17 @@ class Translator:
             return binary(left, symbol, right, precedence, number)
         if symbol == "**":
             return call("power", [left, right], number)
-        quotient = call("floor", [binary(left, "/", right, MULTIPLY, number)], number)
         if symbol == "//":
-            return quotient
+            return call("floor", [binary(left, "/", right, MULTIPLY, number)], number)
+        assert symbol == "%"
         # Python's % takes the sign of the divisor; JSONata's takes the dividend's.
-        product = binary(right, "*", quotient, MULTIPLY, number)
-        return binary(left, "-", product, ADD, number)
+        # Both sides are written twice.
+        with self.once([left, right]) as (bindings, (left, right)):
+            quotient = call(
+                "floor", [binary(left, "/", right, MULTIPLY, number)], number
+            )
+            product = binary(right, "*", quotient, MULTIPLY, number)
+            return block(bindings, binary(left, "-", product, ADD, number))
 
     def add(self, node: ast.BinOp) -> Expr:
         left, right = self.expr(node.left), self.expr(node.right)
@@ -849,14 +870,17 @@ class Translator:
         values = self.operands(node, self.expr)
         if all(v.boolean for v in values):
             return self.junction(node, values)
-        # As a value, `a or b` is a when a is truthy and b otherwise.
+        # As a value, `a or b` is a when a is truthy and b otherwise, which
+        # writes a twice.
         result = values[-1]
         for value in reversed(values[:-1]):
             kind = union(value.type, result.type)
-            if isinstance(node.op, ast.Or):
-                result = conditional(truth(value), value, result, kind)
-            else:
-                result = conditional(truth(value), result, value, kind)
+            with self.once([value], [result]) as (bindings, (value,)):
+                if isinstance(node.op, ast.Or):
+                    chosen = conditional(truth(value), value, result, kind)
+                else:
+                    chosen = conditional(truth(value), result, value, kind)
+            result = block(bindings, chosen)
         return result
 
     def junction(self, node: ast.BoolOp, values: list[Expr]) -> Expr:
@@ -871,20 +895,40 @@ class Translator:
         return result
 
     def compare(self, node: ast.Compare) -> Expr:
-        tests = []
-        left_node = node.left
-        left = self.expr(left_node)
-        for position, (operator, right_node) in enumerate(
-            zip(node.ops, node.comparators, strict=True)
-        ):
+        left = self.expr(node.left)
+        rights = []
+        for position, right_node in enumerate(node.comparators):
             if position:
                 # a < b < c evaluates c only when a < b holds.
                 with self.branch():
-                    right = self.expr(right_node)
+                    rights.append(self.expr(right_node))
             else:
-                right = self.expr(right_node)
-            tests.append(self.comparison(operator, left_node, left, right_node, right))
-            left_node, left = right_node, right
+                rights.append(self.expr(right_node))
+        return self.chain(node, 0, left, rights)
+
+    def chain(
+        self, node: ast.Compare, first: int, left: Expr, rights: list[Expr]
+    ) -> Expr:
+        """The comparisons of node from the one at first on, joined with and;
+        left is the left side of the first and rights are the right sides of
+        all of them. a < b < c is a < b and b < c, which writes b twice, so a
+        b that changes on evaluation is bound first, in a block that holds the
+        comparisons from b on: a < b and ($v := c; b < $v and $v < d)."""
+        tests = []
+        for position in range(first, len(node.ops)):
+            left_node = node.left if position == 0 else node.comparators[position - 1]
+            right_node, right = node.comparators[position], rights[position]
+            if right.volatile and position < len(node.ops) - 1:
+                with self.once([right], [left, *rights]) as (bindings, (right,)):
+                    replaced = [*rights]
+                    replaced[position] = right
+                    rest = self.chain(node, position, left, replaced)
+                tests.append(block(bindings, rest))
+                break
+            tests.append(
+                self.comparison(node.ops[position], left_node, left, right_node, right)
+            )
+            left = right
         result = tests[0]
         for test in tests[1:]:
             result = binary(result, "and", test, AND, of(BOOLEAN), True)
@@ -934,14 +978,17 @@ class Translator:
             raise CompileError(
                 "is compares with None only; compare values with ==", right_node
             )
-        present = binary(
-            call("exists", [left], boolean, boolean=True),
-            "and",
-            binary(left, "!=", literal(None), COMPARE, boolean, True),
-            AND,
-            boolean,
-            True,
-        )
+        # left is written twice: it exists, and is not null.
+        with self.once([left]) as (bindings, (tested,)):
+            present = binary(
+                call("exists", [tested], boolean, boolean=True),
+                "and",
+                binary(tested, "!=", literal(None), COMPARE, boolean, True),
+                AND,
+                boolean,
+                True,
+            )
+        present = block(bindings, present)
         if isinstance(operator, ast.IsNot):
             return present
         return call("not", [present], boolean, boolean=True)
@@ -1057,11 +1104,16 @@ class Translator:
             f"function(${self.parameter('v', [value, test])}, ${position}) "
             f"{{ {test.code} }}",
             test.variables,
+            volatile=test.volatile,
         )
         kept = call("filter", [value, predicate], value.type)
         code = f"$append([], {kept.code}[])" if may_be_list(item) else f"[{kept.code}]"
         return expression(
-            code, kept.variables, type=of(ARRAY, items=item), constructor=True
+            code,
+            kept.variables,
+            type=of(ARRAY, items=item),
+            constructor=True,
+            volatile=kept.volatile,
         )
 
     def substring(self, text: Expr, lower: Bound | None, upper: Bound | None) -> Expr:
@@ -1100,13 +1152,45 @@ class Translator:
     def parameter(self, base: str, reads: list[Expr]) -> str:
         """A name for a JSONata function parameter that hides nothing the
         function reads."""
-        taken = {self.spelling(name) for name in uses(reads)}
-        name = base
-        serial = 1
-        while name in taken:
-            serial += 1
-            name = f"{base}_{serial}"
-        return name
+        return unused(base, self.hides(reads))
+
+    def hides(self, reads: list[Expr]) -> set[str]:
+        """The names a parameter or a block's variable would hide: the
+        variables of reads, and what the comprehensions and blocks around it
+        bind."""
+        return {self.spelling(name) for name in uses(reads)} | set(self.inner)
+
+    @contextmanager
+    def once(
+        self, values: list[Expr], reads: Sequence[Expr] = ()
+    ) -> Iterator[tuple[list[tuple[str, Expr]], list[Expr]]]:
+        """values that the code being built writes more than once. One that
+        may change when it is evaluated again, as $random() does, is bound to
+        a variable at the start of a block, which block() then puts around the
+        code: `($v := $random(); $v - 3 * $floor($v / 3))`. Yields the
+        bindings and the values, with the variable in the place of each value
+        bound. The variable hides nothing the block reads: the values, reads,
+        and what the comprehensions and blocks around it bind."""
+        taken = self.hides([*values, *reads])
+        bindings: list[tuple[str, Expr]] = []
+        arguments: list[Expr] = []
+        for value in values:
+            if not value.volatile:
+                arguments.append(value)
+                continue
+            name = unused("v", taken)
+            taken.add(name)
+            bindings.append((name, value))
+            arguments.append(
+                expression(
+                    "$" + name, value.variables, type=value.type, boolean=value.boolean
+                )
+            )
+        self.inner.extend(name for name, _ in bindings)
+        try:
+            yield bindings, arguments
+        finally:
+            del self.inner[len(self.inner) - len(bindings) :]
 
     def container(self, node: ast.expr, value: Expr, kind: str, rule: str) -> None:
         if value.type is not None and kind not in value.type.kinds:
@@ -1237,7 +1321,9 @@ class Translator:
         if name in {"max", "min"} and len(node.args) > 1:
             values = [self.numeric(a, f"{name}()") for a in node.args]
             listed = expression(
-                "[" + ", ".join(v.code for v in values) + "]", uses(values)
+                "[" + ", ".join(v.code for v in values) + "]",
+                uses(values),
+                volatile=changes(values),
             )
             return call(name, [listed], of(NUMBER))
         if name in {"abs", "round", "sum", "max", "min"}:
@@ -1337,7 +1423,13 @@ class Translator:
                 else sum_of(stop, literal(1))
             )
             code = f"[{call('range', [start, end, step], None).code}]"
-        return expression(code, uses([start, stop]), type=numbers, constructor=True)
+        return expression(
+            code,
+            uses([start, stop]),
+            type=numbers,
+            constructor=True,
+            volatile=changes([start, stop]),
+        )
 
     def ordered(self, node: ast.Call) -> Expr:
         """sorted(x), or with reverse=True, of numbers or strings, which are what
@@ -1413,9 +1505,14 @@ class Translator:
             bindings.append(f"${name} := {code}; ")
             values.append(value)
         written = node.args[0].value
+        # The text is not parsed; one that names a function such as $random
+        # may call it.
+        volatile = changes(values) or any(f"${f}(" in written for f in VOLATILE)
         if not bindings:
-            return expression(written, precedence=WRITTEN)
-        return expression("(" + "".join(bindings) + written + ")", uses(values))
+            return expression(written, precedence=WRITTEN, volatile=volatile)
+        return expression(
+            "(" + "".join(bindings) + written + ")", uses(values), volatile=volatile
+        )
 
     def math_function(self, node: ast.Call, target: str) -> Expr:
         function = MATH_FUNCTIONS[target]
@@ -1548,7 +1645,11 @@ class Translator:
             f"$append([], {each.code}[])" if may_be_list(values) else f"[{each.code}]"
         )
         return expression(
-            code, mapping.variables, type=of(ARRAY, items=values), constructor=True
+            code,
+            mapping.variables,
+            type=of(ARRAY, items=values),
+            constructor=True,
+            volatile=mapping.volatile,
         )
 
     def get(self, mapping: Expr, arguments: list[ast.expr]) -> Expr:
@@ -1564,8 +1665,13 @@ class Translator:
             values = mapping.type.values if mapping.type else None
             value = call("lookup", [mapping, name], values)
         default = self.expr(arguments[1]) if len(arguments) == 2 else literal(None)
-        present = call("exists", [value], of(BOOLEAN), boolean=True)
-        return conditional(present, value, default, union(value.type, default.type))
+        # The value is written twice: tested, then read.
+        with self.once([value], [default]) as (bindings, (value,)):
+            present = call("exists", [value], of(BOOLEAN), boolean=True)
+            chosen = conditional(
+                present, value, default, union(value.type, default.type)
+            )
+        return block(bindings, chosen)
 
     def listed(self, node: ast.expr, name: str = "list") -> Expr:
         """list(x): the keys of a dict, the characters of a string, or a list
@@ -1617,6 +1723,7 @@ class Translator:
                 batches.variables,
                 type=of(ARRAY, items=items.type),
                 constructor=True,
+                volatile=batches.volatile,
             )
         return None
 
@@ -2105,6 +2212,7 @@ def keys_of(mapping: Expr) -> Expr:
         keys.variables,
         type=of(ARRAY, items=of(STRING)),
         constructor=True,
+        volatile=keys.volatile,
     )
 
 
@@ -2151,5 +2259,19 @@ def may_be_list(kind: Type | None) -> bool:
     return kind is None or ARRAY in kind.kinds
 
 
+def unused(base: str, taken: set[str]) -> str:
+    """base, or base numbered past the names in taken."""
+    name = base
+    serial = 1
+    while name in taken:
+        serial += 1
+        name = f"{base}_{serial}"
+    return name
+
+
 def function(parameter: str, body: Expr) -> Expr:
-    return expression(f"function(${parameter}) {{ {body.code} }}", body.variables)
+    return expression(
+        f"function(${parameter}) {{ {body.code} }}",
+        body.variables,
+        volatile=body.volatile,
+    )
