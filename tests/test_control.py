@@ -318,6 +318,10 @@ def test_declarations_join_after_branches():
             "def f():\n    return 1\nreturn f()",
             "f() cannot be called directly; a function runs as states through parallel(f) or a map",
         ),
+        (
+            "def f():\n    return 1\nf()",
+            "f() cannot be called directly; a function runs as states through parallel(f) or a map",
+        ),
         # A function of the writer's own keeps its own message, even under the
         # name of a built-in that says what to write instead.
         (

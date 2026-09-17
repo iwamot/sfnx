@@ -1383,11 +1383,7 @@ class Translator:
                 node,
             )
         if self.is_function(name):
-            raise CompileError(
-                f"{name}() cannot be called directly; a function runs as states "
-                f"through parallel({name}) or a map, or write its body here",
-                node,
-            )
+            raise CompileError(direct_call(name), node)
         if name in BUILTIN_REWRITES:
             raise CompileError(
                 f"{name}() is not supported; {BUILTIN_REWRITES[name]}", node
@@ -2095,6 +2091,14 @@ def unknown(node: ast.expr, hint: str, purpose: str, parameter: bool = False) ->
     return (
         f"{purpose}, so the type of {text} must be known; assign it to an "
         f"annotated variable first: value: {hint} = {text}"
+    )
+
+
+def direct_call(name: str) -> str:
+    """The message for calling a function of the module directly."""
+    return (
+        f"{name}() cannot be called directly; a function runs as states "
+        f"through parallel({name}) or a map, or write its body here"
     )
 
 

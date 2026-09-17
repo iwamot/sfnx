@@ -38,7 +38,7 @@ from sfnx.jsontypes import (
     union,
 )
 from sfnx.module import Module, module, qualified
-from sfnx.translate import StateCall, Translator, text, unpacking
+from sfnx.translate import StateCall, Translator, direct_call, text, unpacking
 
 # Step Functions reserves $states for its own variables.
 MAX_VARIABLE = 80
@@ -380,6 +380,8 @@ class Scope:
                 and isinstance(node.value.func, ast.Name)
             ):
                 self.translator.check_import(node.value.func)
+                if self.translator.is_function(node.value.func.id):
+                    raise CompileError(direct_call(node.value.func.id), node.value)
             name = type(node).__name__
             raise CompileError(
                 STATEMENTS.get(name, f"{name} statements are not supported"), node
