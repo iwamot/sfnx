@@ -47,7 +47,7 @@ def error_name(node: ast.expr, context: Module) -> str:
         start = next(
             (i for i, s in enumerate(segments) if s[:1].isupper()), len(segments) - 1
         )
-        return ".".join(segments[start:])
+        return ".".join(segment(s) for s in segments[start:])
     if isinstance(node, ast.Name):
         if node.id == "Exception":
             return EVERYTHING
@@ -90,7 +90,7 @@ def nested(
         current = inner
         names.append(name)
     defined(current, context)
-    return ".".join(names)
+    return ".".join(segment(n) for n in names)
 
 
 def defined(node: ast.ClassDef, context: Module) -> str:
@@ -112,6 +112,21 @@ def defined(node: ast.ClassDef, context: Module) -> str:
             location,
         )
     return node.name
+
+
+def segment(name: str) -> str:
+    """One segment of an ASL error name, from the name of a class.
+
+    ASL takes any characters in an error name, and a Python class name cannot
+    start with a digit, so a leading _ is dropped where the rest is not a name
+    on its own: _416 spells 416, while _Internal stays _Internal, which ASL
+    takes as written.
+    """
+    if name.startswith("_"):
+        rest = name[1:]
+        if rest and not rest.isidentifier():
+            return rest
+    return name
 
 
 def raised(node: ast.expr, context: Module) -> str:

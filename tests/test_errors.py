@@ -120,6 +120,16 @@ def test_where_classes_come_from(preamble, error, name):
     assert states["raise"]["Error"] == name
 
 
+@pytest.mark.parametrize(
+    "error, name",
+    [("_416", "416"), ("_Internal", "_Internal"), ("_", "_")],
+)
+def test_a_leading_underscore_spells_a_name_python_cannot(error, name):
+    preamble = f"class {error}(Exception):\n    pass"
+    states = definition(f"raise {error}()", preamble)["States"]
+    assert states["raise"]["Error"] == name
+
+
 def test_asl_run():
     body = 'if input["amount"] > 1000:\n    raise TooLarge("too large: " + str(input["amount"]))\nreturn "ok"'
     with pytest.raises(asl.Failure) as failure:

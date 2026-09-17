@@ -170,6 +170,15 @@ def test_a_raise_that_nothing_catches_is_a_fail():
         ),
         ("from app import errors", "errors.too_large", "too_large"),
         (CLASSES, "Lambda.ServiceException", "Lambda.ServiceException"),
+        (
+            (
+                "class States:\n    class Http:\n        class StatusCode:\n"
+                "            class _416(Exception):\n                pass\n"
+            ),
+            "States.Http.StatusCode._416",
+            "States.Http.StatusCode.416",
+        ),
+        ("import errors", "errors.Http.StatusCode._416", "Http.StatusCode.416"),
     ],
 )
 def test_dotted_error_names(preamble, error, name):
