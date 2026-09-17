@@ -1,5 +1,6 @@
 import re
 import textwrap
+from datetime import datetime
 
 import pytest
 
@@ -493,6 +494,24 @@ def imported(body: str) -> dict:
         ("return str(datetime.now())", "$now()"),
         ('return f"at {datetime.now()}"', "'at ' & $now()"),
         ("return time.time()", "$millis() / 1000"),
+        ("return datetime.now().timestamp()", "$millis() / 1000"),
+        (
+            'return datetime.fromisoformat(input["at"]).timestamp()',
+            f"$toMillis({INPUT}.at) / 1000",
+        ),
+        (
+            'return str(datetime.fromtimestamp(input["t"]))',
+            f"$fromMillis({INPUT}.t * 1000)",
+        ),
+        (
+            't: float = input["t"]\nreturn f"at {datetime.fromtimestamp(t)}"',
+            "'at ' & $fromMillis($t * 1000)",
+        ),
+        (
+            'return str(datetime.fromisoformat(input["at"]))',
+            f"$fromMillis($toMillis({INPUT}.at))",
+        ),
+        ('return datetime.fromtimestamp(input["t"]).timestamp()', f"{INPUT}.t"),
     ],
 )
 def test_module_functions(body, code):
@@ -515,6 +534,21 @@ def test_module_functions_evaluate():
     assert later is True
 
 
+def test_datetimes_evaluate():
+    body = (
+        'at: str = input["at"]\n'
+        "return [datetime.fromisoformat(at).timestamp(), "
+        'str(datetime.fromtimestamp(input["t"])), datetime.now().timestamp() > 1e9]'
+    )
+    moment = "2026-09-15T13:43:06.735Z"
+    seconds, text, later = asl.run(
+        imported(body), {"at": moment, "t": datetime.fromisoformat(moment).timestamp()}
+    )
+    assert seconds == datetime.fromisoformat(moment).timestamp()
+    assert text == moment
+    assert later is True
+
+
 @pytest.mark.parametrize(
     "body, message",
     [
@@ -531,6 +565,37 @@ def test_module_functions_evaluate():
         ),
         ("return str(datetime.now(None))", "datetime.now() takes no arguments here"),
         ("return time.time(1)", "time.time() takes no arguments"),
+        (
+            "return datetime.fromisoformat(1).timestamp()",
+            "1 is a number; datetime.fromisoformat() reads a timestamp string",
+        ),
+        (
+            'at: str = input["at"]\nreturn str(datetime.fromtimestamp(at))',
+            "at is a string, and datetime.fromtimestamp() takes numbers",
+        ),
+        (
+            'return datetime.fromisoformat(input["at"])',
+            (
+                "write str(datetime.fromisoformat(text)) or "
+                "datetime.fromisoformat(text).timestamp()"
+            ),
+        ),
+        (
+            "return str(datetime.fromisoformat())",
+            "datetime.fromisoformat(text) takes one argument here",
+        ),
+        (
+            'return input["at"].timestamp()',
+            "timestamp() is written datetime.fromisoformat(text).timestamp()",
+        ),
+        (
+            "return uuid.uuid4().timestamp()",
+            "timestamp() is written datetime.fromisoformat(text).timestamp()",
+        ),
+        (
+            "return datetime.fromisoformat().timestamp()",
+            "write datetime.fromisoformat(text)",
+        ),
         (
             'raw: str | None = input["raw"]\nreturn json.loads(raw)',
             "raw may be null | string; narrow it first",
@@ -568,6 +633,10 @@ def test_module_function_diagnostics(body, message):
             "datetime is not imported; write from datetime import datetime",
         ),
         ("return time.time()", "time is not imported; write import time"),
+        (
+            'return datetime.fromisoformat(input["at"]).timestamp()',
+            "datetime is not imported; write from datetime import datetime",
+        ),
     ],
 )
 def test_module_function_without_import(body, message):

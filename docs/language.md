@@ -104,7 +104,9 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `json.loads(s)` | `$parse($s)` |
 | `str(uuid.uuid4())`, `f"{uuid.uuid4()}"` | `$uuid()` |
 | `str(datetime.now())`, `f"{datetime.now()}"` | `$now()` |
-| `time.time()` | `$millis() / 1000` |
+| `time.time()`, `datetime.now().timestamp()` | `$millis() / 1000` |
+| `datetime.fromisoformat(s).timestamp()` | `$toMillis($s) / 1000` |
+| `str(datetime.fromtimestamp(x))`, `f"{datetime.fromtimestamp(x)}"` | `$fromMillis($x * 1000)` |
 | `s.ljust(5, "0")`, `s.rjust(5, "0")` | `$pad($s, 5, '0')`, `$pad($s, -5, '0')` |
 | `list(set(xs))` | `$distinct($xs)` |
 | `list(zip(a, b))` | `$zip($a, $b)` |
@@ -125,7 +127,8 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 - `sorted` orders numbers or strings, as `$sort` does without a function, so a list known to hold anything else is rejected, and it takes `reverse=` but no `key=`. `range()` outside a `for` is a list; a step, when given, is a nonzero whole number written in the source.
 - `set()`, `zip()` and `itertools.batched()` make lists in `list()`, `sorted()` or `reversed()`, and a digest is `hashlib.sha256(s.encode()).hexdigest()`, with `md5`, `sha1`, `sha384` or `sha512` in place of `sha256` for the others. `itertools.batched` needs Python 3.12 where the module is run.
 - Functions of `math`, `random`, `time`, `json`, `uuid`, `datetime`, `hashlib` and `itertools` are recognized through the module's imports, such as `import math` or `from datetime import datetime`.
-- `context["State"]["EnteredTime"]` has the form `$now()` returns, so the date or the year a state was entered is a slice of it: `context["State"]["EnteredTime"][:10]` and `int(context["State"]["EnteredTime"][:4])`.
+- A datetime is not a JSON value, so it is converted where it is made: `str()` or an f-string gives the timestamp text, and `.timestamp()` the seconds since the epoch. `datetime.now()`, `datetime.fromisoformat(text)` and `datetime.fromtimestamp(seconds)` make one, so `str(datetime.fromisoformat(text))` reads a timestamp and writes it back in the form `$now()` returns. Formatting with `strftime` or reading a format with `strptime` is rejected; `jsonata()` reaches the picture strings `$fromMillis` and `$toMillis` take.
+- `context["State"]["EnteredTime"]` has the form `$now()` returns, so the date or the year a state was entered is a slice of it: `context["State"]["EnteredTime"][:10]` and `int(context["State"]["EnteredTime"][:4])`. The seconds a state has been running are `time.time() - datetime.fromisoformat(context["State"]["EnteredTime"]).timestamp()`.
 - f-strings take no conversions (`!r`, `{x=}`) and no format specs.
 - A string literal that starts with `{%` or ends with `%}` is written as a JSONata string, so Step Functions does not read it as an expression.
 
@@ -253,7 +256,7 @@ padded: str = jsonata("$pad($s, -$n, '0')", s=code, n=width)
 Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
-- **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip` of strings and `keys`, `values` and `get` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, old-style `%` formatting, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, `set` and `zip` outside `list()`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()` and the `hashlib` digests, and `uuid.uuid4()` or `datetime.now()` outside `str()` or an f-string.
+- **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip` of strings and `keys`, `values` and `get` of dicts, `lambda`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, old-style `%` formatting, generators and dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, `set` and `zip` outside `list()`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()` and the `hashlib` digests, and a datetime outside `str()`, an f-string or `.timestamp()`, or `uuid.uuid4()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
 
 ## Where results differ from Python
@@ -276,7 +279,10 @@ Some values come out differently from CPython. These are the differences known s
 | `sep.join(x)` with `x` of unknown type | a string, such as `"ab"` | `x` itself (`"ab"`) | the characters joined (`"a,b"` for `","`) |
 | `{**x}`, `{**x, "k": v}` with `x` of unknown type | `[{"a": 1}, {"b": 2}]` | the list itself, `{"a": 1, "b": 2, "k": ...}` | `TypeError` |
 | `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
-| `str(datetime.now())` | any time | the time in UTC, such as `"2026-09-15T13:43:06.735Z"` | the local time, such as `"2026-09-15 22:43:06.735213"` |
+| `str(datetime.now())`, `str(datetime.fromtimestamp(x))` | any time | the time in UTC, such as `"2026-09-15T13:43:06.735Z"` | the local time, such as `"2026-09-15 22:43:06.735213"` |
+| `datetime.fromisoformat(s).timestamp()` | an `s` with no UTC offset, such as `"2026-09-15T13:43:06"` | the seconds counted from UTC | the seconds counted from the local time |
+| `datetime.fromisoformat(s).timestamp()` | an `s` with more than three digits after the second, such as `"2026-09-15T13:43:06.735123Z"` | the seconds to the millisecond (`1789479786.735`) | the seconds as written (`1789479786.735123`) |
+| `datetime.fromisoformat(s).timestamp()` | an `s` CPython reads that the ISO 8601 of `$toMillis` does not cover, such as `"2026-09-15 13:43:06"` with a space in place of the `T`, `"20260915T134306Z"` without the dashes, or the week date `"2026-W38-2"` | `States.QueryEvaluationError` | the seconds |
 | `time.time()` | any time | seconds to the millisecond, such as `1789479402.245` | seconds to a finer digit, such as `1789479402.8365781` |
 | `s.ljust(n, fill)`, `s.rjust(n, fill)` | a `fill` of several characters | the fill repeated as far as it goes | `TypeError` |
 | `list(set(xs))` | `[2, 1, 2]`, `[True, 1]`, `[{"a": 1}, {"a": 1}]` | `[2, 1]` in the order first seen, `[true, 1]`, `[{"a": 1}]` | an order of its own, `[True]`, `TypeError` |
