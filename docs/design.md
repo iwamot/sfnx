@@ -65,7 +65,7 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 ## What the compiler relies on
 
-From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13 and 2026-09-14).
+From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14 and 2026-09-18).
 
 ### JSONata in Step Functions
 
@@ -77,6 +77,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - With undefined, both `=` and `!=` are false.
 - `$count` counts a non-array as one item, and null or a missing value as zero.
 - `$s[0]` of a string returns the whole string; `$substring` and `$length` work on strings. A fractional position is truncated (`$x[1.5]` is `$x[1]`).
+- `$toMillis` reads the ISO 8601 form `$now()` returns: it counts a timestamp with no UTC offset from UTC and keeps whole milliseconds, while a space in place of the `T`, a form without the dashes and a week date fail. `$fromMillis` returns the form `$now()` does, and `$toMillis($now())` is `$millis()`, so the two spellings of the current moment agree (measured).
 - A position right after a variable position has no effect (`$x[$i][0]` returns `$x[$i]`; `($x[$i])[0]` works; measured).
 - `&` joins non-strings as strings (`'a' & 1` is `'a1'`). A string literal has no `\'` escape.
 - An array constructor merges the items of an array value that is not itself a constructor: `$count([$xs])` of `[1, 2]` is 2, and `[[$xs]]` and `$type($x) = 'array' ? [[$x]] : $x` keep one item for arrays, scalars, objects, one-item arrays, nested arrays and null (measured).

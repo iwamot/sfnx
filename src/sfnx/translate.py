@@ -258,12 +258,22 @@ HASHES = {
     "hashlib.sha512": "SHA-512",
 }
 
+# The calls that make a datetime, a value JSON does not have: str() and an
+# f-string write one as the timestamp text it holds, and .timestamp() as the
+# seconds since the epoch.
+NOW = "datetime.datetime.now"
+FROM_ISO = "datetime.datetime.fromisoformat"
+FROM_TIMESTAMP = "datetime.datetime.fromtimestamp"
+DATETIMES = (NOW, FROM_ISO, FROM_TIMESTAMP)
+
 # Calls whose value is an object that JSON holds as text, so they are written
-# in str() or an f-string: the JSONata function for the text, how the call is
-# written and what it returns in Python.
+# in str() or an f-string, the datetimes also in .timestamp(): how many
+# arguments the call takes, how it is written and what it returns in Python.
 STRINGIFIED = {
-    "uuid.uuid4": ("uuid", "uuid.uuid4()", "a UUID object"),
-    "datetime.datetime.now": ("now", "datetime.now()", "a datetime object"),
+    "uuid.uuid4": (0, "uuid.uuid4()", "a UUID object"),
+    NOW: (0, "datetime.now()", "a datetime object"),
+    FROM_ISO: (1, "datetime.fromisoformat(text)", "a datetime object"),
+    FROM_TIMESTAMP: (1, "datetime.fromtimestamp(seconds)", "a datetime object"),
 }
 
 # The standard library functions sfnx compiles, by how a call to one reads
@@ -272,7 +282,10 @@ MODULE_IMPORTS = {
     "json.loads": "import json",
     "uuid.uuid4": "import uuid",
     "time.time": "import time",
-    "datetime.now": "from datetime import datetime",
+    **dict.fromkeys(
+        ("datetime.now", "datetime.fromisoformat", "datetime.fromtimestamp"),
+        "from datetime import datetime",
+    ),
     "itertools.batched": "import itertools",
     **dict.fromkeys(HASHES, "import hashlib"),
     **{target: f"import {target.partition('.')[0]}" for target in MATH_FUNCTIONS},
@@ -1229,13 +1242,17 @@ class Translator:
         if target in MATH_FUNCTIONS:
             return self.math_function(node, target)
         if target in STRINGIFIED:
-            _, spelled, returned = STRINGIFIED[target]
-            if node.args or node.keywords:
+            arity, spelled, returned = STRINGIFIED[target]
+            if len(node.args) != arity or node.keywords:
+                takes = "one argument" if arity else "no arguments"
                 raise CompileError(
-                    f"{spelled} takes no arguments here: str({spelled})", node
+                    f"{spelled} takes {takes} here: str({spelled})", node
                 )
+            written = f"str({spelled})"
+            if target in DATETIMES:
+                written += f" or {spelled}.timestamp()"
             raise CompileError(
-                f"{spelled} is {returned}, not JSON; write str({spelled})", node
+                f"{spelled} is {returned}, not JSON; write {written}", node
             )
         if target in HASHES:
             raise CompileError(
@@ -1251,19 +1268,15 @@ class Translator:
             )
         if isinstance(node.func, ast.Attribute) and node.func.attr == "hexdigest":
             return self.hexdigest(node, node.func)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "timestamp":
+            return self.timestamp(node, node.func)
         if target == "time.time":
             if node.args or node.keywords:
                 raise CompileError("time.time() takes no arguments", node)
             millis = call("millis", [], of(NUMBER))
             return binary(millis, "/", literal(1000), MULTIPLY, of(NUMBER))
-        if (
-            not target
-            and isinstance(node.func, ast.Attribute)
-            and ast.unparse(node.func) in MODULE_IMPORTS
-        ):
-            module = ast.unparse(node.func.value)
-            written = MODULE_IMPORTS[ast.unparse(node.func)]
-            raise CompileError(f"{module} is not imported; write {written}", node.func)
+        if not target and isinstance(node.func, ast.Attribute):
+            self.check_module_import(node.func)
         if (
             not target
             and isinstance(node.func, ast.Attribute)
@@ -1386,12 +1399,57 @@ class Translator:
         )
 
     def stringified(self, node: ast.expr) -> Expr | None:
-        """uuid.uuid4() or datetime.now() in str() or an f-string, as the text
-        $uuid() or $now() returns."""
-        if not isinstance(node, ast.Call) or node.args or node.keywords:
+        """uuid.uuid4() or a datetime in str() or an f-string, as the text it
+        holds: $uuid(), $now(), or $fromMillis of the moment."""
+        if not isinstance(node, ast.Call):
             return None
-        found = STRINGIFIED.get(qualified(node.func, self.names) or "")
-        return call(found[0], [], of(STRING)) if found else None
+        target = qualified(node.func, self.names) or ""
+        found = STRINGIFIED.get(target)
+        if found is None or len(node.args) != found[0] or node.keywords:
+            return None
+        if target == "uuid.uuid4":
+            return call("uuid", [], of(STRING))
+        if target == NOW:
+            return call("now", [], of(STRING))
+        return call("fromMillis", [self.millis(node, target)], of(STRING))
+
+    def millis(self, node: ast.Call, target: str) -> Expr:
+        """A datetime as the milliseconds since the epoch that $fromMillis
+        takes: $millis() for now, $toMillis of a timestamp, or the seconds
+        given, times 1000."""
+        if target == NOW:
+            return call("millis", [], of(NUMBER))
+        if target == FROM_ISO:
+            text = self.operand(
+                node.args[0],
+                STRING,
+                "datetime.fromisoformat() reads a timestamp string",
+            )
+            return call("toMillis", [text], of(NUMBER))
+        seconds = self.numeric(node.args[0], "datetime.fromtimestamp()")
+        return binary(seconds, "*", literal(1000), MULTIPLY, of(NUMBER))
+
+    def timestamp(self, node: ast.Call, method: ast.Attribute) -> Expr:
+        """A datetime's .timestamp(), the seconds since the epoch: the
+        milliseconds JSONata counts divided, or the seconds fromtimestamp was
+        given."""
+        made = method.value
+        written = "datetime.fromisoformat(text).timestamp()"
+        if not isinstance(made, ast.Call) or node.args or node.keywords:
+            raise CompileError(f"timestamp() is written {written}", node)
+        target = qualified(made.func, self.names) or ""
+        if not target and isinstance(made.func, ast.Attribute):
+            self.check_module_import(made.func)
+        if target not in DATETIMES:
+            raise CompileError(f"timestamp() is written {written}", node)
+        arity, spelled, _ = STRINGIFIED[target]
+        if len(made.args) != arity or made.keywords:
+            raise CompileError(f"write {spelled}", made)
+        if target == FROM_TIMESTAMP:
+            return self.numeric(made.args[0], "datetime.fromtimestamp()")
+        return binary(
+            self.millis(made, target), "/", literal(1000), MULTIPLY, of(NUMBER)
+        )
 
     def range_arguments(self, node: ast.Call) -> tuple[Expr, Expr, Expr]:
         """The start, stop and step of range(), whose step is a whole number
@@ -1795,6 +1853,15 @@ class Translator:
                 f"{ast.unparse(node)} is a {value.type.kind}; {rule}", node
             )
         return value
+
+    def check_module_import(self, func: ast.Attribute) -> None:
+        """A standard library function called without importing its module."""
+        spelling = ast.unparse(func)
+        if spelling in MODULE_IMPORTS:
+            module = ast.unparse(func.value)
+            raise CompileError(
+                f"{module} is not imported; write {MODULE_IMPORTS[spelling]}", func
+            )
 
     def check_import(self, node: ast.Name) -> None:
         """A name sfnx exports, used without importing it and not defined here."""
