@@ -58,6 +58,32 @@ def test_jsonata_evaluates():
     assert asl.run(definition(body), execution_input) == ["00042", "1,234.50", [2, 4]]
 
 
+def test_the_expression_reads_the_variables_it_names():
+    compiled = definition('a = 1\nb = jsonata("$a + 1")\nreturn b')
+    assert list(compiled["States"]) == ["a", "b", "return"]
+    assert compiled["States"]["b"]["Assign"] == {"b": "{% $a + 1 %}"}
+    assert asl.run(compiled, {}) == 2
+
+
+def test_the_expression_reads_a_variable_by_the_name_the_definition_gives_it():
+    compiled = definition('count = 1\nb = jsonata("$count_val + 1")\nreturn b')
+    assert list(compiled["States"]) == ["count", "b", "return"]
+    assert asl.run(compiled, {}) == 2
+
+
+def test_a_function_the_expression_calls_is_not_a_variable():
+    # count is written $count_val, so $count is the JSONata function and the
+    # two assignments share one state.
+    compiled = definition('count = 2\nb = jsonata("$count([1, 2])")\nreturn [count, b]')
+    assert list(compiled["States"]) == ["count", "return"]
+    assert asl.run(compiled, {}) == [2, 2]
+
+
+def test_the_parameter_of_a_comprehension_is_not_a_variable_it_reads():
+    body = 'xs: list = input["xs"]\nreturn [jsonata("$x * 2") for x in xs]'
+    assert asl.run(definition(body), {"xs": [1, 2]}) == [2, 4]
+
+
 @pytest.mark.parametrize(
     "body, message",
     [

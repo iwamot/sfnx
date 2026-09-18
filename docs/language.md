@@ -273,6 +273,7 @@ padded: str = jsonata("$pad($s, -$n, '0')", s=code, n=width)
 
 - `jsonata(expression, name=value)` writes a JSONata expression as it is, for what has no Python spelling here. It compiles to `($s := $code; $n := $width; $pad($s, -$n, '0'))`: each value is bound to the variable of its name before the expression, as a Python variable does not always keep its name in the definition.
 - The expression is a literal string, and its values are given by name. A value named after a JSONata function or `states` would hide it inside the expression, and a value that reads the name of one bound before it would read the new value, so both are rejected. Step Functions checks the expression when it validates the definition.
+- A `$name` the call does not bind is read as the variable the definition writes that way, so an assignment the expression reads gets a state of its own, as one written in Python does. Where a name is changed on the way, the variable is the changed one: `$count_val` reads the variable `count`, and `$count` is the JSONata function.
 - What the expression calls is unknown, so it is read once wherever the generated JSONata would otherwise write it twice, as `jsonata(...) % 2` does: it is bound at the start of a block, and a list a `for` iterates is saved before the loop.
 - The value has no type; declare one where it matters: `padded: str = jsonata(...)`. At run time in Python, `jsonata()` raises `NotImplementedError`.
 
