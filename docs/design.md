@@ -96,7 +96,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$now()` returns the time in UTC to the millisecond with a `Z` (`"2026-09-15T13:36:42.245Z"`), `$now('[Y0001]-[M01]-[D01]')` formats it with a picture string, and `$millis()` returns the milliseconds since 1970 (measured). Every `$now()` and `$millis()` in one evaluation of an expression returns the same time.
 - `$pad` fills on the right for a positive width and on the left for a negative one, repeating a fill of several characters (measured).
 - `$distinct` keeps the first of each value in order, compares objects and arrays by value, and keeps `true` apart from `1`; `$zip` stops at the shortest array (measured).
-- `$hash` gives the lowercase hex digest of the UTF-8 text for `MD5`, `SHA-1`, `SHA-256`, `SHA-384` and `SHA-512`; `$partition` returns nothing for an empty array and for a size of 0 (measured).
+- `$hash` gives the lowercase hex digest of the UTF-8 text for `MD5`, `SHA-1`, `SHA-256`, `SHA-384` and `SHA-512`; `$partition` returns nothing for an empty array and for a size of 0, makes batches of one item for a size of 1.5, and fails below 0 (measured).
 - `$split` with a string separator splits at that exact text (`.` and `*` are not patterns), keeps empty parts, and splits into characters at `''` (measured).
 - `$trim` turns every run of whitespace into one space and removes it from both ends: `$split($trim('  a  b\t\nc '), ' ')` is `["a", "b", "c"]`, and `[""]` for blank text (measured).
 - `$replace` with a string pattern takes `$0` in the replacement literally, fails on an empty pattern and on a negative limit, and replaces nothing with a limit of 0 (measured).
