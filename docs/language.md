@@ -74,6 +74,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `a - b`, `a * b`, `a / b` | the same |
 | `a % b` | `$a - $b * $floor($a / $b)` (the sign follows the divisor, as in Python) |
 | `a // b`, `a ** b` | `$floor($a / $b)`, `$power($a, $b)` |
+| `a / b` where `b` is not written as a number | `$b = 0 ? $error('division by zero') : $a / $b`, as dividing by zero raises in Python (`//` and `%` are tested the same way) |
 | `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c` |
 | `x is None`, `x is not None` | `$not($exists($x) and $x != null)`, `$exists($x) and $x != null` |
 | `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b` |
@@ -293,7 +294,6 @@ Some values come out differently from CPython. These are the differences known s
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
-| `a / b`, `a // b` | `b` is `0` | `"Infinity"`, `"-Infinity"` or `"NaN"`, a string; arithmetic on it fails with `States.QueryEvaluationError`, a comparison does not | `ZeroDivisionError` |
 | `a ** b` | a negative `a` and a fractional `b` | `States.QueryEvaluationError` | a complex number |
 | `a + b`, `a - b`, `a * b`, `a / b` | a result past the range of a double, such as `1e308 * 10` | `"Infinity"` or `"-Infinity"`, a string | `inf` or `-inf` |
 | a number from the input, a variable or `json.loads(s)` | an integer past 2^53, such as `10000000000000000000000001` | the nearest double (`1.0E25`) | the exact integer |

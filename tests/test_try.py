@@ -123,12 +123,12 @@ def test_bare_raise_raises_what_was_caught():
     body = f'try:\n    {NOTIFY}\nexcept Declined:\n    wait(1)\n    if input["a"]:\n        raise\nreturn 0'
     compiled = states(body)
     assert compiled["publish"]["Catch"][0]["Assign"] == {
-        "error": "{% $states.errorOutput %}"
+        "caught": "{% $states.errorOutput %}"
     }
     assert compiled["raise"] == {
         "Type": "Fail",
-        "Error": "{% $error.Error %}",
-        "Cause": "{% $error.Cause %}",
+        "Error": "{% $caught.Error %}",
+        "Cause": "{% $caught.Cause %}",
     }
     body = f"try:\n    {NOTIFY}\nexcept Declined as e:\n    raise\nreturn 0"
     assert states(body)["raise"]["Error"] == "{% $e.Error %}"
