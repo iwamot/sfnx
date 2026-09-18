@@ -765,6 +765,12 @@ def test_strip_removes_the_whitespace_at_the_ends_only(text):
     assert asl.run(compiled, {"s": text, "parts": []}) == text.strip()
 
 
+def test_a_width_and_a_fill_read_at_run_time_are_passed_through():
+    """Only what is written in the source is known when the file is compiled."""
+    body = 'n: float = input["n"]\nf: str = input["f"]\nreturn s.ljust(n, f)'
+    assert output(STRINGS + body) == "{% $pad($s, $n, $f) %}"
+
+
 def test_string_methods_evaluate():
     body = (
         'return [s.split("/"), s.split(), s.replace("/", "-", 1), s.lower(), '
@@ -791,6 +797,32 @@ def test_string_methods_evaluate():
         ('return s.split(sep="/")', "split() takes no keyword arguments here"),
         ('return s.replace("a")', "replace() is written s.replace(old, new)"),
         ('return s.replace("a", "b", "c")', "the count of replace() takes numbers"),
+        (
+            'return s.split("")',
+            (
+                "split() splits at one character or more; list(s) reads the "
+                "text as its characters"
+            ),
+        ),
+        (
+            'return s.replace("", "x")',
+            (
+                "replace() replaces one character or more; Step Functions fails "
+                "on an empty pattern"
+            ),
+        ),
+        (
+            'return s.replace("a", "b", -1)',
+            (
+                "the count of replace() is a whole number of 0 or more; leave "
+                "it out to replace every occurrence"
+            ),
+        ),
+        ('return s.replace("a", "b", 2.5)', "the count of replace() is a whole number"),
+        ("return s.ljust(-5)", "the width of ljust() is a whole number of 0 or more"),
+        ("return s.rjust(6.5)", "the width of rjust() is a whole number of 0 or more"),
+        ('return s.ljust(6, "ab")', "ljust() fills with one character"),
+        ('return s.rjust(6, "")', "rjust() fills with one character"),
         ("return s.lower(1)", "lower() is written s.lower()"),
         ('return s.strip("x")', "strip() is written s.strip()"),
         ("return s.join(s)", "s is a string; join() takes a list of strings"),

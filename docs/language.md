@@ -123,7 +123,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 
 - A comprehension takes one `for` over a list or the keys of a dict. Its result is a list for any number of results: `$map` and `$filter` go in brackets when the items are known not to be lists, and in `$append([], $map(...)[])` when they may be, which keeps a single list as one item. Its variable is the parameter of the JSONata function, so it cannot be named after a variable the comprehension reads through another name, such as the list a `for` loop around it iterates.
 - A slice bound written with a minus sign (`xs[-2:]`, `xs[-n:]`) counts back from the end; any other bound is a position from the start. A slice takes no step other than `[::-1]`, and one of a list holding lists keeps them as items, as a comprehension does.
-- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and only dicts `keys`, `values` and `get`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text.
+- The string and dict methods need no type: of the JSON types only strings have `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and only dicts `keys`, `values` and `get`. `s.split(sep, maxsplit)` is rejected, as `$split` has no counterpart for the rest of the text. Written in the source, the separator of `split` and the pattern of `replace` hold one character or more, the count of `replace` and the width of `ljust` and `rjust` are whole numbers of 0 or more, and the fill of `ljust` and `rjust` is one character.
 - `sum`, `max` and `min` take numbers, as their JSONata functions do, so a list known to hold anything else is rejected, as are `sum(xs, start)` and keyword arguments such as `key=`. `sum(xs) / len(xs)` is `$average` when both read the same list.
 - `sorted` orders numbers or strings, as `$sort` does without a function, so a list known to hold anything else is rejected, and it takes `reverse=` but no `key=`. `range()` outside a `for` is a list; a step, when given, is a nonzero whole number written in the source.
 - `set()`, `zip()` and `itertools.batched()` make lists in `list()`, `sorted()` or `reversed()`, and a digest is `hashlib.sha256(s.encode()).hexdigest()`, with `md5`, `sha1`, `sha384` or `sha512` in place of `sha256` for the others. `itertools.batched` needs Python 3.12 where the module is run, and its size, when written in the source, is a whole number of 1 or more.
@@ -299,11 +299,11 @@ Some values come out differently from CPython. These are the differences known s
 | a number from the input, a variable or `json.loads(s)` | an integer past 2^53, such as `10000000000000000000000001` | the nearest double (`1.0E25`) | the exact integer |
 | `json.loads(s)` | `"NaN"`, `"Infinity"`, `"1e400"`, `'{"a": 1, "a": 2}'` | `States.QueryEvaluationError` | `nan`, `inf`, `inf`, `{"a": 2}` |
 | `json.loads(s)` | `"{'a': 1}"` | `{"a": 1}` | `JSONDecodeError` |
-| `s.split(sep)` | `sep` is `""` | the characters of `s` | `ValueError` |
+| `s.split(sep)` | a `sep` read at run time that is empty | the characters of `s` | `ValueError` |
 | `s.split()` | `s` is empty or only whitespace | `[""]` | `[]` |
 | `s.strip()` | whitespace at an end that is not ASCII, such as a non-breaking space | kept: Step Functions reads `\s` as the ASCII whitespace | removed |
-| `s.replace(old, new)` | `old` is `""` | `States.QueryEvaluationError` | `new` between every character and at both ends |
-| `s.replace(old, new, count)` | a negative `count` | `States.QueryEvaluationError` | every occurrence replaced |
+| `s.replace(old, new)` | an `old` read at run time that is empty | `States.QueryEvaluationError` | `new` between every character and at both ends |
+| `s.replace(old, new, count)` | a `count` read at run time that is not a whole number of 0 or more | `States.QueryEvaluationError` below `0`, `2.5` taken as `2` | every occurrence replaced for a negative `count`, `TypeError` for `2.5` |
 | `sep.join(x)` with `x` of unknown type | a string, such as `"ab"` | `x` itself (`"ab"`) | the characters joined (`"a,b"` for `","`) |
 | `{**x}`, `{**x, "k": v}` with `x` of unknown type | `[{"a": 1}, {"b": 2}]` | the list itself, `{"a": 1, "b": 2, "k": ...}` | `TypeError` |
 | `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
@@ -312,7 +312,8 @@ Some values come out differently from CPython. These are the differences known s
 | `datetime.fromisoformat(s).timestamp()` | an `s` with more than three digits after the second, such as `"2026-09-15T13:43:06.735123Z"` | the seconds to the millisecond (`1789479786.735`) | the seconds as written (`1789479786.735123`) |
 | `datetime.fromisoformat(s).timestamp()` | an `s` CPython reads that the ISO 8601 of `$toMillis` does not cover, such as `"2026-09-15 13:43:06"` with a space in place of the `T`, `"20260915T134306Z"` without the dashes, or the week date `"2026-W38-2"` | `States.QueryEvaluationError` | the seconds |
 | `time.time()` | any time | seconds to the millisecond, such as `1789479402.245` | seconds to a finer digit, such as `1789479402.8365781` |
-| `s.ljust(n, fill)`, `s.rjust(n, fill)` | a `fill` of several characters | the fill repeated as far as it goes | `TypeError` |
+| `s.ljust(n, fill)`, `s.rjust(n, fill)` | a `fill` of several characters read at run time | the fill repeated as far as it goes | `TypeError` |
+| `s.ljust(n)`, `s.rjust(n)` | an `n` read at run time that is not a whole number of 0 or more | filled on the other side below `0`, `6.5` taken as `6` | the text as it is for a negative `n`, `TypeError` for `6.5` |
 | `list(set(xs))` | `[2, 1, 2]`, `[True, 1]`, `[{"a": 1}, {"a": 1}]` | `[2, 1]` in the order first seen, `[true, 1]`, `[{"a": 1}]` | an order of its own, `[True]`, `TypeError` |
 | `list(itertools.batched(xs, n))` | an `n` read at run time that is not a whole number of 1 or more, such as `0` or `1.5` | `[]` for `0`, batches of one for `1.5`, `States.QueryEvaluationError` below `0` | `ValueError` or `TypeError` |
 | `round(x, digits)` | `2.675` to 2 digits | `2.68` | `2.67` |
