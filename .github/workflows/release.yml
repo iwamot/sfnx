@@ -38,6 +38,6 @@ jobs:
             releases.astral.sh:443
             upload.pypi.org:443
 
-      - uses: iwamot/actions/release-draft@84a812c285cd6fd17539271e4e1f39617673a2de # v2.8.0
-      - uses: iwamot/actions/uv-publish@84a812c285cd6fd17539271e4e1f39617673a2de # v2.8.0
-      - uses: iwamot/actions/release-publish@84a812c285cd6fd17539271e4e1f39617673a2de # v2.8.0
+      - uses: iwamot/actions/release-draft@877dcb21b865c1824a70cfebde66313b1d58a860 # v2.8.1
+      - uses: iwamot/actions/uv-publish@877dcb21b865c1824a70cfebde66313b1d58a860 # v2.8.1
+      - uses: iwamot/actions/release-publish@877dcb21b865c1824a70cfebde66313b1d58a860 # v2.8.1
