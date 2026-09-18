@@ -507,7 +507,9 @@ class Scope:
 
     def unpack(self, target: ast.Tuple, value_node: ast.expr) -> None:
         """a, b = ...: each name takes one element, all in one state. With a
-        tuple of values, `a, b = b, a` swaps, as Assign reads the old values."""
+        tuple of values, `a, b = b, a` swaps, as Assign reads the old values.
+        A value that would give other items when it is evaluated again is kept
+        by the state before them, as every name reads it again."""
         names = []
         for element in target.elts:
             if not isinstance(element, ast.Name):
@@ -525,6 +527,16 @@ class Scope:
             values = [self.translator.expr(e) for e in value_node.elts]
         else:
             whole, call = self.translator.statement_value(value_node)
+            if call is None and whole.volatile:
+                # Each name reads the value again, and evaluating it again
+                # would give other items, so the names take the value the
+                # state before them kept, as Python does.
+                if whole.variables & self.pending.keys():
+                    self.flush()
+                copy = self.fresh(f"{self.spelling(names[0])}_items", target)
+                self.pending[copy] = whole
+                self.pending_node = self.pending_node or target
+                whole = self.variable(copy, whole.type)
             values = [element_at(whole, literal(i)) for i in range(len(names))]
         assign = {
             self.spelling(name): value.template

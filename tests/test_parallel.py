@@ -164,6 +164,33 @@ def test_unpacking():
     }
 
 
+def test_unpacking_keeps_a_value_that_changes():
+    # Every name reads the value again, so one that would give other elements
+    # each time is kept by the state before them, as a loop keeps its items.
+    body = 'a, b = jsonata("($x := $uuid(); [$x, $x])")\nreturn a == b'
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    assert compiled["States"]["a_items"]["Assign"] == {
+        "a_items": "{% ($x := $uuid(); [$x, $x]) %}"
+    }
+    assert compiled["States"]["a"]["Assign"] == {
+        "a": "{% $a_items[0] %}",
+        "b": "{% $a_items[1] %}",
+    }
+    assert asl.run(compiled, {}) is True
+
+
+def test_unpacking_keeps_a_changing_value_after_what_it_reads():
+    # The value the names take reads an assignment of its own, which Assign
+    # evaluates with the values from before the state, so it waits for it.
+    body = 'n = input["n"]\na, b = jsonata("[$m, $m]", m=n)\nreturn [a, b]'
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    assert list(compiled["States"]) == ["n", "a_items", "a", "return"]
+    assert compiled["States"]["a_items"]["Assign"] == {
+        "a_items": "{% ($m := $n; [$m, $m]) %}"
+    }
+    assert asl.run(compiled, {"n": 7}) == [7, 7]
+
+
 def test_evaluation():
     body = (
         EMAIL_AUDIT
