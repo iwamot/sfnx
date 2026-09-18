@@ -1718,12 +1718,29 @@ class Translator:
             bindings.append(f"${name} := {code}; ")
             values.append(value)
         written = node.args[0].value
+        reads = self.variables(written, bound)
         # The text is not parsed, so what it calls is unknown: it may call
         # $random under that name, or under one it binds the function to.
         if not bindings:
-            return expression(written, precedence=WRITTEN, volatile=True)
+            return expression(written, reads, precedence=WRITTEN, volatile=True)
         return expression(
-            "(" + "".join(bindings) + written + ")", uses(values), volatile=True
+            "(" + "".join(bindings) + written + ")",
+            uses(values) | reads,
+            volatile=True,
+        )
+
+    def variables(self, written: str, bound: list[str]) -> frozenset[str]:
+        """The variables an expression written by hand reads: every $name in
+        it that neither the call nor a function around it binds, under the
+        Python name written that way. A name the definition renames is not
+        among them: where the variable count is written $count_val, $count is
+        the JSONata function."""
+        python = {spelled: name for name, spelled in self.spellings.items()}
+        found = set(VARIABLE.findall(written)) - set(bound) - set(self.inner)
+        return frozenset(
+            python.get(name, name)
+            for name in found
+            if name in python or name not in self.spellings
         )
 
     def math_function(self, node: ast.Call, target: str) -> Expr:
