@@ -66,6 +66,16 @@ def test_the_last_assignment_of_a_name_is_what_it_holds():
     assert compiled["States"]["return"]["Output"] == 2
 
 
+def test_a_constant_holds_what_the_name_it_read_held_there():
+    written = source("A = 1\nB = A\nA = 2", "return [A, B]")
+    (compiled,) = compile_source(written).values()
+    namespace: dict[str, object] = {}
+    exec(written, namespace)
+    flow = namespace["flow"]
+    assert callable(flow)
+    assert asl.run(compiled, {}) == flow({}) == [2, 1]
+
+
 def test_a_constant_takes_no_state_of_its_own():
     compiled = definition(
         'QUERY = {"TableName": "stock", "Key": {"id": {"S": "1"}}}',

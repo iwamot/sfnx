@@ -59,21 +59,33 @@ def module(tree: ast.Module, source: str) -> Module:
 
 def constants(tree: ast.Module) -> dict[str, Constant]:
     """The names the module assigns at its top level, to what is written for
-    them. A name assigned twice holds what the last assignment writes, as it
-    does when Python runs the module."""
+    them. A name assigned twice holds what the last assignment writes, and one
+    assigned another name holds what that name held where it was read, as they
+    do when Python runs the module."""
     found: dict[str, Constant] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
             if isinstance(target, ast.Name):
-                found[target.id] = Constant(node.value, None)
+                found[target.id] = Constant(written(node.value, found), None)
         elif (
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
             and node.value is not None
         ):
-            found[node.target.id] = Constant(node.value, node.annotation)
+            found[node.target.id] = Constant(
+                written(node.value, found), node.annotation
+            )
     return found
+
+
+def written(value: ast.expr, found: dict[str, Constant]) -> ast.expr:
+    """The value a line writes for a name: a name given another name takes
+    what that one holds there, and not what a line below assigns it. Every
+    value kept is read this way already, so following one name is enough."""
+    if isinstance(value, ast.Name) and value.id in found:
+        return found[value.id].value
+    return value
 
 
 def holds(node: ast.expr, constants: dict[str, Constant]) -> ast.expr:
