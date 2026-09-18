@@ -48,6 +48,7 @@ FUNCTIONS = frozenset(
         "count",
         "distinct",
         "each",
+        "error",
         "exists",
         "filter",
         "floor",

@@ -831,22 +831,35 @@ class Translator:
         left = self.numeric(node.left, symbol)
         right = self.numeric(node.right, symbol)
         number = of(NUMBER)
-        if symbol in {"-", "*", "/"}:
+        if symbol in {"-", "*"}:
             precedence = ADD if symbol == "-" else MULTIPLY
             return binary(left, symbol, right, precedence, number)
         if symbol == "**":
             return call("power", [left, right], number)
-        if symbol == "//":
-            return call("floor", [binary(left, "/", right, MULTIPLY, number)], number)
+        if written_number(right) == 0:
+            raise CompileError(
+                f"dividing by {ast.unparse(node.right)} fails every time; "
+                "divide by a value that is not zero",
+                node.right,
+            )
+        if symbol in {"/", "//"}:
+            # The divisor is written again in the test that divided() puts
+            # around the division.
+            with self.once([right], [left]) as (bindings, (right,)):
+                quotient = binary(left, "/", right, MULTIPLY, number)
+                if symbol == "//":
+                    quotient = call("floor", [quotient], number)
+                return block(bindings, divided(right, quotient))
         assert symbol == "%"
         # Python's % takes the sign of the divisor; JSONata's takes the dividend's.
-        # Both sides are written twice.
+        # Both sides are written twice, and the divisor once more in the test.
         with self.once([left, right]) as (bindings, (left, right)):
             quotient = call(
                 "floor", [binary(left, "/", right, MULTIPLY, number)], number
             )
             product = binary(right, "*", quotient, MULTIPLY, number)
-            return block(bindings, binary(left, "-", product, ADD, number))
+            remainder = binary(left, "-", product, ADD, number)
+            return block(bindings, divided(right, remainder))
 
     def add(self, node: ast.BinOp) -> Expr:
         left, right = self.expr(node.left), self.expr(node.right)
@@ -2399,3 +2412,22 @@ def function(parameter: str, body: Expr) -> Expr:
         body.variables,
         volatile=body.volatile,
     )
+
+
+def written_number(value: Expr) -> int | float | None:
+    """The number a value is written as in the source, if it is written as
+    one. A literal keeps the JSON itself as its template."""
+    template = value.template
+    return template if type(template) is int or type(template) is float else None
+
+
+def divided(divisor: Expr, value: Expr) -> Expr:
+    """value, with the test Python makes before it divides. Dividing by zero
+    raises there, while JSONata gives the string "Infinity", which fails in a
+    later state that does arithmetic on it, or compares as a string and takes
+    a branch without failing. A divisor written as a number needs no test."""
+    if written_number(divisor) is not None:
+        return value
+    test = binary(divisor, "=", literal(0), COMPARE, of(BOOLEAN), True)
+    raised = call("error", [literal("division by zero")], value.type)
+    return conditional(test, raised, value, value.type)

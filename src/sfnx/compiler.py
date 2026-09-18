@@ -1077,7 +1077,7 @@ class Scope:
             if variable_name is not None:
                 self.claim(variable_name, clause)
             elif reraises(clause.body):
-                variable_name = self.fresh("error", clause)
+                variable_name = self.fresh("caught", clause)
             handlers.append(Handler(clause, errors, variable_name))
         self.flush()
         self.tries.append(handlers)
@@ -1456,7 +1456,8 @@ class Scope:
     def fresh(self, base: str, node: ast.AST) -> str:
         """A variable of the loop's or the handler's own, named after what it
         holds. The callers build base on the spelling of the Python name, as
-        `_x_index` for `_x` would start with `_`."""
+        `_x_index` for `_x` would start with `_`, and name nothing after a
+        function the generated expressions call, which it would hide."""
         name = base
         serial = 1
         while (
