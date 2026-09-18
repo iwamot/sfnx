@@ -120,6 +120,11 @@ EXPRESSIONS = {
     "YieldFrom": "yield from is not supported; return a list",
 }
 
+# The whitespace at both ends of a string, which str.strip() removes. $trim
+# removes it too, but also makes every run of whitespace inside the text one
+# space, which strip() does not.
+OUTER_WHITESPACE = expression(r"/^\s+|\s+$/")
+
 MAX_SECONDS = 99_999_999
 TASK_OPTIONS = ("timeout", "heartbeat", "role")
 # The names sfnx exports that a workflow calls or reads, so that one used
@@ -1699,7 +1704,7 @@ class Translator:
         if name in {"lower", "upper"} and not arguments:
             return call(f"{name}case", [receiver], text)
         if name == "strip" and not arguments:
-            return call("trim", [receiver], text)
+            return call("replace", [receiver, OUTER_WHITESPACE, literal("")], text)
         if name == "split" and not arguments:
             # At runs of whitespace: $trim makes each run one space and removes
             # the runs at both ends.

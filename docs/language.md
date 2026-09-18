@@ -87,7 +87,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$split($trim($s), ' ')` |
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
 | `s.lower()`, `s.upper()` | `$lowercase($s)`, `$uppercase($s)` |
-| `s.strip()` | `$trim($s)` |
+| `s.strip()` | `$replace($s, /^\s+\|\s+$/, '')` |
 | `sep.join(items)` | `$join($items, $sep)` |
 | `list(d)`, `d.keys()` | `[$keys($d)]` |
 | `d.values()` | `[$each($d, function($v) { $v })]`, or `$append([], $each(...)[])` when the values may be lists |
@@ -301,7 +301,7 @@ Some values come out differently from CPython. These are the differences known s
 | `json.loads(s)` | `"{'a': 1}"` | `{"a": 1}` | `JSONDecodeError` |
 | `s.split(sep)` | `sep` is `""` | the characters of `s` | `ValueError` |
 | `s.split()` | `s` is empty or only whitespace | `[""]` | `[]` |
-| `s.strip()` | whitespace inside the text, such as `"a  b"` | each run made one space (`"a b"`) | kept (`"a  b"`) |
+| `s.strip()` | whitespace at an end that is not ASCII, such as a non-breaking space | kept: Step Functions reads `\s` as the ASCII whitespace | removed |
 | `s.replace(old, new)` | `old` is `""` | `States.QueryEvaluationError` | `new` between every character and at both ends |
 | `s.replace(old, new, count)` | a negative `count` | `States.QueryEvaluationError` | every occurrence replaced |
 | `sep.join(x)` with `x` of unknown type | a string, such as `"ab"` | `x` itself (`"ab"`) | the characters joined (`"a,b"` for `","`) |
