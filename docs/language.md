@@ -143,6 +143,34 @@ Variable names become JSONata variable names, at most 80 characters long. A vari
 
 A `parallel` branch or a Map function cannot assign a name that its enclosing function assigns anywhere; Step Functions keeps those scopes apart. Return the value instead. Variables that sfnx adds for itself (loop counters, caught errors) never clash across scopes.
 
+## Names outside the machine
+
+```python
+TABLE = "stock"
+RETRIES = [{"ErrorEquals": [Lambda.ServiceException], "MaxAttempts": 3}]
+
+
+@state_machine
+def pay(input):
+    stock = task(
+        "arn:aws:states:::dynamodb:getItem",
+        {"TableName": TABLE, "Key": {"id": {"S": input["id"]}}},
+    )
+    return task(
+        "arn:aws:states:::lambda:invoke",
+        {"FunctionName": "charge", "Payload": stock},
+        retry=RETRIES,
+    )
+```
+
+- A name assigned at the top level of the module is read as the value written there: the compiler writes that value in where the name is read, so the name itself reaches neither the definition nor Step Functions, and no state is added for it. ASL repeats a Retry state by state, so a retrier is written once here and named where it is used.
+- It holds JSON data, exception classes, and other names assigned the same way. The compiler reads the module without running it, so a value it would have to run (`NOW = time.time()`) is rejected where the name is read.
+- It is read where a value is written: in expressions and arguments, and in the places that take a value written out, which are the resource ARN of `task()`, `retry=`, `args=`, `label=` and `@state_machine(timeout=...)`.
+- An annotation declares its type as it does inside the machine (`TOP: list[str] = [...]`), and a name assigned twice holds what the last assignment writes.
+- A machine that assigns the name itself reads its own variable, as a function does in Python.
+- The value is written in at each place it is read, so a large one read in several places is repeated in the definition. To write it once, assign it to a variable inside the machine, which takes one Pass.
+- Only the file being compiled is read: a name imported from another module is not read as its value.
+
 ## Control flow
 
 **`if` / `elif` / `else`** is one Choice, a rule per test, with `Default` for `else` or for what follows.

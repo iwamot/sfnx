@@ -2,6 +2,7 @@
 
 import ast
 import builtins
+from collections.abc import Callable
 
 from sfnx.diagnostics import CompileError
 from sfnx.module import Module, qualified
@@ -166,12 +167,19 @@ def caught(types: list[ast.expr], context: Module) -> list[str]:
     return names
 
 
-def retriers(node: ast.expr, context: Module) -> list[dict[str, object]]:
-    """retry=, a list of ASL retriers written as dicts with error classes."""
+def retriers(
+    node: ast.expr, context: Module, holds: Callable[[ast.expr], ast.expr]
+) -> list[dict[str, object]]:
+    """retry=, a list of ASL retriers written as dicts with error classes.
+
+    holds gives what a name assigned outside the machine holds, so a retrier
+    ASL repeats state by state is written once and named where it is used."""
+    node = holds(node)
     if not isinstance(node, ast.List) or not node.elts:
         raise CompileError(f"retry is a list of retriers: {EXAMPLE}", node)
     result = []
     for position, element in enumerate(node.elts):
+        element = holds(element)
         if not isinstance(element, ast.Dict):
             raise CompileError(f"a retrier is a dict: {EXAMPLE}", element)
         retrier: dict[str, object] = {}
@@ -181,7 +189,7 @@ def retriers(node: ast.expr, context: Module) -> list[dict[str, object]]:
                 raise CompileError(
                     f"retrier fields are {', '.join(RETRIER_FIELDS)}", key or value
                 )
-            retrier[field] = retrier_field(field, value, context)
+            retrier[field] = retrier_field(field, holds(value), context)
         if "ErrorEquals" not in retrier:
             raise CompileError(f"a retrier needs ErrorEquals: {EXAMPLE}", element)
         errors = retrier["ErrorEquals"]

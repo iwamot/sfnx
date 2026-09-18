@@ -37,7 +37,7 @@ from sfnx.jsontypes import (
     of,
     union,
 )
-from sfnx.module import Module, module, qualified
+from sfnx.module import Module, holds, module, qualified
 from sfnx.translate import StateCall, Translator, direct_call, text, unpacking
 
 # Step Functions reserves $states for its own variables.
@@ -50,7 +50,7 @@ MAX_WAIT = 99_999_999
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 
 
-def machine_options(decorator: ast.expr) -> dict[str, object]:
+def machine_options(decorator: ast.expr, context: Module) -> dict[str, object]:
     """The TimeoutSeconds of a @state_machine decorator."""
     if not isinstance(decorator, ast.Call):
         return {}
@@ -65,7 +65,7 @@ def machine_options(decorator: ast.expr) -> dict[str, object]:
                 "@state_machine takes only timeout; set the rest when you deploy",
                 keyword,
             )
-        value = keyword.value
+        value = holds(keyword.value, context.constants)
         if not (
             isinstance(value, ast.Constant)
             and type(value.value) is int
@@ -85,13 +85,13 @@ def is_machine(decorator: ast.expr, names: dict[str, str]) -> bool:
 
 
 def machines(
-    tree: ast.Module, names: dict[str, str]
+    tree: ast.Module, context: Module
 ) -> list[tuple[ast.FunctionDef, dict[str, object]]]:
     found = []
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        marked = [d for d in node.decorator_list if is_machine(d, names)]
+        marked = [d for d in node.decorator_list if is_machine(d, context.names)]
         if not marked:
             continue
         if any(function.name == node.name for function, _ in found):
@@ -109,7 +109,7 @@ def machines(
             raise CompileError(
                 "a state machine takes no other decorators; remove them", node
             )
-        found.append((node, machine_options(marked[0])))
+        found.append((node, machine_options(marked[0], context)))
     if not found:
         raise CompileError(
             "no state machine here; mark the function with @state_machine "
@@ -198,7 +198,18 @@ class Scope:
         self.parameters = parameters
         self.partial: set[str] = set()
         self.translator = Translator(
-            bindings, module.names, module.spellings, self.partial, self.compose
+            bindings,
+            module.names,
+            module.spellings,
+            # What the module assigns outside the machine is read where this
+            # scope does not assign the name itself, as Python reads a global.
+            {
+                name: found
+                for name, found in module.constants.items()
+                if name not in assigned and name not in parameters
+            },
+            self.partial,
+            self.compose,
         )
         self.translator.is_function = lambda name: (
             name in self.functions or name in module.functions
@@ -556,7 +567,7 @@ class Scope:
         state = dict(call.state)
         self.catchable += 1
         if call.retry is not None:
-            state["Retry"] = retriers(call.retry, self.module)
+            state["Retry"] = retriers(call.retry, self.module, self.translator.holds)
         catchers: list[dict[str, object]] = []
         for handlers in reversed(self.tries):
             for handler in handlers:
@@ -849,7 +860,7 @@ class Scope:
             )
         state: dict[str, object] = {"Type": "Map"}
         if "label" in found:
-            text = label(found["label"])
+            text = label(self.translator.holds(found["label"]))
             if text in self.labels:
                 raise CompileError(
                     f"another distributed_map is labeled {text}; give each its own "
@@ -960,6 +971,7 @@ class Scope:
         """A dict written out in the call, passed through as ASL."""
         if node is None:
             return {}
+        node = self.translator.holds(node)
         if not isinstance(node, ast.Dict):
             raise CompileError(f"{name} is a dict written here: {name}={{...}}", node)
         result: dict[str, object] = {}
@@ -1909,7 +1921,7 @@ def compile_source(
         context = module(tree, source)
         return {
             function.name: compile_machine(function, options, context)
-            for function, options in machines(tree, context.names)
+            for function, options in machines(tree, context)
         }
     except SyntaxError as exc:
         raise CompileError(
