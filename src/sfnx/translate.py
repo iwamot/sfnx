@@ -1841,6 +1841,16 @@ class Translator:
                 node.args[0], ARRAY, "itertools.batched() takes a list"
             )
             size = self.numeric(node.args[1], "the size of itertools.batched()")
+            written = written_number(size)
+            if written is not None and not (type(written) is int and written >= 1):
+                # $partition makes no batches at all for 0 and batches of one
+                # for 1.5, where Python raises, and fails for a negative size.
+                # A size read at run time is not known here.
+                raise CompileError(
+                    "the size of itertools.batched() is a whole number of 1 or "
+                    "more, such as 10",
+                    node.args[1],
+                )
             # $partition returns nothing for no items; brackets make that [].
             batches = call("partition", [items, size], None)
             return expression(

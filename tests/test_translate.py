@@ -1393,6 +1393,16 @@ def test_more_function_diagnostics(body, message):
     assert message in raised.value.message
 
 
+# 0 makes no batches at all, 1.5 batches of one item, and Python takes no float.
+@pytest.mark.parametrize("size", ["0", "1.5", "-1", "2.0"])
+def test_a_batch_size_that_makes_no_batches_is_rejected(size):
+    with pytest.raises(CompileError) as raised:
+        more_definition(f"return list(itertools.batched(xs, {size}))")
+    assert raised.value.message == (
+        "the size of itertools.batched() is a whole number of 1 or more, such as 10"
+    )
+
+
 def test_hashlib_without_import():
     with pytest.raises(CompileError) as raised:
         compile_source(source('return hashlib.sha256(input["s"].encode()).hexdigest()'))
