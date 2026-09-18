@@ -743,7 +743,7 @@ STRINGS = 's: str = input["s"]\nparts: list = input["parts"]\n'
     "body, code",
     [
         ('return s.split("/")', "$split($s, '/')"),
-        ("return s.split()", "$split($trim($s), ' ')"),
+        ("return s.split()", "$trim($s) = '' ? [] : $split($trim($s), ' ')"),
         ('return s.split("/")[-1]', "$split($s, '/')[-1]"),
         ('return s.replace(".", "-")', "$replace($s, '.', '-')"),
         ('return s.replace("a", "b", 2)', "$replace($s, 'a', 'b', 2)"),
@@ -763,6 +763,20 @@ def test_strip_removes_the_whitespace_at_the_ends_only(text):
     """$trim would also make every run of whitespace inside the text one space."""
     compiled = definition(STRINGS + "return s.strip()")
     assert asl.run(compiled, {"s": text, "parts": []}) == text.strip()
+
+
+@pytest.mark.parametrize("text", ["a b  c", " a ", "", "   ", "\n\t"])
+def test_split_at_whitespace_gives_the_same_parts_as_python(text):
+    """$split reads text that trims to "" as one empty part, Python as none."""
+    compiled = definition(STRINGS + "return s.split()")
+    assert asl.run(compiled, {"s": text, "parts": []}) == text.split()
+
+
+def test_no_parts_stay_a_list_where_they_are_read():
+    """An empty array is a value of its own, not a sequence that disappears."""
+    body = 'return [s.split(), {"p": s.split()}, len(s.split())]'
+    compiled = definition(STRINGS + body)
+    assert asl.run(compiled, {"s": "   ", "parts": []}) == [[], {"p": []}, 0]
 
 
 def test_a_width_and_a_fill_read_at_run_time_are_passed_through():

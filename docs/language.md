@@ -84,7 +84,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `if x:` | `$boolean($x)`, or `$count($x) > 0` for a list (tested with `$type` when `x` may be a list) |
 | `float(x)`, `int(x)`, `str(x)`, `bool(x)` | `$number($x)`, `$floor($number($x))`, `$string($x)`, `$boolean($x)` |
 | `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
-| `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$split($trim($s), ' ')` |
+| `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$trim($s) = '' ? [] : $split($trim($s), ' ')` |
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
 | `s.lower()`, `s.upper()` | `$lowercase($s)`, `$uppercase($s)` |
 | `s.strip()` | `$replace($s, /^\s+\|\s+$/, '')` |
@@ -300,7 +300,6 @@ Some values come out differently from CPython. These are the differences known s
 | `json.loads(s)` | `"NaN"`, `"Infinity"`, `"1e400"`, `'{"a": 1, "a": 2}'` | `States.QueryEvaluationError` | `nan`, `inf`, `inf`, `{"a": 2}` |
 | `json.loads(s)` | `"{'a': 1}"` | `{"a": 1}` | `JSONDecodeError` |
 | `s.split(sep)` | a `sep` read at run time that is empty | the characters of `s` | `ValueError` |
-| `s.split()` | `s` is empty or only whitespace | `[""]` | `[]` |
 | `s.strip()` | whitespace at an end that is not ASCII, such as a non-breaking space | kept: Step Functions reads `\s` as the ASCII whitespace | removed |
 | `s.replace(old, new)` | an `old` read at run time that is empty | `States.QueryEvaluationError` | `new` between every character and at both ends |
 | `s.replace(old, new, count)` | a `count` read at run time that is not a whole number of 0 or more | `States.QueryEvaluationError` below `0`, `2.5` taken as `2` | every occurrence replaced for a negative `count`, `TypeError` for `2.5` |

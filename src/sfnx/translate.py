@@ -1707,9 +1707,14 @@ class Translator:
             return call("replace", [receiver, OUTER_WHITESPACE, literal("")], text)
         if name == "split" and not arguments:
             # At runs of whitespace: $trim makes each run one space and removes
-            # the runs at both ends.
-            trimmed = call("trim", [receiver], text)
-            return call("split", [trimmed, literal(" ")], of(ARRAY, items=text))
+            # the runs at both ends. Blank text trims to "", which $split reads
+            # as one empty part, where Python gives no parts at all.
+            strings = of(ARRAY, items=text)
+            compacted = call("trim", [receiver], text)
+            with self.once([compacted]) as (bindings, (trimmed,)):
+                blank = binary(trimmed, "=", literal(""), COMPARE, of(BOOLEAN), True)
+                parts = call("split", [trimmed, literal(" ")], strings)
+                return block(bindings, conditional(blank, array([]), parts, strings))
         if name == "split" and len(arguments) == 1:
             separator = self.operand(
                 arguments[0], STRING, f"{name}() splits at a string"
