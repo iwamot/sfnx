@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import spellings
 
-# What a name outside the machine may hold. The compiler reads the module
-# without running it, so the value is data written out, not a computation.
+# What a name outside the machine may hold, along with the minus sign of a
+# negative number. The compiler reads the module without running it, so the
+# value is data written out, not a computation.
 DATA = (ast.Constant, ast.List, ast.Dict, ast.Name, ast.Attribute)
 
 SELF_ASSIGNED = "is assigned from itself outside the machine; write the value out"
@@ -107,7 +108,9 @@ def data(name: str, value: ast.expr, node: ast.expr) -> ast.expr:
         (
             found
             for found in ast.walk(value)
-            if isinstance(found, ast.expr) and not isinstance(found, DATA)
+            if isinstance(found, ast.expr)
+            and not isinstance(found, DATA)
+            and not negative(found)
         ),
         None,
     )
@@ -118,6 +121,19 @@ def data(name: str, value: ast.expr, node: ast.expr) -> ast.expr:
             node,
         )
     return value
+
+
+def negative(node: ast.expr) -> bool:
+    """Whether a node is a negative number. JSON writes the minus sign as part
+    of the number, and Python parses it as a minus in front of one, which is
+    the value written out and not a computation."""
+    return (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.USub)
+        and isinstance(node.operand, ast.Constant)
+        and isinstance(node.operand.value, (int, float))
+        and not isinstance(node.operand.value, bool)
+    )
 
 
 def comments(source: str) -> dict[int, str]:
