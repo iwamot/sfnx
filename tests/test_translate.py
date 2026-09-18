@@ -1228,7 +1228,7 @@ def test_math_without_import():
 
 LISTS = (
     's: str = input["s"]\nxs: list[float] = input["xs"]\nd: dict = input["d"]\n'
-    'n: float = input["n"]\np: str = input["p"]\n'
+    'n: float = input["n"]\np: str = input["p"]\nds: list[dict] = input["ds"]\n'
 )
 
 
@@ -1237,6 +1237,30 @@ LISTS = (
     [
         ("return sorted(xs)", "$sort($xs)"),
         ("return sorted(xs, reverse=True)", "$reverse($sort($xs))"),
+        (
+            'return sorted(ds, key=lambda item: item["p"])',
+            "$sort($ds, function($a, $b) { $a.p > $b.p })",
+        ),
+        (
+            'return sorted(ds, key=lambda item: item["p"], reverse=True)',
+            "$sort($ds, function($a, $b) { $a.p < $b.p })",
+        ),
+        (
+            'return max(ds, key=lambda item: item["p"])',
+            "$sort($ds, function($a, $b) { $a.p > $b.p })[-1]",
+        ),
+        (
+            'return min(ds, key=lambda item: item["p"])',
+            "$sort($ds, function($a, $b) { $a.p > $b.p })[0]",
+        ),
+        (
+            'return sorted(ds, key=lambda item: item["p"] * n)',
+            "$sort($ds, function($a, $b) { $a.p * $n > $b.p * $n })",
+        ),
+        (
+            'return max(ds[0], ds[1], key=lambda item: item["p"])',
+            "$sort([$ds[0], $ds[1]], function($a, $b) { $a.p > $b.p })[-1]",
+        ),
         ("return sorted(d)", "$sort([$keys($d)])"),
         ("return list(reversed(xs))", "$reverse($xs)"),
         ("return xs[::-1]", "$reverse($xs)"),
@@ -1275,6 +1299,7 @@ def test_list_and_string_functions_evaluate():
         "d": {"b": 1, "a": 2},
         "n": 3,
         "p": "llo",
+        "ds": [],
     }
     assert asl.run(definition(body), execution_input) == [
         [1, 2, 3],
@@ -1293,10 +1318,47 @@ def test_list_and_string_functions_evaluate():
     ]
 
 
+def test_a_key_orders_by_what_it_reads():
+    """The items have keys of their own here: Step Functions leaves items with
+    the same key in order, as Python does, and jsonata-python does not."""
+    items = [{"p": 2, "id": "a"}, {"p": 1, "id": "b"}, {"p": 3, "id": "c"}]
+    body = LISTS + (
+        'return [sorted(ds, key=lambda x: x["p"]), '
+        'sorted(ds, key=lambda x: x["p"], reverse=True), '
+        'max(ds, key=lambda x: x["p"])["id"], min(ds, key=lambda x: x["p"])["id"]]'
+    )
+    execution_input = {"s": "", "xs": [], "d": {}, "n": 0, "p": "", "ds": items}
+    assert asl.run(definition(body), execution_input) == [
+        sorted(items, key=lambda x: x["p"]),
+        sorted(items, key=lambda x: x["p"], reverse=True),
+        max(items, key=lambda x: x["p"])["id"],
+        min(items, key=lambda x: x["p"])["id"],
+    ]
+
+
 @pytest.mark.parametrize(
     "body, message",
     [
-        ("return sorted(xs, key=abs)", "sorted() takes reverse=True or reverse=False"),
+        (
+            "return sorted(xs, key=abs)",
+            "the key of sorted() is a lambda of one item",
+        ),
+        (
+            "return sorted(xs, reverse=1)",
+            "sorted() takes key= and reverse=True or reverse=False",
+        ),
+        (
+            'return sorted(xs, key=lambda x, y: x["p"])',
+            "the key of sorted() is a lambda of one item",
+        ),
+        (
+            'ds: list[dict] = input["ds"]\nreturn sorted(ds, key=lambda d: d)',
+            "the key of sorted() is object; JSONata orders numbers and strings",
+        ),
+        (
+            'return max(xs, key=lambda x: x["p"], default=0)',
+            'max() takes key=: max(xs, key=lambda x: x["price"])',
+        ),
         (
             'ls: list[list] = input["ls"]\nreturn sorted(ls)',
             "the items of ls are array; sorted() orders numbers or strings",

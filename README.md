@@ -179,13 +179,13 @@ The workflow module imports `sfnx`, so it is a dependency of the project; `uv ru
 - **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). `except Exception` is `States.ALL`.
 - **Names assigned outside the machine** (`RETRIES = [{"ErrorEquals": [Timeout], "MaxAttempts": 3}]`) hold JSON data and exception classes, and are written into the definition where they are read, so what ASL repeats state by state is written once.
 - **Expressions** are Python operators, conditional expressions, list comprehensions, f-strings, slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
-  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`)
+  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`, and `sorted`, `max` and `min` take `key=lambda item: ...`)
   - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()`, `str(uuid.uuid4())` and `hashlib.sha256(s.encode()).hexdigest()`
   - a datetime from `datetime.now()`, `datetime.fromisoformat(text)` or `datetime.fromtimestamp(seconds)`, converted where it is made: `str()` or an f-string for the timestamp text, `.timestamp()` for the seconds
   - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and the dict methods `keys`, `values` and `get`
 - **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. Literals, operator results and AWS API responses carry their types already.
 - **Comments** go into the definition: a function's docstring is the `Comment` of the machine, a Parallel branch or a Map processor, and the comment lines right above a statement are the `Comment` of the first state it makes.
-- **Anything else** (`with`, other methods, `lambda`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
+- **Anything else** (`with`, other methods, a `lambda` outside `key=`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
 
 [docs/language.md](https://github.com/iwamot/sfnx/blob/main/docs/language.md) is the reference, and [docs/design.md](https://github.com/iwamot/sfnx/blob/main/docs/design.md) explains the design and the Step Functions behavior it relies on.
 
