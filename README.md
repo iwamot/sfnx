@@ -177,6 +177,7 @@ The workflow module imports `sfnx`, so it is a dependency of the project; `uv ru
 - **`wait(10)`** and **`wait(until=timestamp)`** are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
 - **`jsonata("$pad($s, -5, '0')", s=code)`** writes a JSONata expression out, for what has no Python spelling, with each value bound to the variable of its name.
 - **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). `except Exception` is `States.ALL`.
+- **Names assigned outside the machine** (`RETRIES = [{"ErrorEquals": [Timeout], "MaxAttempts": 3}]`) hold JSON data and exception classes, and are written into the definition where they are read, so what ASL repeats state by state is written once.
 - **Expressions** are Python operators, conditional expressions, list comprehensions, f-strings, slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
   - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`)
   - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()`, `str(uuid.uuid4())` and `hashlib.sha256(s.encode()).hexdigest()`

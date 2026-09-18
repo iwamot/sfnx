@@ -1,4 +1,4 @@
-"""What a module binds at its top level: imports and classes."""
+"""What a module binds at its top level: imports, classes and values."""
 
 import ast
 import io
@@ -8,18 +8,35 @@ from dataclasses import dataclass
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import spellings
 
+# What a name outside the machine may hold. The compiler reads the module
+# without running it, so the value is data written out, not a computation.
+DATA = (ast.Constant, ast.List, ast.Dict, ast.Name, ast.Attribute)
+
+SELF_ASSIGNED = "is assigned from itself outside the machine; write the value out"
+
+
+@dataclass(frozen=True)
+class Constant:
+    """A name assigned at the top level: the value written there, which the
+    compiler writes in wherever the name is read, and its annotation."""
+
+    value: ast.expr
+    declared: ast.expr | None
+
 
 @dataclass(frozen=True)
 class Module:
     """names maps imported local names to what they import (sfnx.wait);
     classes and functions hold what the module defines at its top level,
-    identifiers every name it binds or reads, spellings the Step Functions
-    variable of each name that cannot be one as it is, and comments the
-    comment lines right above a line of code, by that line."""
+    constants what it assigns there, identifiers every name it binds or reads,
+    spellings the Step Functions variable of each name that cannot be one as it
+    is, and comments the comment lines right above a line of code, by that
+    line."""
 
     names: dict[str, str]
     classes: dict[str, ast.ClassDef]
     functions: dict[str, ast.FunctionDef]
+    constants: dict[str, Constant]
     identifiers: frozenset[str]
     spellings: dict[str, str]
     comments: dict[int, str]
@@ -30,8 +47,65 @@ def module(tree: ast.Module, source: str) -> Module:
     functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     names = identifiers(tree)
     return Module(
-        imports(tree), classes, functions, names, spellings(names), comments(source)
+        imports(tree),
+        classes,
+        functions,
+        constants(tree),
+        names,
+        spellings(names),
+        comments(source),
     )
+
+
+def constants(tree: ast.Module) -> dict[str, Constant]:
+    """The names the module assigns at its top level, to what is written for
+    them. A name assigned twice holds what the last assignment writes, as it
+    does when Python runs the module."""
+    found: dict[str, Constant] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                found[target.id] = Constant(node.value, None)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            found[node.target.id] = Constant(node.value, node.annotation)
+    return found
+
+
+def holds(node: ast.expr, constants: dict[str, Constant]) -> ast.expr:
+    """What a name outside the machine holds, followed as far as one name is
+    assigned another. Anything else is the node itself."""
+    seen: set[str] = set()
+    while isinstance(node, ast.Name) and node.id in constants:
+        if node.id in seen:
+            raise CompileError(f"{node.id} {SELF_ASSIGNED}", node)
+        seen.add(node.id)
+        node = data(node.id, constants[node.id].value, node)
+    return node
+
+
+def data(name: str, value: ast.expr, node: ast.expr) -> ast.expr:
+    """The value written for a name outside the machine, which the compiler
+    reads as data: it does not run the module."""
+    computed = next(
+        (
+            found
+            for found in ast.walk(value)
+            if isinstance(found, ast.expr) and not isinstance(found, DATA)
+        ),
+        None,
+    )
+    if computed is not None:
+        raise CompileError(
+            f"{name} holds {ast.unparse(computed)}, which the compiler would have to "
+            "run; a name outside the machine holds JSON data and exception classes",
+            node,
+        )
+    return value
 
 
 def comments(source: str) -> dict[int, str]:

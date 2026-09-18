@@ -44,13 +44,15 @@ from sfnx.jsontypes import (
     NUMBER,
     OBJECT,
     STRING,
+    AnnotationError,
     Type,
+    annotation,
     exclude,
     of,
     restrict,
     union,
 )
-from sfnx.module import qualified
+from sfnx.module import SELF_ASSIGNED, Constant, data, holds, qualified
 
 COMPARISONS: dict[type[ast.cmpop], str] = {
     ast.Eq: "=",
@@ -363,12 +365,19 @@ class Translator:
         bindings: dict[str, Expr],
         names: dict[str, str],
         spellings: dict[str, str],
+        constants: dict[str, Constant],
         partial: set[str],
         compose: Compose,
     ):
         self.bindings = bindings
         self.names = names
         self.spellings = spellings
+        # What the module assigns outside the machine, less the names this
+        # scope assigns, which are its own as they are in Python.
+        self.constants = constants
+        # The names outside the machine being written in, so one assigned
+        # from itself is caught instead of read again and again.
+        self.expanding: set[str] = set()
         self.partial = partial
         # A statement that can become a Task lets one task() in; the call is
         # kept here. Inside a branch of an expression it would not always run.
@@ -396,6 +405,38 @@ class Translator:
 
     def spelling(self, name: str) -> str:
         return spelling(name, self.spellings)
+
+    def outside(self, node: ast.Name) -> Expr:
+        """A name assigned outside the machine, read as the value written
+        there: the compiler writes that value in where the name is used, so
+        the name itself reaches neither the definition nor Step Functions."""
+        if node.id in self.expanding:
+            raise CompileError(f"{node.id} {SELF_ASSIGNED}", node)
+        found = self.constants[node.id]
+        # The value is written outside the machine, where the variables of the
+        # machine are not in scope, as they are not when Python runs the module.
+        bindings = self.bindings
+        self.bindings = {}
+        self.expanding.add(node.id)
+        try:
+            value = self.expr(data(node.id, found.value, node))
+        finally:
+            self.expanding.discard(node.id)
+            self.bindings = bindings
+        if found.declared is None:
+            return value
+        try:
+            return replace(value, type=annotation(found.declared))
+        except AnnotationError as exc:
+            raise CompileError(str(exc), exc.node) from exc
+
+    def holds(self, node: ast.expr) -> ast.expr:
+        """The value a name assigned outside the machine holds, for the places
+        that take what is written out, such as a resource ARN. A name the
+        machine binds is itself, so its variable is read there instead."""
+        if isinstance(node, ast.Name) and node.id in self.bindings:
+            return node
+        return holds(node, self.constants)
 
     def statement_value(self, node: ast.expr) -> tuple[Expr, StateCall | None]:
         """The value of an assignment, a return or an expression statement,
@@ -440,6 +481,10 @@ class Translator:
                     "before the if, loop or try, or on every path",
                     node,
                 )
+            # A name the machine does not assign is read outside it, as
+            # Python reads a global.
+            if node.id in self.constants:
+                return self.outside(node)
             if self.isolated is not None and node.id not in self.local:
                 raise CompileError(
                     f"{node.id} is outside {self.isolated}, which distributed_map runs "
@@ -1880,7 +1925,7 @@ class Translator:
                 'task("arn:aws:states:::lambda:invoke", {"FunctionName": ...})',
                 node,
             )
-        resource_node = node.args[0]
+        resource_node = self.holds(node.args[0])
         if not (
             isinstance(resource_node, ast.Constant)
             and isinstance(resource_node.value, str)
