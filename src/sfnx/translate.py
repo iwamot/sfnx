@@ -1714,6 +1714,12 @@ class Translator:
             separator = self.operand(
                 arguments[0], STRING, f"{name}() splits at a string"
             )
+            if written_text(separator) == "":
+                raise CompileError(
+                    "split() splits at one character or more; list(s) reads the "
+                    "text as its characters",
+                    arguments[0],
+                )
             return call("split", [receiver, separator], of(ARRAY, items=text))
         if name == "split" and len(arguments) == 2:
             raise CompileError(
@@ -1724,11 +1730,34 @@ class Translator:
         if name == "replace" and len(arguments) in {2, 3}:
             rule = f"{name}() replaces strings"
             values = [self.operand(a, STRING, rule) for a in arguments[:2]]
+            if written_text(values[0]) == "":
+                # Python writes new between every character and at both ends.
+                raise CompileError(
+                    "replace() replaces one character or more; Step Functions "
+                    "fails on an empty pattern",
+                    arguments[0],
+                )
             if len(arguments) == 3:
-                values.append(self.numeric(arguments[2], "the count of replace()"))
+                count = self.numeric(arguments[2], "the count of replace()")
+                if not whole_number(count):
+                    # $replace fails below 0, where Python replaces every
+                    # occurrence, and takes 2.5 as 2, where Python raises.
+                    raise CompileError(
+                        "the count of replace() is a whole number of 0 or more; "
+                        "leave it out to replace every occurrence",
+                        arguments[2],
+                    )
+                values.append(count)
             return call("replace", [receiver, *values], text)
         if name in {"ljust", "rjust"} and len(arguments) in {1, 2}:
             width = self.numeric(arguments[0], f"the width of {name}()")
+            if not whole_number(width):
+                # $pad fills on the other side for a width below 0, where
+                # Python leaves the text as it is, and takes 6.5 as 6.
+                raise CompileError(
+                    f"the width of {name}() is a whole number of 0 or more",
+                    arguments[0],
+                )
             if name == "rjust":
                 # $pad fills on the left for a negative width.
                 number = width.template
@@ -1737,6 +1766,10 @@ class Translator:
                 self.operand(a, STRING, f"{name}() fills with a string")
                 for a in arguments[1:]
             ]
+            written = written_text(fill[0]) if fill else None
+            if written is not None and len(written) != 1:
+                # $pad repeats a fill of several characters; Python raises.
+                raise CompileError(f"{name}() fills with one character", arguments[1])
             return call("pad", [receiver, width, *fill], text)
         if name in {"startswith", "endswith"} and len(arguments) == 1:
             return self.affix(receiver, arguments[0], name)
@@ -2429,11 +2462,28 @@ def function(parameter: str, body: Expr) -> Expr:
     )
 
 
+def whole_number(value: Expr) -> bool:
+    """Whether a count or a width written in the source is one Python takes: a
+    whole number of 0 or more. One read at run time is not known here."""
+    written = written_number(value)
+    return written is None or (type(written) is int and written >= 0)
+
+
 def written_number(value: Expr) -> int | float | None:
     """The number a value is written as in the source, if it is written as
     one. A literal keeps the JSON itself as its template."""
     template = value.template
     return template if type(template) is int or type(template) is float else None
+
+
+def written_text(value: Expr) -> str | None:
+    """The text a value is written as in the source, if it is written as one.
+    A literal keeps the text itself as its template, except for one that opens
+    or closes like a `{% %}` template, which is written as an expression."""
+    template = value.template
+    if type(template) is not str or template.startswith("{%"):
+        return None
+    return template
 
 
 def divided(divisor: Expr, value: Expr) -> Expr:
