@@ -748,7 +748,7 @@ STRINGS = 's: str = input["s"]\nparts: list = input["parts"]\n'
         ('return s.replace(".", "-")', "$replace($s, '.', '-')"),
         ('return s.replace("a", "b", 2)', "$replace($s, 'a', 'b', 2)"),
         ("return s.lower()", "$lowercase($s)"),
-        ("return s.strip()", "$trim($s)"),
+        ("return s.strip()", "$replace($s, /^\\s+|\\s+$/, '')"),
         ('return "id-" + s.upper()', "'id-' & $uppercase($s)"),
         ('return input["s"].upper()', f"$uppercase({INPUT}.s)"),
         ('return ", ".join(parts)', "$join($parts, ', ')"),
@@ -756,6 +756,13 @@ STRINGS = 's: str = input["s"]\nparts: list = input["parts"]\n'
 )
 def test_string_methods(body, code):
     assert output(STRINGS + body) == "{% " + code + " %}"
+
+
+@pytest.mark.parametrize("text", ["  a  b\tc  ", "abc", "", "   ", "\n x \n"])
+def test_strip_removes_the_whitespace_at_the_ends_only(text):
+    """$trim would also make every run of whitespace inside the text one space."""
+    compiled = definition(STRINGS + "return s.strip()")
+    assert asl.run(compiled, {"s": text, "parts": []}) == text.strip()
 
 
 def test_string_methods_evaluate():
@@ -771,7 +778,7 @@ def test_string_methods_evaluate():
         " a/b/c\td ",
         "x+y",
         ["A/B/C", "D"],
-        "a/B/c d",
+        "a/B/c\td",
     ]
 
 
