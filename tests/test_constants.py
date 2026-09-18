@@ -195,6 +195,22 @@ def test_a_computed_part_of_a_constant_is_rejected():
     assert message.startswith("PREFIX holds 'a' + 'b'")
 
 
+def test_a_negative_number_is_data():
+    compiled = definition(
+        'OFFSET = -1\nRATES = {"low": -0.5, "high": [1.5, -2]}',
+        "return [OFFSET, RATES]",
+    )
+    assert compiled["States"]["return"]["Output"] == [
+        -1,
+        {"low": -0.5, "high": [1.5, -2]},
+    ]
+
+
+def test_a_minus_sign_before_anything_but_a_number_is_a_computation():
+    message = rejected("A = 1\nB = -A", "return B")
+    assert message.startswith("B holds -A, which the compiler would have to run")
+
+
 def test_a_constant_assigned_from_itself_is_rejected():
     assert rejected("A = A", "return A") == (
         "A is assigned from itself outside the machine; write the value out"
