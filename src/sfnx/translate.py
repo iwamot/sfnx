@@ -1373,6 +1373,8 @@ class Translator:
         name = node.func.id
         if name == "sorted":
             return self.ordered(node)
+        if name in {"max", "min"} and node.keywords:
+            return self.extreme(node, name)
         if node.keywords:
             raise CompileError(f"{name}() takes no keyword arguments here", node)
         if name in {"len", "float", "int", "str", "bool"}:
@@ -1558,24 +1560,32 @@ class Translator:
         )
 
     def ordered(self, node: ast.Call) -> Expr:
-        """sorted(x), or with reverse=True, of numbers or strings, which are what
-        JSONata's $sort orders without a function."""
+        """sorted(x), of numbers or strings, which are what JSONata's $sort
+        orders without a function, or sorted(x, key=lambda item: ...), which
+        becomes the comparison $sort takes. reverse= turns either around."""
         if len(node.args) != 1:
             raise CompileError("sorted() takes one argument: sorted(xs)", node)
         descending = False
+        key = None
         for keyword in node.keywords:
-            if not (
+            if keyword.arg == "key":
+                key = keyword.value
+            elif (
                 keyword.arg == "reverse"
                 and isinstance(keyword.value, ast.Constant)
                 and isinstance(keyword.value.value, bool)
             ):
+                descending = keyword.value.value
+            else:
                 raise CompileError(
-                    "sorted() takes reverse=True or reverse=False; JSONata's $sort "
-                    "orders numbers and strings as they are, with no key",
+                    "sorted() takes key= and reverse=True or reverse=False: "
+                    'sorted(xs, key=lambda x: x["price"])',
                     keyword.value,
                 )
-            descending = keyword.value.value
         listed = self.listed(node.args[0], "sorted")
+        if key is not None:
+            comparator = self.comparator(listed, key, "sorted", descending)
+            return call("sort", [listed, comparator], listed.type)
         items = listed.type.items if listed.type else None
         if items is not None and (
             items.kind is None or items.kind not in {NUMBER, STRING}
@@ -1587,6 +1597,83 @@ class Translator:
             )
         ordered = call("sort", [listed], listed.type)
         return call("reverse", [ordered], listed.type) if descending else ordered
+
+    def extreme(self, node: ast.Call, name: str) -> Expr:
+        """max(xs, key=lambda item: ...), max(a, b, key=...) and min(...).
+        $max and $min take numbers only and no comparison of their own, so the
+        items are ordered by the key and the one at the end of it taken."""
+        if not node.args:
+            raise CompileError(f"{name}() is written {NUMBER_FUNCTIONS[name]}", node)
+        if len(node.keywords) != 1 or node.keywords[0].arg != "key":
+            raise CompileError(
+                f'{name}() takes key=: {name}(xs, key=lambda x: x["price"])', node
+            )
+        if len(node.args) == 1:
+            listed = self.listed(node.args[0], name)
+        else:
+            listed = array([self.expr(argument) for argument in node.args])
+        comparator = self.comparator(listed, node.keywords[0].value, name, False)
+        ordered = call("sort", [listed, comparator], listed.type)
+        return index(ordered, literal(-1 if name == "max" else 0))
+
+    def comparator(
+        self, source: Expr, key: ast.expr, name: str, descending: bool
+    ) -> Expr:
+        """The function $sort takes, from a key=lambda: the key of one item
+        against the key of the other. Python orders by the key and leaves items
+        with the same key in order, which $sort does too, so reverse= turns the
+        comparison around rather than the result."""
+        usage = f'{name}(xs, key=lambda x: x["price"])'
+        if not (
+            isinstance(key, ast.Lambda)
+            and len(key.args.args) == 1
+            and not (
+                key.args.posonlyargs
+                or key.args.kwonlyargs
+                or key.args.vararg
+                or key.args.kwarg
+                or key.args.defaults
+            )
+        ):
+            raise CompileError(
+                f"the key of {name}() is a lambda of one item: {usage}", key
+            )
+        parameter = key.args.args[0].arg
+        items = source.type.items if source.type else None
+        # The parameters are the function's own names, hiding neither what the
+        # list reads nor what the key reads under a name of its own.
+        taken = self.hides([source]) | {
+            self.spelling(read.id)
+            for read in ast.walk(key.body)
+            if isinstance(read, ast.Name)
+        }
+        first = unused("a", taken)
+        second = unused("b", taken | {first})
+        keys = []
+        saved = self.bindings.get(parameter)
+        try:
+            for variable in (first, second):
+                self.bindings[parameter] = expression("$" + variable, type=items)
+                self.inner.append(variable)
+                try:
+                    keys.append(self.expr(key.body))
+                finally:
+                    self.inner.pop()
+        finally:
+            if saved is None:
+                self.bindings.pop(parameter, None)
+            else:
+                self.bindings[parameter] = saved
+        declared = keys[0].type
+        if declared is not None and declared.kind not in {NUMBER, STRING}:
+            raise CompileError(
+                f"the key of {name}() is {declared.describe()}; JSONata orders "
+                "numbers and strings",
+                key.body,
+            )
+        symbol = "<" if descending else ">"
+        test = binary(keys[0], symbol, keys[1], COMPARE, of(BOOLEAN), True)
+        return comparing(first, second, test)
 
     def jsonata(self, node: ast.Call) -> Expr:
         """jsonata(expression, name=value): the expression as it is written, in
@@ -2457,6 +2544,15 @@ def unused(base: str, taken: set[str]) -> str:
         serial += 1
         name = f"{base}_{serial}"
     return name
+
+
+def comparing(first: str, second: str, body: Expr) -> Expr:
+    """The function $sort takes: whether the first item comes after the second."""
+    return expression(
+        f"function(${first}, ${second}) {{ {body.code} }}",
+        body.variables,
+        volatile=body.volatile,
+    )
 
 
 def function(parameter: str, body: Expr) -> Expr:
