@@ -76,6 +76,39 @@ def test_a_constant_holds_what_the_name_it_read_held_there():
     assert asl.run(compiled, {}) == flow({}) == [2, 1]
 
 
+def test_a_constant_read_inside_another_keeps_what_it_held_there():
+    written = source('A = 1\nB = {"n": A}\nA = 2', "return [B, A]")
+    (compiled,) = compile_source(written).values()
+    namespace: dict[str, object] = {}
+    exec(written, namespace)
+    flow = namespace["flow"]
+    assert callable(flow)
+    assert asl.run(compiled, {}) == flow({}) == [{"n": 1}, 2]
+
+
+def test_a_constant_assigned_from_itself_keeps_what_it_held_there():
+    written = source("A = 1\nA = [A]", "return A")
+    (compiled,) = compile_source(written).values()
+    namespace: dict[str, object] = {}
+    exec(written, namespace)
+    flow = namespace["flow"]
+    assert callable(flow)
+    assert asl.run(compiled, {}) == flow({}) == [1]
+
+
+@pytest.mark.parametrize(
+    "outside, body",
+    [
+        ("A: list[str] = []\nB = [A]", "return B[0][0] + 1"),
+        ("A: list[str] = []\nB = A", "return B[0] + 1"),
+    ],
+)
+def test_an_annotation_reaches_a_constant_another_one_reads(outside, body):
+    # The name is read where it was assigned, annotation and all, whether it
+    # is the whole value or read inside one.
+    assert rejected(outside, body).startswith("+ cannot join number and string")
+
+
 def test_a_constant_takes_no_state_of_its_own():
     compiled = definition(
         'QUERY = {"TableName": "stock", "Key": {"id": {"S": "1"}}}',
@@ -211,22 +244,26 @@ def test_a_minus_sign_before_anything_but_a_number_is_a_computation():
     assert message.startswith("B holds -A, which the compiler would have to run")
 
 
-def test_a_constant_assigned_from_itself_is_rejected():
+def test_a_constant_that_reads_itself_reads_a_name_not_assigned_yet():
+    # Python raises NameError here: the A on the right is whatever was
+    # assigned above the line, and nothing was.
     assert rejected("A = A", "return A") == (
-        "A is assigned from itself outside the machine; write the value out"
+        "A is not assigned here; assign it before this line"
     )
 
 
-def test_constants_assigned_from_each_other_are_rejected():
-    assert "assigned from itself" in rejected("A = [B]\nB = [A]", "return A")
+def test_constants_that_read_each_other_read_a_name_not_assigned_yet():
+    assert "B is not assigned here" in rejected("A = [B]\nB = [A]", "return A")
 
 
-def test_a_constant_assigned_from_itself_in_a_retrier_is_rejected():
+def test_a_constant_that_reads_itself_holds_nothing_for_a_retrier():
+    # Nothing is written out for RETRIES, so retry= is handed the name itself,
+    # which is not a list of retriers.
     message = rejected(
         "RETRIES = RETRIES",
         f'return task("{LAMBDA}", {{"FunctionName": "a"}}, retry=RETRIES)',
     )
-    assert "assigned from itself" in message
+    assert "retry is a list of retriers" in message
 
 
 def test_a_name_imported_from_elsewhere_is_not_a_constant():

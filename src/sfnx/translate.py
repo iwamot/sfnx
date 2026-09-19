@@ -52,7 +52,7 @@ from sfnx.jsontypes import (
     restrict,
     union,
 )
-from sfnx.module import SELF_ASSIGNED, Constant, data, holds, qualified
+from sfnx.module import Constant, data, holds, qualified
 
 COMPARISONS: dict[type[ast.cmpop], str] = {
     ast.Eq: "=",
@@ -380,9 +380,6 @@ class Translator:
         # What the module assigns outside the machine, less the names this
         # scope assigns, which are its own as they are in Python.
         self.constants = constants
-        # The names outside the machine being written in, so one assigned
-        # from itself is caught instead of read again and again.
-        self.expanding: set[str] = set()
         self.partial = partial
         # A statement that can become a Task lets one task() in; the call is
         # kept here. Inside a branch of an expression it would not always run.
@@ -415,18 +412,18 @@ class Translator:
         """A name assigned outside the machine, read as the value written
         there: the compiler writes that value in where the name is used, so
         the name itself reaches neither the definition nor Step Functions."""
-        if node.id in self.expanding:
-            raise CompileError(f"{node.id} {SELF_ASSIGNED}", node)
         found = self.constants[node.id]
         # The value is written outside the machine, where the variables of the
-        # machine are not in scope, as they are not when Python runs the module.
+        # machine are not in scope, as they are not when Python runs the
+        # module, and where the names it reads are those assigned above it.
         bindings = self.bindings
         self.bindings = {}
-        self.expanding.add(node.id)
+        constants = self.constants
+        self.constants = found.scope
         try:
             value = self.expr(data(node.id, found.value, node))
         finally:
-            self.expanding.discard(node.id)
+            self.constants = constants
             self.bindings = bindings
         if found.declared is None:
             return value
