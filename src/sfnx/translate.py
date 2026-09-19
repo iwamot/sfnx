@@ -74,38 +74,6 @@ CLASSES = {
 }
 
 
-def truth(value: Expr) -> Expr:
-    """A JSON boolean with Python's truthiness. $boolean agrees with bool()
-    except on a non-empty array whose members are all falsy, so a known array
-    is counted instead, and a value that may be an array is tested for one when
-    it is evaluated. A value of unknown type keeps $boolean."""
-    if value.boolean:
-        return value
-    if value.type is None or ARRAY not in value.type.kinds:
-        return call("boolean", [value], of(BOOLEAN), boolean=True)
-    counted = binary(
-        call("count", [value], of(NUMBER)),
-        ">",
-        literal(0),
-        COMPARE,
-        of(BOOLEAN),
-        True,
-    )
-    if value.type.kind == ARRAY:
-        return counted
-    kind = call("type", [value], of(STRING))
-    test = binary(kind, "=", literal("array"), COMPARE, of(BOOLEAN), True)
-    otherwise = call("boolean", [value], of(BOOLEAN), boolean=True)
-    return conditional(test, counted, otherwise, of(BOOLEAN))
-
-
-def logical(value: Expr) -> Expr:
-    """An operand of JSONata's and, or and $not, which cast it with $boolean."""
-    if value.type and ARRAY in value.type.kinds:
-        return truth(value)
-    return value
-
-
 # What to write instead of the expressions the language leaves out, by node.
 EXPRESSIONS = {
     "Attribute": 'attributes are not supported; read a key with x["key"]',
@@ -690,6 +658,46 @@ class Translator:
             result = binary(result, "&", piece, ADD, of(STRING))
         return result
 
+    def truth(self, value: Expr) -> Expr:
+        """A JSON boolean with Python's truthiness. $boolean agrees with
+        bool() except on a non-empty array whose members are all falsy, so a
+        known array is counted instead, and a value that may be one, an
+        unknown type included, is tested for one when it is evaluated.
+        Declaring the type is what keeps the shorter $boolean. The test reads
+        the value three times, so anything longer than a variable is bound to
+        one first."""
+        if value.boolean:
+            return value
+        if value.type is not None and ARRAY not in value.type.kinds:
+            return call("boolean", [value], of(BOOLEAN), boolean=True)
+        if value.type is not None and value.type.kind == ARRAY:
+            return self.counted(value)
+        with self.once([value], always=self.bind(value)) as (bindings, (bound,)):
+            kind = call("type", [bound], of(STRING))
+            test = binary(kind, "=", literal("array"), COMPARE, of(BOOLEAN), True)
+            otherwise = call("boolean", [bound], of(BOOLEAN), boolean=True)
+            chosen = conditional(test, self.counted(bound), otherwise, of(BOOLEAN))
+        return block(bindings, chosen)
+
+    def counted(self, value: Expr) -> Expr:
+        """An array is truthy when it holds anything, whatever the items are."""
+        return binary(
+            call("count", [value], of(NUMBER)),
+            ">",
+            literal(0),
+            COMPARE,
+            of(BOOLEAN),
+            True,
+        )
+
+    def cast(self, value: Expr) -> Expr:
+        """An operand of JSONata's and, or and $not, which cast it with
+        $boolean. A value that may be an array, an unknown type included, is
+        read as truth() reads it, so that and, or and not agree with if."""
+        if value.type is None or ARRAY in value.type.kinds:
+            return self.truth(value)
+        return value
+
     def condition(self, node: ast.expr) -> Expr:
         """A JSON boolean for if, while and the tests inside expressions.
         Comparisons and their and / or / not are used as they are."""
@@ -697,7 +705,7 @@ class Translator:
             return self.junction(node, self.operands(node, self.logical))
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             return self.unary(node)
-        return truth(self.expr(node))
+        return self.truth(self.expr(node))
 
     def logical(self, node: ast.expr) -> Expr:
         """An operand of and, or and not, which JSONata casts with $boolean."""
@@ -786,7 +794,7 @@ class Translator:
             if operand.type and operand.type.kind == ARRAY:
                 count = call("count", [operand], of(NUMBER))
                 return binary(count, "=", literal(0), COMPARE, of(BOOLEAN), True)
-            return call("not", [logical(operand)], of(BOOLEAN), boolean=True)
+            return call("not", [self.cast(operand)], of(BOOLEAN), boolean=True)
         if isinstance(node.op, ast.USub):
             operand = node.operand
             if (
@@ -955,11 +963,14 @@ class Translator:
         result = values[-1]
         for value in reversed(values[:-1]):
             kind = union(value.type, result.type)
-            with self.once([value], [result]) as (bindings, (value,)):
+            with self.once([value], [result], always=self.bind(value)) as (
+                bindings,
+                (value,),
+            ):
                 if isinstance(node.op, ast.Or):
-                    chosen = conditional(truth(value), value, result, kind)
+                    chosen = conditional(self.truth(value), value, result, kind)
                 else:
-                    chosen = conditional(truth(value), result, value, kind)
+                    chosen = conditional(self.truth(value), result, value, kind)
             result = block(bindings, chosen)
         return result
 
@@ -967,10 +978,10 @@ class Translator:
         operator, precedence = (
             ("or", OR) if isinstance(node.op, ast.Or) else ("and", AND)
         )
-        result = logical(values[0])
+        result = self.cast(values[0])
         for value in values[1:]:
             result = binary(
-                result, operator, logical(value), precedence, of(BOOLEAN), True
+                result, operator, self.cast(value), precedence, of(BOOLEAN), True
             )
         return result
 
@@ -1397,7 +1408,7 @@ class Translator:
             if name == "str":
                 return text(argument)
             if name == "bool":
-                return truth(argument)
+                return self.truth(argument)
             return self.length(node.args[0], argument)
         if name == "isinstance":
             return self.isinstance(node)

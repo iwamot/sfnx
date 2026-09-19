@@ -7,7 +7,7 @@ import pytest
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import spellings
-from tests import asl
+from tests import asl, truthiness, truthy
 
 INPUT = "$states.context.Execution.Input"
 
@@ -83,12 +83,15 @@ def output(body: str, parameter: str = "input") -> object:
         ('return 2 * -input["a"]', f"2 * -{INPUT}.a"),
         (
             'items: list = input["items"]\nreturn 1 if items and input["a"] else 2',
-            f"$count($items) > 0 and {INPUT}.a ? 1 : 2",
+            f"$count($items) > 0 and {truthy(f'{INPUT}.a')} ? 1 : 2",
         ),
-        ('return 1 if not input["a"] else 2', f"$not({INPUT}.a) ? 1 : 2"),
+        (
+            'return 1 if not input["a"] else 2',
+            f"$not({truthy(f'{INPUT}.a')}) ? 1 : 2",
+        ),
         (
             'return 1 if input["a"] or not input["b"] else 2',
-            f"{INPUT}.a or $not({INPUT}.b) ? 1 : 2",
+            f"{truthy(f'{INPUT}.a')} or $not({truthy(f'{INPUT}.b')}) ? 1 : 2",
         ),
         ('return input["a"] == None', f"{INPUT}.a = null"),
         ('return input["a"] != "x"', f"{INPUT}.a != 'x'"),
@@ -102,14 +105,20 @@ def output(body: str, parameter: str = "input") -> object:
             f"$not($exists({INPUT}.a) and {INPUT}.a != null)",
         ),
         ('return input["a"] is not None', f"$exists({INPUT}.a) and {INPUT}.a != null"),
-        ('return input["a"] or "none"', f"$boolean({INPUT}.a) ? {INPUT}.a : 'none'"),
+        (
+            'return input["a"] or "none"',
+            f"($v := {INPUT}.a; ({truthiness()}) ? $v : 'none')",
+        ),
         (
             'return input["a"] and input["b"]',
-            f"$boolean({INPUT}.a) ? {INPUT}.b : {INPUT}.a",
+            f"($v := {INPUT}.a; ({truthiness()}) ? {INPUT}.b : $v)",
         ),
         (
             'return input["a"] or input["b"] or 0',
-            f"$boolean({INPUT}.a) ? {INPUT}.a : $boolean({INPUT}.b) ? {INPUT}.b : 0",
+            (
+                f"($v_2 := {INPUT}.a; ({truthiness('$v_2')}) ? $v_2 : "
+                f"($v := {INPUT}.b; ({truthiness()}) ? $v : 0))"
+            ),
         ),
         (
             'return input["a"] > 1 and input["b"] < 2',
@@ -123,13 +132,19 @@ def output(body: str, parameter: str = "input") -> object:
             'return (input["a"] > 1 or input["b"] < 2) and input["c"] == 3',
             f"({INPUT}.a > 1 or {INPUT}.b < 2) and {INPUT}.c = 3",
         ),
-        ('return not input["a"]', f"$not({INPUT}.a)"),
-        ('return not (input["a"] or input["b"])', f"$not({INPUT}.a or {INPUT}.b)"),
+        ('return not input["a"]', f"$not({truthy(f'{INPUT}.a')})"),
+        (
+            'return not (input["a"] or input["b"])',
+            f"$not({truthy(f'{INPUT}.a')} or {truthy(f'{INPUT}.b')})",
+        ),
         ('items: list = input["items"]\nreturn not items', "$count($items) = 0"),
-        ('return 1 if input["a"] else 2', f"$boolean({INPUT}.a) ? 1 : 2"),
+        ('return 1 if input["a"] else 2', f"{truthy(f'{INPUT}.a')} ? 1 : 2"),
         ('return 1 if input["a"] > 0 else 2', f"{INPUT}.a > 0 ? 1 : 2"),
-        ('return (1 if input["a"] else 2) + 1', f"($boolean({INPUT}.a) ? 1 : 2) + 1"),
-        ('return bool(input["a"])', f"$boolean({INPUT}.a)"),
+        (
+            'return (1 if input["a"] else 2) + 1',
+            f"({truthy(f'{INPUT}.a')} ? 1 : 2) + 1",
+        ),
+        ('return bool(input["a"])', truthy(f"{INPUT}.a")),
         ('items: list = input["items"]\nreturn bool(items)', "$count($items) > 0"),
         ('return float(input["a"])', f"$number({INPUT}.a)"),
         (

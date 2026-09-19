@@ -5,7 +5,7 @@ import pytest
 
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
-from tests import asl
+from tests import asl, truthy
 
 INPUT = "$states.context.Execution.Input"
 HEADER = "from sfnx import state_machine, wait\n\n\n"
@@ -51,7 +51,7 @@ def test_elif_adds_rules_to_one_choice():
         "Choices": [
             {"Condition": f"{{% {INPUT}.a > 2 %}}", "Next": "x"},
             {"Condition": f"{{% {INPUT}.a > 1 %}}", "Next": "x_2"},
-            {"Condition": f"{{% $boolean({INPUT}.b) %}}", "Next": "return"},
+            {"Condition": f"{{% {truthy(f'{INPUT}.b')} %}}", "Next": "return"},
         ],
         "Default": "x_3",
     }
@@ -70,7 +70,7 @@ def test_empty_branch_links_to_what_follows():
     states = definition('if input["a"]:\n    pass\nreturn 1')["States"]
     assert states["if"] == {
         "Type": "Choice",
-        "Choices": [{"Condition": f"{{% $boolean({INPUT}.a) %}}", "Next": "return"}],
+        "Choices": [{"Condition": f"{{% {truthy(f'{INPUT}.a')} %}}", "Next": "return"}],
         "Default": "return",
     }
 
@@ -137,7 +137,7 @@ def test_wait_through_the_module():
             {"a": 1.5},
             1,
         ),
-        ('x = 1\nif input["a"]:\n    x = 2\n    wait(1)\nreturn x', {"a": [0]}, 1),
+        ('x = 1\nif input["a"]:\n    x = 2\n    wait(1)\nreturn x', {"a": [0]}, 2),
         (
             'items: list = input["a"]\nif items:\n    return "some"\nreturn "none"',
             {"a": [0]},

@@ -77,12 +77,12 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `a / b` where `b` is not written as a number | `$b = 0 ? $error('division by zero') : $a / $b`, as dividing by zero raises in Python (`//` and `%` are tested the same way) |
 | `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c` |
 | `x is None`, `x is not None` | `$not($exists($x) and $x != null)`, `$exists($x) and $x != null` |
-| `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b` |
-| `a or b` as a value | `$boolean($a) ? $a : $b` |
-| `not x` | `$not($x)` |
+| `if x:`, `bool(x)` | the truth of a value: `$count($x) > 0` for a list, `$boolean($x)` where it cannot be one, and `$type($x) = 'array' ? $count($x) > 0 : $boolean($x)` where the type is unknown, since `$boolean` reads `[0]` as false where Python reads it as true |
+| `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b`, each operand read for its truth |
+| `a or b` as a value | the truth of `a`, then `a` or `b`: `$boolean($a) ? $a : $b` for a value that cannot be a list |
+| `not x` | `$not($x)`, `x` read for its truth |
 | `x if c else y` | `$c ? $x : $y` |
-| `if x:` | `$boolean($x)`, or `$count($x) > 0` for a list (tested with `$type` when `x` may be a list) |
-| `float(x)`, `int(x)`, `str(x)`, `bool(x)` | `$number($x)`, `($v := $number($x); $v < 0 ? $ceil($v) : $floor($v))` (towards zero, as Python truncates), `$string($x)`, `$boolean($x)` |
+| `float(x)`, `int(x)`, `str(x)` | `$number($x)`, `($v := $number($x); $v < 0 ? $ceil($v) : $floor($v))` (towards zero, as Python truncates), `$string($x)` |
 | `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
 | `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$trim($s) = '' ? [] : $split($trim($s), ' ')` |
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
@@ -325,7 +325,6 @@ Some values come out differently from CPython. These are the differences known s
 | `float(x)` | `"1e400"` | `States.QueryEvaluationError` | `inf` |
 | `str(x)`, `f"{x}"` | `True`, `None`, `1.0` | `"true"`, `"null"`, `"1"` | `"True"`, `"None"`, `"1.0"` |
 | `str(x)`, `f"{x}"` | `[1, 2]`, `{"a": 1}` | `"[1,2]"`, `"{\"a\":1}"` | `"[1, 2]"`, `"{'a': 1}"` |
-| `bool(x)`, `if x:` with `x` of unknown type | `[0]` | `false` (`$boolean`) | `True` |
 | `"k" in x` with `x` of unknown type | `"key"` or `["k"]` | `false` (`$exists($x.k)`, a key lookup) | `True` |
 | `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
 | `list(s)` | a string with characters outside the Basic Multilingual Plane | two items for each such character, neither of them the character | one item for each character |
@@ -336,7 +335,7 @@ Some values come out differently from CPython. These are the differences known s
 | `xs[a:b]`, or the end of `s[a:b]` | a negative number read from a variable with no minus sign written, such as `i` = -2 | not counted from the end: `xs[i:]` is the whole list, `s[:i]` is `""` | counted from the end |
 | `distributed_map(f, ...)` | `f` raises | within `tolerated_failure_count=` or `tolerated_failure_percentage=`, `{"Status": "FAILED", "Error": ..., "Cause": ...}` in the item's place in the list; otherwise `States.ExceedToleratedFailureThreshold`, which an `except` of the raised class does not catch | the exception `f` raised |
 
-Declaring the type of a value that may be a list makes its truthiness follow Python.
+Declaring the type of a value shortens what reads its truthiness, which is otherwise written out to follow Python.
 
 ## At run time
 
