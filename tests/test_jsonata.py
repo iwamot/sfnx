@@ -65,6 +65,16 @@ def test_the_expression_reads_the_variables_it_names():
     assert asl.run(compiled, {}) == 2
 
 
+@pytest.mark.parametrize("name", ["値", "café", "aé"])
+def test_the_expression_reads_a_variable_named_outside_ascii(name):
+    # Step Functions variable names are Unicode identifiers, so an expression
+    # written by hand reads one under whatever name it was declared with.
+    compiled = definition(f'{name} = 1\nb = jsonata("${name} + 1")\nreturn b')
+    assert list(compiled["States"]) == [name, "b", "return"]
+    assert compiled["States"]["b"]["Assign"] == {"b": f"{{% ${name} + 1 %}}"}
+    assert asl.run(compiled, {}) == 2
+
+
 def test_the_expression_reads_a_variable_by_the_name_the_definition_gives_it():
     compiled = definition('count = 1\nb = jsonata("$count_val + 1")\nreturn b')
     assert list(compiled["States"]) == ["count", "b", "return"]

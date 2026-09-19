@@ -354,8 +354,10 @@ UNPACKING = frozenset({"enumerate", "zip"})
 
 # A variable as JSONata writes one, a function among them. An expression
 # written by hand names variables the program never declared, so what a piece
-# of code reads is found in the code itself.
-VARIABLE = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)")
+# of code reads is found in the code itself. A name is spelled as Python and
+# Step Functions both spell one, which is a Unicode identifier and not ASCII
+# alone.
+VARIABLE = re.compile(r"\$([^\W\d]\w*)")
 
 
 class Translator:
