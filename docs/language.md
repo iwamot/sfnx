@@ -82,7 +82,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `not x` | `$not($x)` |
 | `x if c else y` | `$c ? $x : $y` |
 | `if x:` | `$boolean($x)`, or `$count($x) > 0` for a list (tested with `$type` when `x` may be a list) |
-| `float(x)`, `int(x)`, `str(x)`, `bool(x)` | `$number($x)`, `$floor($number($x))`, `$string($x)`, `$boolean($x)` |
+| `float(x)`, `int(x)`, `str(x)`, `bool(x)` | `$number($x)`, `($v := $number($x); $v < 0 ? $ceil($v) : $floor($v))` (towards zero, as Python truncates), `$string($x)`, `$boolean($x)` |
 | `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
 | `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$trim($s) = '' ? [] : $split($trim($s), ' ')` |
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
@@ -320,7 +320,6 @@ Some values come out differently from CPython. These are the differences known s
 | `list(itertools.batched(xs, n))` | an `n` read at run time that is not a whole number of 1 or more, such as `0` or `1.5` | `[]` for `0`, batches of one for `1.5`, `States.QueryEvaluationError` below `0` | `ValueError` or `TypeError` |
 | `round(x, digits)` | `2.675` to 2 digits | `2.68` | `2.67` |
 | `max(xs)`, `min(xs)` with items of unknown type | strings | `States.QueryEvaluationError` | the greatest or least string |
-| `int(x)` | `-1.5` | `-2` (`$floor`) | `-1` |
 | `int(x)` | `"1.5"` | `1` | `ValueError` |
 | `float(x)` | `"0x10"` | `16` | `ValueError` |
 | `float(x)` | `"1e400"` | `States.QueryEvaluationError` | `inf` |
