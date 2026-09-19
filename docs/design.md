@@ -11,6 +11,8 @@ Why the language in [language.md](language.md) looks the way it does, and the St
 
 A construct is accepted when ASL or JSONata has a counterpart for it and its meaning can be written as a JSONata expression. The meaning is mapped, not the operator: JSONata has conditionals and arithmetic, so `a or b` is `a` where it is true and `b` otherwise, and `a % b` is `$a - $b * $floor($a / $b)`.
 
+**What a spelling guarantees.** Following the intent of the source comes to this: a spelling the compiler accepts follows Python for the values that reach it. Where the JSONata that reads most naturally would quietly give another value, the longer expression that does not is written instead, and where the source itself holds a value Python would refuse, the file does not compile. What is left is listed in [Where results differ from Python](language.md#where-results-differ-from-python) under the reason it stays: JSON has no such value, Step Functions reads text and time its own way, the value or the type is only known when it runs, the ASL takes more than Python does, or the spelling was chosen to mean something else. Declaring a type is what shortens an expression that has to test one, and `jsonata()` writes what has no spelling here at all.
+
 ## Types
 
 **Why types at all.** Someone writing JSONata by hand knows the type of each value and picks the spelling from it: `$a + $b` for numbers, `$a & $b` for strings, `$append($a, $b)` for arrays. Python's `a + b` can be any of the three, and the compiler never sees a value; the input arrives with `StartExecution`. So the source states what the hand-writer already knows, where it matters.
