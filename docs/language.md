@@ -80,7 +80,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `if x:`, `bool(x)` | the truth of a value: `$count($x) > 0` for a list, `$boolean($x)` where it cannot be one, and `$type($x) = 'array' ? $count($x) > 0 : $boolean($x)` where the type is unknown, since `$boolean` reads `[0]` as false where Python reads it as true |
 | `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b`, each operand read for its truth |
 | `a or b` as a value | the truth of `a`, then `a` or `b`: `$boolean($a) ? $a : $b` for a value that cannot be a list |
-| `not x` | `$not($x)`, `x` read for its truth |
+| `not x` | `$count($x) = 0` for a list, and `$not($x)` otherwise, with `x` read for its truth |
 | `x if c else y` | `$c ? $x : $y` |
 | `float(x)`, `int(x)`, `str(x)` | `$number($x)`, `($v := $number($x); $v < 0 ? $ceil($v) : $floor($v))` (towards zero, as Python truncates), `$string($x)` |
 | `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
@@ -265,13 +265,25 @@ except Exception:
 
 ## JSONata expressions
 
-```python
-from sfnx import jsonata
+Flow is Python: `if`, `for`, `while` and `try` become states, and the operators and built-ins on this page become expressions. A transform JSONata has and this page does not is written out, with the values it reads passed by name.
 
-padded: str = jsonata("$pad($s, -$n, '0')", s=code, n=width)
+```python
+from sfnx import jsonata, state_machine, task
+
+
+@state_machine
+def settle(input):
+    charges: list = task("arn:aws:states:::lambda:invoke", {"FunctionName": "load"})[
+        "Payload"
+    ]
+    if not charges:
+        return {}
+    return jsonata(
+        "$merge($map($xs, function($c) { {$c.currency: $c.amount} }))", xs=charges
+    )
 ```
 
-- `jsonata(expression, name=value)` writes a JSONata expression as it is, for what has no Python spelling here. It compiles to `($s := $code; $n := $width; $pad($s, -$n, '0'))`: each value is bound to the variable of its name before the expression, as a Python variable does not always keep its name in the definition.
+- `jsonata(expression, name=value)` writes a JSONata expression as it is, for what has no Python spelling here. `jsonata("$pad($s, -$n, '0')", s=code, n=width)` compiles to `($s := $code; $n := $width; $pad($s, -$n, '0'))`: each value is bound to the variable of its name before the expression, as a Python variable does not always keep its name in the definition.
 - The expression is a literal string, and its values are given by name. A value named after a JSONata function or `states` would hide it inside the expression, and a value that reads the name of one bound before it would read the new value, so both are rejected. Step Functions checks the expression when it validates the definition.
 - A `$name` the call does not bind is read as the variable the definition writes that way, so an assignment the expression reads gets a state of its own, as one written in Python does. Where a name is changed on the way, the variable is the changed one: `$count_val` reads the variable `count`, and `$count` is the JSONata function.
 - What the expression calls is unknown, so it is read once wherever the generated JSONata would otherwise write it twice, as `jsonata(...) % 2` does: it is bound at the start of a block, and a list a `for` iterates is saved before the loop.
@@ -293,7 +305,11 @@ Each of these is rejected with what to write instead:
 
 ## Where results differ from Python
 
-Some values come out differently from CPython. These are the differences known so far; others may remain:
+A Python spelling the compiler accepts follows Python for the values that reach it. These are where it does not, grouped under the reason each difference stays. They are the differences known so far; others may remain.
+
+### JSON has no such value
+
+Numbers are doubles, and JSON has no infinity, no complex number and no set. What the definition holds is what JSON can hold.
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
@@ -301,39 +317,93 @@ Some values come out differently from CPython. These are the differences known s
 | `a + b`, `a - b`, `a * b`, `a / b` | a result past the range of a double, such as `1e308 * 10` | `"Infinity"` or `"-Infinity"`, a string | `inf` or `-inf` |
 | a number from the input, a variable or `json.loads(s)` | an integer past 2^53, such as `10000000000000000000000001` | the nearest double (`1.0E25`) | the exact integer |
 | `json.loads(s)` | `"NaN"`, `"Infinity"`, `"1e400"`, `'{"a": 1, "a": 2}'` | `States.QueryEvaluationError` | `nan`, `inf`, `inf`, `{"a": 2}` |
-| `json.loads(s)` | `"{'a': 1}"` | `{"a": 1}` | `JSONDecodeError` |
-| `s.split(sep)` | a `sep` read at run time that is empty | the characters of `s` | `ValueError` |
+| `list(set(xs))` | `[2, 1, 2]`, `[True, 1]`, `[{"a": 1}, {"a": 1}]` | `[2, 1]` in the order first seen, `[true, 1]`, `[{"a": 1}]` | an order of its own, `[True]`, `TypeError` |
+| `round(x, digits)` | `2.675` to 2 digits | `2.68` | `2.67` |
+| `float(x)` | `"1e400"` | `States.QueryEvaluationError` | `inf` |
+
+### A value's text is its JSON
+
+`str()` and an f-string write the value as the definition holds it, which is what someone writing ASL means by turning a value into text.
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
+| `str(x)`, `f"{x}"` | `True`, `None`, `1.0` | `"true"`, `"null"`, `"1"` | `"True"`, `"None"`, `"1.0"` |
+| `str(x)`, `f"{x}"` | `[1, 2]`, `{"a": 1}` | `"[1,2]"`, `"{\"a\":1}"` | `"[1, 2]"`, `"{'a': 1}"` |
+
+### Text is read as Step Functions reads it
+
+Positions and lengths count UTF-16 units, not code points, and a regular expression reads `\s` as the ASCII whitespace. `$length` counts code points, so no arithmetic on positions makes the two agree.
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
 | `s.strip()` | whitespace at an end that is not ASCII, such as a non-breaking space | kept: Step Functions reads `\s` as the ASCII whitespace | removed |
-| `s.replace(old, new)` | an `old` read at run time that is empty | `States.QueryEvaluationError` | `new` between every character and at both ends |
-| `s.replace(old, new, count)` | a `count` read at run time that is not a whole number of 0 or more | `States.QueryEvaluationError` below `0`, `2.5` taken as `2` | every occurrence replaced for a negative `count`, `TypeError` for `2.5` |
-| `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
+| `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
+| `list(s)`, `sep.join(s)` | a string with characters outside the Basic Multilingual Plane | two items for each such character, neither of them the character | one item for each character |
+| `s[a:b]`, `s.startswith(p)`, `s.endswith(p)` | a string with characters outside the Basic Multilingual Plane | may hold other characters or half of one, and compare accordingly | the characters between the positions |
+| `sorted(xs)` | strings with characters outside the Basic Multilingual Plane | ordered by UTF-16 units (`"😀"` before `"ﬁ"`) | ordered by code points |
+
+### Time is UTC, to the millisecond
+
+Step Functions has no local time zone, and `$now()`, `$millis()` and `$toMillis` work in whole milliseconds.
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
 | `str(datetime.now())`, `str(datetime.fromtimestamp(x))` | any time | the time in UTC, such as `"2026-09-15T13:43:06.735Z"` | the local time, such as `"2026-09-15 22:43:06.735213"` |
 | `datetime.fromisoformat(s).timestamp()` | an `s` with no UTC offset, such as `"2026-09-15T13:43:06"` | the seconds counted from UTC | the seconds counted from the local time |
 | `datetime.fromisoformat(s).timestamp()` | an `s` with more than three digits after the second, such as `"2026-09-15T13:43:06.735123Z"` | the seconds to the millisecond (`1789479786.735`) | the seconds as written (`1789479786.735123`) |
 | `datetime.fromisoformat(s).timestamp()` | an `s` CPython reads that the ISO 8601 of `$toMillis` does not cover, such as `"2026-09-15 13:43:06"` with a space in place of the `T`, `"20260915T134306Z"` without the dashes, or the week date `"2026-W38-2"` | `States.QueryEvaluationError` | the seconds |
 | `time.time()` | any time | seconds to the millisecond, such as `1789479402.245` | seconds to a finer digit, such as `1789479402.8365781` |
+
+### The value is only known when it runs
+
+An argument written in the source that Python would refuse is rejected when the file is compiled. One read from the input or a variable cannot be, so JSONata's own reading of it stands.
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
+| `s.split(sep)` | a `sep` read at run time that is empty | the characters of `s` | `ValueError` |
+| `s.replace(old, new)` | an `old` read at run time that is empty | `States.QueryEvaluationError` | `new` between every character and at both ends |
+| `s.replace(old, new, count)` | a `count` read at run time that is not a whole number of 0 or more | `States.QueryEvaluationError` below `0`, `2.5` taken as `2` | every occurrence replaced for a negative `count`, `TypeError` for `2.5` |
 | `s.ljust(n, fill)`, `s.rjust(n, fill)` | a `fill` of several characters read at run time | the fill repeated as far as it goes | `TypeError` |
 | `s.ljust(n)`, `s.rjust(n)` | an `n` read at run time that is not a whole number of 0 or more | filled on the other side below `0`, `6.5` taken as `6` | the text as it is for a negative `n`, `TypeError` for `6.5` |
-| `list(set(xs))` | `[2, 1, 2]`, `[True, 1]`, `[{"a": 1}, {"a": 1}]` | `[2, 1]` in the order first seen, `[true, 1]`, `[{"a": 1}]` | an order of its own, `[True]`, `TypeError` |
 | `list(itertools.batched(xs, n))` | an `n` read at run time that is not a whole number of 1 or more, such as `0` or `1.5` | `[]` for `0`, batches of one for `1.5`, `States.QueryEvaluationError` below `0` | `ValueError` or `TypeError` |
-| `round(x, digits)` | `2.675` to 2 digits | `2.68` | `2.67` |
+
+### The type is only known when it runs
+
+These spellings need a type to pick the JSONata for them. Without one the definition fails where it reads the value, except `in`, which reads a key lookup rather than write the test for a string and a list into every `in` on an undeclared value. Declaring the type gives Python's meaning in each case, and it also shortens what reads a value's truthiness, which is otherwise written out to follow Python.
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
+| `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
 | `max(xs)`, `min(xs)` with items of unknown type | strings | `States.QueryEvaluationError` | the greatest or least string |
+| `sorted(xs)` with items of unknown type | booleans or lists | `States.QueryEvaluationError` | a sorted list |
+| `"k" in x` with `x` of unknown type | `"key"` or `["k"]` | `false` (`$exists($x.k)`, a key lookup) | `True` |
+
+### The ASL takes more than Python does
+
+JSONata reads these where Python raises. The intent of the source is met, so nothing is written to refuse them.
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
+| `json.loads(s)` | `"{'a': 1}"` | `{"a": 1}` | `JSONDecodeError` |
 | `int(x)` | `"1.5"` | `1` | `ValueError` |
 | `float(x)` | `"0x10"` | `16` | `ValueError` |
-| `float(x)` | `"1e400"` | `States.QueryEvaluationError` | `inf` |
-| `str(x)`, `f"{x}"` | `True`, `None`, `1.0` | `"true"`, `"null"`, `"1"` | `"True"`, `"None"`, `"1.0"` |
-| `str(x)`, `f"{x}"` | `[1, 2]`, `{"a": 1}` | `"[1,2]"`, `"{\"a\":1}"` | `"[1, 2]"`, `"{'a': 1}"` |
-| `"k" in x` with `x` of unknown type | `"key"` or `["k"]` | `false` (`$exists($x.k)`, a key lookup) | `True` |
-| `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
-| `list(s)`, `sep.join(s)` | a string with characters outside the Basic Multilingual Plane | two items for each such character, neither of them the character | one item for each character |
-| `s[a:b]`, `s.startswith(p)`, `s.endswith(p)` | a string with characters outside the Basic Multilingual Plane | may hold other characters or half of one, and compare accordingly | the characters between the positions |
-| `sorted(xs)` | strings with characters outside the Basic Multilingual Plane | ordered by UTF-16 units (`"😀"` before `"ﬁ"`) | ordered by code points |
-| `sorted(xs)` with items of unknown type | booleans or lists | `States.QueryEvaluationError` | a sorted list |
+
+### Written this way on purpose
+
+A minus sign written in the source counts from the end; a negative number that arrives in a variable does not, as the position would otherwise depend on a value the definition cannot see.
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
 | `s[a:b]` | `a` written with a minus sign and past the start, such as `"hello"[-10:-8]` | counted from the start of `s` (`"he"`) | `""` |
 | `xs[a:b]`, or the end of `s[a:b]` | a negative number read from a variable with no minus sign written, such as `i` = -2 | not counted from the end: `xs[i:]` is the whole list, `s[:i]` is `""` | counted from the end |
-| `distributed_map(f, ...)` | `f` raises | within `tolerated_failure_count=` or `tolerated_failure_percentage=`, `{"Status": "FAILED", "Error": ..., "Cause": ...}` in the item's place in the list; otherwise `States.ExceedToleratedFailureThreshold`, which an `except` of the raised class does not catch | the exception `f` raised |
 
-Declaring the type of a value shortens what reads its truthiness, which is otherwise written out to follow Python.
+### The ASL's own semantics
+
+A Map Run reports what it tolerated instead of raising what its children raised.
+
+| Source | Value | ASL result | CPython result |
+|---|---|---|---|
+| `distributed_map(f, ...)` | `f` raises | within `tolerated_failure_count=` or `tolerated_failure_percentage=`, `{"Status": "FAILED", "Error": ..., "Cause": ...}` in the item's place in the list; otherwise `States.ExceedToleratedFailureThreshold`, which an `except` of the raised class does not catch | the exception `f` raised |
 
 ## At run time
 
