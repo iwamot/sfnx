@@ -88,7 +88,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
 | `s.lower()`, `s.upper()` | `$lowercase($s)`, `$uppercase($s)` |
 | `s.strip()` | `$replace($s, /^\s+\|\s+$/, '')` |
-| `sep.join(items)` | `$join($items, $sep)` |
+| `sep.join(items)` | `$join($items, $sep)`, with a string split into its characters first, as Python joins those, and a value that may be one tested for it when it is evaluated |
 | `sorted(xs, key=lambda x: x["k"])` | `$sort($xs, function($a, $b) { $a.k > $b.k })`, with `<` for `reverse=True` |
 | `max(xs, key=lambda x: x["k"])`, `min(...)` | the same `$sort(...)`, read at `[-1]` and at `[0]` |
 | `list(d)`, `d.keys()` | `[$keys($d)]` |
@@ -118,7 +118,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
 | `s[1:3]`, `s[-3:]`, `s[1:-1]` | `$substring($s, 1, 2)`, `$substring($s, -3, 3)`, `$substring($s, 1, $length($s) - 2)` |
 | `xs[1:3]`, `xs[-2:]` | `[$filter($xs, function($v, $i) { $i >= 1 and $i < 3 })]`, `[$filter($xs, function($v, $i) { $i >= $count($xs) - 2 })]` |
-| `{**a, "key": v}` | `$merge([$a, {'key': $v}])`, where a later key wins |
+| `{**a, "key": v}` | `$merge([$a, {'key': $v}])`, where a later key wins; a value whose type is unknown is checked for a dict first, since Python raises for anything else |
 | `[f(x) for x in xs if c]` | `[$map($filter($xs, function($x) { c }), function($x) { f })]` |
 | `f"order {id}"` | `'order ' & $string($id)` |
 | `[a, xs, v]` in an expression | `[$a, [$xs], $type($v) = 'array' ? [[$v]] : $v]`: an item known to be a list, or one that may be, stays one item |
@@ -306,8 +306,6 @@ Some values come out differently from CPython. These are the differences known s
 | `s.strip()` | whitespace at an end that is not ASCII, such as a non-breaking space | kept: Step Functions reads `\s` as the ASCII whitespace | removed |
 | `s.replace(old, new)` | an `old` read at run time that is empty | `States.QueryEvaluationError` | `new` between every character and at both ends |
 | `s.replace(old, new, count)` | a `count` read at run time that is not a whole number of 0 or more | `States.QueryEvaluationError` below `0`, `2.5` taken as `2` | every occurrence replaced for a negative `count`, `TypeError` for `2.5` |
-| `sep.join(x)` with `x` of unknown type | a string, such as `"ab"` | `x` itself (`"ab"`) | the characters joined (`"a,b"` for `","`) |
-| `{**x}`, `{**x, "k": v}` with `x` of unknown type | `[{"a": 1}, {"b": 2}]` | the list itself, `{"a": 1, "b": 2, "k": ...}` | `TypeError` |
 | `a < b` with `a` and `b` of unknown type | `[1]` and `[2]` | `States.QueryEvaluationError` | `True` |
 | `str(datetime.now())`, `str(datetime.fromtimestamp(x))` | any time | the time in UTC, such as `"2026-09-15T13:43:06.735Z"` | the local time, such as `"2026-09-15 22:43:06.735213"` |
 | `datetime.fromisoformat(s).timestamp()` | an `s` with no UTC offset, such as `"2026-09-15T13:43:06"` | the seconds counted from UTC | the seconds counted from the local time |
@@ -327,7 +325,7 @@ Some values come out differently from CPython. These are the differences known s
 | `str(x)`, `f"{x}"` | `[1, 2]`, `{"a": 1}` | `"[1,2]"`, `"{\"a\":1}"` | `"[1, 2]"`, `"{'a': 1}"` |
 | `"k" in x` with `x` of unknown type | `"key"` or `["k"]` | `false` (`$exists($x.k)`, a key lookup) | `True` |
 | `s[-1]` | a string ending in a character outside the Basic Multilingual Plane | half of that character (Step Functions counts UTF-16 units) | the character |
-| `list(s)` | a string with characters outside the Basic Multilingual Plane | two items for each such character, neither of them the character | one item for each character |
+| `list(s)`, `sep.join(s)` | a string with characters outside the Basic Multilingual Plane | two items for each such character, neither of them the character | one item for each character |
 | `s[a:b]`, `s.startswith(p)`, `s.endswith(p)` | a string with characters outside the Basic Multilingual Plane | may hold other characters or half of one, and compare accordingly | the characters between the positions |
 | `sorted(xs)` | strings with characters outside the Basic Multilingual Plane | ordered by UTF-16 units (`"😀"` before `"ﬁ"`) | ordered by code points |
 | `sorted(xs)` with items of unknown type | booleans or lists | `States.QueryEvaluationError` | a sorted list |

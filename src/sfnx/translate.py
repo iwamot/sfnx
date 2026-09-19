@@ -765,7 +765,17 @@ class Translator:
             raise CompileError(
                 f"{ast.unparse(node)} is a {value.type.kind}; ** unpacks dicts", node
             )
-        return value
+        if value.type is not None:
+            return value
+        # Python raises for anything but a dict. An array constructor merges
+        # the items of a list, so $merge would take a list of dicts as the
+        # dicts themselves, and ** of a lone value would pass it through.
+        with self.once([value], always=self.bind(value)) as (bindings, (bound,)):
+            kind = call("type", [bound], of(STRING))
+            test = binary(kind, "=", literal("object"), COMPARE, of(BOOLEAN), True)
+            raised = call("error", [literal("** unpacks dicts")], of(OBJECT))
+            checked = conditional(test, bound, raised, of(OBJECT))
+        return block(bindings, checked)
 
     def known(self, node: ast.expr, value: Expr, hint: str, purpose: str) -> str:
         """The one type an operation depends on."""
@@ -1900,12 +1910,30 @@ class Translator:
             return self.affix(receiver, arguments[0], name)
         if name == "join" and len(arguments) == 1:
             items = self.expr(arguments[0])
-            if items.type is not None and ARRAY not in items.type.kinds:
+            if items.type is not None and not items.type.kinds <= {ARRAY, STRING}:
                 raise CompileError(
                     f"{ast.unparse(arguments[0])} is a {items.type.describe()}; "
                     "join() takes a list of strings",
                     arguments[0],
                 )
+            # Python joins the characters of a string, which $join returns as
+            # it is, so a string is split first and one that may be a string
+            # is tested for it when it is evaluated.
+            kinds = items.type.kinds if items.type is not None else {ARRAY, STRING}
+            if kinds == {STRING}:
+                items = call("split", [items, literal("")], of(ARRAY))
+            elif kinds != {ARRAY}:
+                with self.once([items], [receiver], always=self.bind(items)) as (
+                    bindings,
+                    (bound,),
+                ):
+                    kind = call("type", [bound], of(STRING))
+                    test = binary(
+                        kind, "=", literal("string"), COMPARE, of(BOOLEAN), True
+                    )
+                    characters = call("split", [bound, literal("")], of(ARRAY))
+                    items = conditional(test, characters, bound, of(ARRAY))
+                return block(bindings, call("join", [items, receiver], text))
             return call("join", [items, receiver], text)
         raise CompileError(f"{name}() is written {usage}", node)
 

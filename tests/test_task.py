@@ -5,7 +5,7 @@ import pytest
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from sfnx.integrations import integration
-from tests import asl
+from tests import asl, unpacked
 
 INPUT = "$states.context.Execution.Input"
 LAMBDA = "arn:aws:states:::lambda:invoke"
@@ -415,7 +415,7 @@ def test_diagnostics(body, message):
 def test_unpacked_arguments_leave_required_keys_to_run_time():
     body = f'return task("{GET_ITEM}", {{**input["key"], "TableName": "t"}})'
     assert states(body)["return"]["Arguments"] == (
-        f"{{% $merge([{INPUT}.key, {{'TableName': 't'}}]) %}}"
+        f"{{% $merge([{unpacked(f'{INPUT}.key')}, {{'TableName': 't'}}]) %}}"
     )
 
 
