@@ -248,6 +248,7 @@ def test_a_failing_branch_is_caught_around_the_parallel():
         ),
         ("def f():\n    return 1\na, b.c = parallel(f)", "unpack into variable names"),
         ("a, a = 1, 2", "unpack into different names"),
+        ("() = [1]", "unpack into at least one name"),
         ("a, b = 1, 2, 3", "2 names take 2 values"),
         ("def f():\n    break\nreturn parallel(f)", "break is only for loops"),
         # A name the function assigns is its own from its first line, as in

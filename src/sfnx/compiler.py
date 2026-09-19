@@ -510,6 +510,8 @@ class Scope:
         tuple of values, `a, b = b, a` swaps, as Assign reads the old values.
         A value that would give other items when it is evaluated again is kept
         by the state before them, as every name reads it again."""
+        if not target.elts:
+            raise CompileError("unpack into at least one name: a, b = ...", target)
         names = []
         for element in target.elts:
             if not isinstance(element, ast.Name):
