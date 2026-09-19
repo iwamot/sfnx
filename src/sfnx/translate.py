@@ -1244,22 +1244,29 @@ class Translator:
             | set(self.inner)
         )
 
+    def bind(self, value: Expr) -> bool:
+        """Whether code that reads a value more than once needs a name for it.
+        One that is already a variable has one."""
+        return VARIABLE.fullmatch(value.code) is None
+
     @contextmanager
     def once(
-        self, values: list[Expr], reads: Sequence[Expr] = ()
+        self, values: list[Expr], reads: Sequence[Expr] = (), *, always: bool = False
     ) -> Iterator[tuple[list[tuple[str, Expr]], list[Expr]]]:
         """values that the code being built writes more than once. One that
         may change when it is evaluated again, as $random() does, is bound to
         a variable at the start of a block, which block() then puts around the
-        code: `($v := $random(); $v - 3 * $floor($v / 3))`. Yields the
-        bindings and the values, with the variable in the place of each value
-        bound. The variable hides nothing the block reads: the values, reads,
-        and what the comprehensions and blocks around it bind."""
+        code: `($v := $random(); $v - 3 * $floor($v / 3))`. always binds every
+        value, for code that reads one several times and would be long or hard
+        to follow written out. Yields the bindings and the values, with the
+        variable in the place of each value bound. The variable hides nothing
+        the block reads: the values, reads, and what the comprehensions and
+        blocks around it bind."""
         taken = self.hides([*values, *reads])
         bindings: list[tuple[str, Expr]] = []
         arguments: list[Expr] = []
         for value in values:
-            if not value.volatile:
+            if not (always or value.volatile):
                 arguments.append(value)
                 continue
             name = unused("v", taken)
@@ -1386,8 +1393,7 @@ class Translator:
             if name == "float":
                 return call("number", [argument], of(NUMBER))
             if name == "int":
-                number = call("number", [argument], of(NUMBER))
-                return call("floor", [number], of(NUMBER))
+                return self.truncate(call("number", [argument], of(NUMBER)))
             if name == "str":
                 return text(argument)
             if name == "bool":
@@ -2251,6 +2257,21 @@ class Translator:
                     key,
                 )
             self.token_read = True
+
+    def truncate(self, number: Expr) -> Expr:
+        """int(x): towards zero, as Python truncates. $floor alone takes -1.5
+        to -2 and $ceil 1.5 to 2, so the sign chooses between them, and the
+        number is bound to a name because the test reads it three times."""
+        numeric = of(NUMBER)
+        with self.once([number], always=self.bind(number)) as (bindings, (value,)):
+            negative = binary(value, "<", literal(0), COMPARE, of(BOOLEAN), True)
+            towards_zero = conditional(
+                negative,
+                call("ceil", [value], numeric),
+                call("floor", [value], numeric),
+                numeric,
+            )
+        return block(bindings, towards_zero)
 
     def length(self, node: ast.expr, value: Expr) -> Expr:
         kind = self.known(node, value, "list", "len depends on the type")

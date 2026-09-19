@@ -132,7 +132,10 @@ def output(body: str, parameter: str = "input") -> object:
         ('return bool(input["a"])', f"$boolean({INPUT}.a)"),
         ('items: list = input["items"]\nreturn bool(items)', "$count($items) > 0"),
         ('return float(input["a"])', f"$number({INPUT}.a)"),
-        ('return int(input["a"])', f"$floor($number({INPUT}.a))"),
+        (
+            'return int(input["a"])',
+            f"($v := $number({INPUT}.a); $v < 0 ? $ceil($v) : $floor($v))",
+        ),
         ('return str(input["a"])', f"$string({INPUT}.a)"),
         ('items: list = input["items"]\nreturn len(items)', "$count($items)"),
         ('name: str = input["name"]\nreturn len(name)', "$length($name)"),
@@ -268,6 +271,14 @@ def test_annotations(annotation, body, code):
             'return [float(input["a"]), int(input["a"]), str(input["b"])]',
             {"a": "3.7", "b": 5},
             [3.7, 3, "5"],
+        ),
+        (
+            (
+                'return [int(input["a"]), int(input["b"]), int(input["c"]),'
+                ' int(input["d"]), int(input["e"])]'
+            ),
+            {"a": -1.5, "b": -0.5, "c": 0, "d": 1.5, "e": -2},
+            [-1, 0, 0, 1, -2],
         ),
         ('return isinstance(input["v"], (list, dict))', {"v": {}}, True),
         (
