@@ -13,16 +13,17 @@ from sfnx.expressions import spellings
 # value is data written out, not a computation.
 DATA = (ast.Constant, ast.List, ast.Dict, ast.Name, ast.Attribute)
 
-SELF_ASSIGNED = "is assigned from itself outside the machine; write the value out"
-
 
 @dataclass(frozen=True)
 class Constant:
     """A name assigned at the top level: the value written there, which the
-    compiler writes in wherever the name is read, and its annotation."""
+    compiler writes in wherever the name is read, its annotation, and the
+    names the module had assigned by that line, which is what the names
+    inside the value read."""
 
     value: ast.expr
     declared: ast.expr | None
+    scope: dict[str, "Constant"]
 
 
 @dataclass(frozen=True)
@@ -60,44 +61,36 @@ def module(tree: ast.Module, source: str) -> Module:
 
 def constants(tree: ast.Module) -> dict[str, Constant]:
     """The names the module assigns at its top level, to what is written for
-    them. A name assigned twice holds what the last assignment writes, and one
-    assigned another name holds what that name held where it was read, as they
-    do when Python runs the module."""
+    them and to the names the module had assigned by that line. A name
+    assigned twice holds what the last assignment writes, and the names a
+    value reads hold what they held where the value was written, as they do
+    when Python runs the module: `B = {"n": A}` keeps the A of that line
+    whatever a line below assigns A."""
     found: dict[str, Constant] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
             if isinstance(target, ast.Name):
-                found[target.id] = Constant(written(node.value, found), None)
+                found[target.id] = Constant(node.value, None, dict(found))
         elif (
             isinstance(node, ast.AnnAssign)
             and isinstance(node.target, ast.Name)
             and node.value is not None
         ):
-            found[node.target.id] = Constant(
-                written(node.value, found), node.annotation
-            )
+            found[node.target.id] = Constant(node.value, node.annotation, dict(found))
     return found
-
-
-def written(value: ast.expr, found: dict[str, Constant]) -> ast.expr:
-    """The value a line writes for a name: a name given another name takes
-    what that one holds there, and not what a line below assigns it. Every
-    value kept is read this way already, so following one name is enough."""
-    if isinstance(value, ast.Name) and value.id in found:
-        return found[value.id].value
-    return value
 
 
 def holds(node: ast.expr, constants: dict[str, Constant]) -> ast.expr:
     """What a name outside the machine holds, followed as far as one name is
-    assigned another. Anything else is the node itself."""
-    seen: set[str] = set()
+    assigned another. Anything else is the node itself. Each step reads the
+    next name in the scope of the line it was written on, so a name reassigned
+    below is not what was read above; that scope holds only lines before it,
+    which is what ends the walk."""
     while isinstance(node, ast.Name) and node.id in constants:
-        if node.id in seen:
-            raise CompileError(f"{node.id} {SELF_ASSIGNED}", node)
-        seen.add(node.id)
-        node = data(node.id, constants[node.id].value, node)
+        found = constants[node.id]
+        node = data(node.id, found.value, node)
+        constants = found.scope
     return node
 
 
