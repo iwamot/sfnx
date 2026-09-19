@@ -7,7 +7,7 @@ import pytest
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import spellings
-from tests import asl, truthiness, truthy
+from tests import asl, truthiness, truthy, unpacked
 
 INPUT = "$states.context.Execution.Input"
 
@@ -67,12 +67,22 @@ def output(body: str, parameter: str = "input") -> object:
         # Nothing is folded, so a divisor that is zero when it runs is tested.
         ("return 1 / (2 - 2)", "2 - 2 = 0 ? $error('division by zero') : 1 / (2 - 2)"),
         ('return input["a"] ** 2', f"$power({INPUT}.a, 2)"),
-        ('return {**input, "a": 1}', f"$merge([{INPUT}, {{'a': 1}}])"),
+        (
+            'return {**input, "a": 1}',
+            f"$merge([{unpacked(INPUT)}, {{'a': 1}}])",
+        ),
         (
             'return {"a": 1, **input["b"], **input["c"], "d": 2, "e": 3}',
-            f"$merge([{{'a': 1}}, {INPUT}.b, {INPUT}.c, {{'d': 2, 'e': 3}}])",
+            (
+                f"$merge([{{'a': 1}}, {unpacked(f'{INPUT}.b')}, "
+                f"{unpacked(f'{INPUT}.c')}, {{'d': 2, 'e': 3}}])"
+            ),
         ),
-        ('return {**input["b"]}', f"{INPUT}.b"),
+        ('return {**input["b"]}', unpacked(f"{INPUT}.b")),
+        (
+            'd: dict = input["d"]\nreturn {**d, "k": 1}',
+            "$merge([$d, {'k': 1}])",
+        ),
         (
             'return (input["a"] + 1) % 3',
             f"{INPUT}.a + 1 - 3 * $floor(({INPUT}.a + 1) / 3)",
@@ -150,6 +160,17 @@ def output(body: str, parameter: str = "input") -> object:
         (
             'return int(input["a"])',
             f"($v := $number({INPUT}.a); $v < 0 ? $ceil($v) : $floor($v))",
+        ),
+        (
+            'return ",".join(input["xs"])',
+            (
+                f"($v := {INPUT}.xs; $join($type($v) = 'string' "
+                f"? $split($v, '') : $v, ','))"
+            ),
+        ),
+        (
+            's: str = input["s"]\nreturn ",".join(s)',
+            "$join($split($s, ''), ',')",
         ),
         ('return str(input["a"])', f"$string({INPUT}.a)"),
         ('items: list = input["items"]\nreturn len(items)', "$count($items)"),
@@ -295,6 +316,10 @@ def test_annotations(annotation, body, code):
             {"a": -1.5, "b": -0.5, "c": 0, "d": 1.5, "e": -2},
             [-1, 0, 0, 1, -2],
         ),
+        ('return ",".join(input["xs"])', {"xs": ["a", "b"]}, "a,b"),
+        ('s: str = input["s"]\nreturn ",".join(s)', {"s": "ab"}, "a,b"),
+        ('return ",".join(input["xs"])', {"xs": "ab"}, "a,b"),
+        ('return {**input["d"], "k": 1}', {"d": {"a": 2}}, {"a": 2, "k": 1}),
         ('return isinstance(input["v"], (list, dict))', {"v": {}}, True),
         (
             'tags: dict = input["tags"]\nreturn ["a" in tags, input["k"] in tags]',
@@ -330,6 +355,22 @@ def test_evaluation(body, execution_input, expected):
             [6, 1, 1],
         )
     assert asl.run(definition(body), execution_input) == expected
+
+
+def test_unpacking_a_value_that_is_not_a_dict_fails_where_it_unpacks():
+    """Python raises there, and $merge would take a list of dicts as the
+    dicts themselves."""
+    body = 'return {**input["d"], "k": 1}'
+    with pytest.raises(asl.Failure) as raised:
+        asl.run(definition(body), {"d": [{"a": 1}, {"b": 2}]})
+    assert raised.value.error == "States.QueryEvaluationError"
+    assert raised.value.cause == "** unpacks dicts"
+    namespace: dict[str, object] = {}
+    exec(source(body), namespace)
+    pay = namespace["pay"]
+    assert callable(pay)
+    with pytest.raises(TypeError):
+        pay({"d": [{"a": 1}, {"b": 2}]})
 
 
 def test_dividing_by_zero_fails_where_it_divides():
@@ -730,7 +771,7 @@ def test_a_variable_named_after_a_function_is_renamed():
     compiled = definition(body)
     assert compiled["States"]["count"]["Assign"] == {
         "count_val": f"{{% {INPUT}.xs %}}",
-        "merge_val": f"{{% {INPUT} %}}",
+        "merge_val": f"{{% {unpacked(INPUT)} %}}",
     }
     assert asl.run(compiled, {"xs": [1, 2]}) == [[1, 2], [1, 2], 2, [2, 4], 1]
 
@@ -865,7 +906,10 @@ def test_string_methods_evaluate():
         ('return s.rjust(6, "")', "rjust() fills with one character"),
         ("return s.lower(1)", "lower() is written s.lower()"),
         ('return s.strip("x")', "strip() is written s.strip()"),
-        ("return s.join(s)", "s is a string; join() takes a list of strings"),
+        (
+            'n: float = input["n"]\nreturn s.join(n)',
+            "n is a number; join() takes a list of strings",
+        ),
         (
             'v: str | None = input["v"]\nreturn v.upper()',
             "v may be null | string; narrow it first",
