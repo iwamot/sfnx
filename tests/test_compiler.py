@@ -285,6 +285,26 @@ def test_asl_matches_python(body, execution_input):
         ),
         ("from sfnx import *\n", "instead of *", "1:1"),
         ("def broken(:\n", "invalid syntax", "1:12"),
+        # A column counts characters, not the bytes of the UTF-8 the parser
+        # reads: the caret names frozenset on each of these lines.
+        (
+            machine('return {"日本語": frozenset(input)}'),
+            "calling frozenset() is not supported",
+            "6:20",
+        ),
+        (
+            machine('return {"🙂": frozenset(input)}'),
+            "calling frozenset() is not supported",
+            "6:18",
+        ),
+        (
+            HEADER
+            + '@state_machine\ndef pay(input):\n\treturn {"日": frozenset(input)}',
+            "calling frozenset() is not supported",
+            "6:15",
+        ),
+        # Python counts the column of a syntax error in characters already.
+        (HEADER + 'x = {"日本語": 1}\ny = 日本語語 ? 3\n', "invalid syntax", "5:10"),
     ],
 )
 def test_diagnostics(source, message, location):
