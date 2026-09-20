@@ -5,7 +5,9 @@ import hashlib
 import json
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 
 import jsonata
@@ -22,6 +24,21 @@ class Failure(Exception):
         self.cause = cause
 
 
+REPLACED: ContextVar[Mapping[str, Callable[..., object]]] = ContextVar("replaced")
+
+
+@contextmanager
+def replaced(**functions: Callable[..., object]) -> Iterator[None]:
+    """JSONata functions replaced for the definitions run inside the block,
+    such as a $random that returns given values and counts its calls. The
+    replacement is undone on the way out, so it reaches no other test."""
+    token = REPLACED.set(functions)
+    try:
+        yield
+    finally:
+        REPLACED.reset(token)
+
+
 def evaluate(code: str, variables: Mapping[str, object], states: object) -> object:
     """jsonata-python reads a Python None as undefined, so JSON null goes in as
     its null value, and an undefined result fails as it does in Step Functions."""
@@ -35,6 +52,8 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     expression.register_lambda("millis", lambda: int(time.time() * 1000))
     expression.register_lambda("hash", digest)
     expression.register_lambda("partition", partition)
+    for name, function in REPLACED.get({}).items():
+        expression.register_lambda(name, function)
     try:
         result = expression.evaluate(None, nulls({**variables, "states": states}))
     except jsonata.JException as exc:

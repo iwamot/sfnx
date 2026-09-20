@@ -272,7 +272,7 @@ sfnx stops at the definition. Write `${Name}` where a value comes from the deplo
 env -u VIRTUAL_ENV ./validate.sh
 ```
 
-`validate.sh` runs lint, formatting, type checking, the tests and a build. The tests evaluate the generated JSONata with jsonata-python and run whole definitions through a small interpreter, including random programs whose results must match CPython's.
+`validate.sh` runs lint, formatting, type checking, the tests and a build. The tests evaluate the generated JSONata with jsonata-python and run whole definitions through a small interpreter, including random programs whose results must match CPython's. [docs/verification.md](https://github.com/iwamot/sfnx/blob/main/docs/verification.md) describes what those checks guarantee and how to run the fixed corpus in Step Functions itself.
 
 ## License
 
