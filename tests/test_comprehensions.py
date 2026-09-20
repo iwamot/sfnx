@@ -71,6 +71,37 @@ def test_constant_f_strings_are_json():
     assert output('return f""') == ""
 
 
+# The functions that read every item take a generator expression as the list
+# comprehension it would be, and compile it to the same definition.
+@pytest.mark.parametrize(
+    "generator, comprehension",
+    [
+        ("sum(x * 2 for x in xs)", "sum([x * 2 for x in xs])"),
+        ("max(x for x in xs if x > 0)", "max([x for x in xs if x > 0])"),
+        ("min(x for x in xs)", "min([x for x in xs])"),
+        ("sorted(x for x in xs)", "sorted([x for x in xs])"),
+        ("list(x for x in xs if x)", "list([x for x in xs if x])"),
+        (
+            "max((x for x in xs), key=lambda x: -x)",
+            "max([x for x in xs], key=lambda x: -x)",
+        ),
+        (
+            "min((x for x in xs), key=lambda x: -x)",
+            "min([x for x in xs], key=lambda x: -x)",
+        ),
+        (
+            "sorted((x for x in xs), key=lambda x: -x, reverse=True)",
+            "sorted([x for x in xs], key=lambda x: -x, reverse=True)",
+        ),
+    ],
+)
+def test_a_generator_is_the_list_comprehension_it_would_be(generator, comprehension):
+    declared = 'xs: list[float] = input["xs"]\n'
+    assert output(declared + "return " + generator) == output(
+        declared + "return " + comprehension
+    )
+
+
 def test_the_comprehension_variable_does_not_leak():
     body = 'x = "outer"\nxs: list = input["xs"]\ny = [x for x in xs]\nreturn [x, y]'
     assert output(body) == ["{% $x %}", "{% $y %}"]
@@ -206,6 +237,16 @@ def test_types():
         ('x: list | None = input["x"]\nys = []\nreturn ys + [x]', {"x": None}, [None]),
         ('xs: list = input["xs"]\nreturn len([[x] for x in xs])', {"xs": [1, 2]}, 2),
         ('return [input["true"], input["null"]]', {"true": 1, "null": 2}, [1, 2]),
+        (
+            'xs: list[float] = input["xs"]\nreturn sum(x for x in xs if x > 1)',
+            {"xs": [1, 2, 3]},
+            5,
+        ),
+        (
+            'xs: list[float] = input["xs"]\nreturn sorted((x for x in xs), key=lambda x: -x)',
+            {"xs": [1, 3, 2]},
+            [3, 2, 1],
+        ),
     ],
 )
 def test_evaluation(body, execution_input, expected):
@@ -238,6 +279,24 @@ def test_evaluation(body, execution_input, expected):
             "s is a string; a comprehension iterates lists and the keys of dicts",
         ),
         ('xs: list = input["xs"]\nreturn (x for x in xs)', "JSON has lists only"),
+        # A generator is a value only where every item is read.
+        ('xs: list = input["xs"]\nreturn len(x for x in xs)', "JSON has lists only"),
+        (
+            'xs: list = input["xs"]\nreturn reversed(x for x in xs)',
+            "JSON has lists only",
+        ),
+        (
+            'xs: list = input["xs"]\nys: list = input["ys"]\nreturn sum(x for x in xs for y in ys)',
+            "a comprehension takes one for",
+        ),
+        (
+            'xs: list = input["xs"]\nreturn sum(a for a, b in xs)',
+            "a comprehension iterates one variable",
+        ),
+        (
+            'xs: list[str] = input["xs"]\nreturn sum(x for x in xs)',
+            "the items of [x for x in xs] are string; sum() takes numbers here",
+        ),
         (
             'xs: list = input["xs"]\nreturn {x: 1 for x in xs}',
             'dict comprehensions are not supported; write the dict with its keys, such as {"id": x}, or build it in a Lambda task',
