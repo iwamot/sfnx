@@ -59,9 +59,34 @@ One side is enough (`input["name"] + "!"` is a string join), a literal string ke
 
 Types come from:
 
-- **Annotations** on assignments and parameters: `float` / `int`, `str`, `bool`, `list` / `list[X]`, `dict` / `dict[str, X]`, `None`, and unions such as `str | None`. An annotated variable keeps its type when reassigned with a value of unknown type.
+- **Annotations** on assignments and parameters: `float` / `int`, `str`, `bool`, `list` / `list[X]`, `dict` / `dict[str, X]`, `None`, unions such as `str | None`, and the TypedDict classes of the module. An annotated variable keeps its type when reassigned with a value of unknown type.
 - **Literals and results**: `-` gives a number, comparisons a boolean, `len` a number, `str()` a string, `x[0]` of a `list[float]` a number.
 - **AWS responses**: the botocore output shape of an SDK or optimized integration. What external code returns is unknown: a Lambda `Payload`, the `Output` of a `.sync:2` child execution, the result of an activity, the `ResponseBody` of an HTTP Task, and every result of `.sync` and `.waitForTaskToken`.
+
+A TypedDict declares the fields of an object once, so the values under its keys need no annotation of their own, and the same class types the module for a type checker:
+
+```python
+from typing import NotRequired, TypedDict
+
+
+class Item(TypedDict):
+    sku: str
+    quantity: int
+
+
+class Order(TypedDict):
+    id: str
+    items: list[Item]
+    coupon: NotRequired[str]
+
+
+@state_machine
+def fulfill(input: Order):
+    for item in input["items"]:  # item is an Item, item["quantity"] a number
+        ...
+```
+
+A Lambda `Payload` is typed the same way: `receipt: Receipt = task(...)["Payload"]`. The class derives from `TypedDict` directly (`typing` or `typing_extensions`) and declares every field on itself, one per line; it may name the classes written above it, in `list[Item]`, `dict[str, Item]` or a union. `NotRequired[T]` and `total=False` say a key may be left out, not that its value may be `None`: read such a key with `"coupon" in input` or `input.get("coupon")`, whose result is `str | None`, and `input["coupon"]` fails at run time when the key is missing, as any missing key does. A key the class does not declare has an unknown type. A recursive TypedDict, one that inherits from another, and the form `TypedDict("Order", {...})` are rejected.
 
 A value that may have several types must be narrowed first. `isinstance(x, str)`, `x is None` and `x is not None` narrow in `if` / `elif` / `else`, in the right operand of `and` / `or`, in conditional expressions, in comprehension conditions and after a branch that returns.
 
@@ -303,6 +328,7 @@ Each of these is rejected with what to write instead:
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
 - **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip` of strings and `keys`, `values` and `get` of dicts, `lambda` outside `key=`, `:=`, `*` unpacking, bitwise operators, unary `+`, format specs and conversions in f-strings, old-style `%` formatting, a generator expression outside `sum`, `max`, `min`, `sorted` and `list`, dict comprehensions, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, `set` and `zip` outside `list()`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()` and the `hashlib` digests, and a datetime outside `str()`, an f-string or `.timestamp()`, or `uuid.uuid4()` outside `str()` or an f-string.
 - **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
+- **TypedDicts**: one that names itself or a class written below it, one that inherits from another class, `TypedDict("Name", {...})`, a class argument other than `total=False`, a class of another module, and anything on the class but fields.
 
 ## Where results differ from Python
 
