@@ -1939,11 +1939,12 @@ def compile_source(
             for function, options in machines(tree, context)
         }
     except SyntaxError as exc:
+        # Python counts the column of a syntax error in characters already.
         raise CompileError(
             exc.msg, line=exc.lineno or 1, column=exc.offset or 1, filename=filename
         ) from exc
     except CompileError as exc:
-        raise exc.located(filename) from None
+        raise exc.located(source, filename) from None
 
 
 def compile_file(path: str | Path) -> dict[str, dict[str, object]]:

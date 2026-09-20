@@ -256,6 +256,8 @@ Exit codes:
 | stderr (exit 1) | `<path>:<line>:<column>: <message>` | the location before the message |
 | stderr (exit 2) | `<path>: <reason>`, or a message naming the path | the path |
 
+The line and the column count from 1, and the column counts characters: a tab is one column, and so is a character outside ASCII, whatever it takes on screen or in UTF-8 or UTF-16.
+
 The message text, including `; <what to write instead>`, is prose and may change between releases. So may state names when the source changes above them in the same scope (serial numbers such as `amount_2`).
 
 Before 1.0, the definition compiled from the same source, and what the language accepts, may change between releases; the release notes say so.

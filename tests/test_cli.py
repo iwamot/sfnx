@@ -127,3 +127,22 @@ def test_the_readme_shows_the_example_and_its_whole_definition(capsys):
     assert f"```python\n{example.read_text()}```" in readme
     assert main(["compile", str(example)]) == 0
     assert f"```json\n{capsys.readouterr().out}```" in readme
+
+
+def test_a_rejected_line_names_the_character_column(tmp_path, capsys):
+    # The parser counts the column of a node in UTF-8 bytes; what is printed
+    # counts characters, so an editor can open the character it names.
+    body = (
+        "from sfnx import state_machine\n\n\n@state_machine\ndef pay(input):\n"
+        '    return {"日本語": frozenset(input)}\n'
+    )
+    source = tmp_path / "app.py"
+    source.write_bytes(body.encode())
+    assert main(["compile", str(source)]) == 1
+    assert capsys.readouterr().err.startswith(f"{source}:6:20: calling frozenset()")
+    latin = tmp_path / "latin.py"
+    latin.write_bytes(
+        b"# -*- coding: latin-1 -*-\n" + body.replace("日本語", "é").encode("latin-1")
+    )
+    assert main(["compile", str(latin)]) == 1
+    assert capsys.readouterr().err.startswith(f"{latin}:7:18: calling frozenset()")
