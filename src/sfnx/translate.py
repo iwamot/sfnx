@@ -320,6 +320,10 @@ CONVERSIONS = frozenset({"s", "d", "i"})
 # The built-in functions that give a loop or a comprehension two variables.
 UNPACKING = frozenset({"enumerate", "zip"})
 
+# The built-in functions that read every item of a generator expression given
+# to them, so sum(x for x in xs) means what sum([x for x in xs]) means.
+CONSUMERS = frozenset({"sum", "max", "min", "sorted", "list"})
+
 # A variable as JSONata writes one, a function among them. An expression
 # written by hand names variables the program never declared, so what a piece
 # of code reads is found in the code itself. A name is spelled as Python and
@@ -1398,6 +1402,8 @@ class Translator:
             )
         self.check_import(node.func)
         name = node.func.id
+        if name in CONSUMERS:
+            node = consumed(node)
         if name == "sorted":
             return self.ordered(node)
         if name in {"max", "min"} and node.keywords:
@@ -2427,6 +2433,21 @@ def formatting(template: str, right: ast.expr) -> str:
         else 'write an f-string, such as f"{n} items"'
     )
     return f"old-style % formatting is not supported; {advice}"
+
+
+def consumed(node: ast.Call) -> ast.Call:
+    """sum(x for x in xs), max(...), min(...), sorted(...) and list(...) of a
+    generator expression, as the same call of the list comprehension: the
+    function reads every item, so the value is the same and the ASL is the
+    comprehension's. A generator anywhere else is not a JSON value and stays
+    rejected."""
+    if len(node.args) != 1 or not isinstance(node.args[0], ast.GeneratorExp):
+        return node
+    generator = node.args[0]
+    listed = ast.ListComp(elt=generator.elt, generators=generator.generators)
+    ast.copy_location(listed, generator)
+    call = ast.Call(func=node.func, args=[listed], keywords=node.keywords)
+    return ast.copy_location(call, node)
 
 
 def unpacking(node: ast.expr) -> bool:
