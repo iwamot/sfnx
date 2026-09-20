@@ -157,3 +157,5 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 ### Programs as a whole
 
 Programs from the generator in `tests/test_differential.py` were run in Step Functions and compared with CPython (errors by name): 40 without tasks as Express executions, and 40 with Lambda tasks, 10 of them with distributed maps as Standard executions, each with three inputs. All 240 runs agreed (measured).
+
+The fixed cases of `tests/corpus.py` are the edges the generator avoids, and `tests/aws_corpus.py` runs them in Step Functions on request; [verification.md](verification.md) says what each check guarantees.

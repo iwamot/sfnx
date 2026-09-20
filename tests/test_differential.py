@@ -17,6 +17,7 @@ from hypothesis import strategies as st
 from sfnx import ExceedToleratedFailureThreshold, distributed_map
 from sfnx.compiler import compile_source
 from tests import asl
+from tests.corpus import same
 
 NUMBER, STRING, BOOLEAN, NUMBERS, STRINGS, MAPPING, OPTIONAL, UNION, KEY = (
     "number",
@@ -604,21 +605,6 @@ class Lambda(Mapping[str, object]):
         if payload < 0:
             raise asl.Failure("Declined", str(payload))
         return {"Payload": payload * 2}
-
-
-def same(left: object, right: object) -> bool:
-    """JSON equality: numbers by value, booleans apart from numbers."""
-    if isinstance(left, bool) or isinstance(right, bool):
-        return type(left) is type(right) and left == right
-    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-        return left == right
-    if isinstance(left, list) and isinstance(right, list):
-        return len(left) == len(right) and all(map(same, left, right))
-    if isinstance(left, dict) and isinstance(right, dict):
-        return left.keys() == right.keys() and all(
-            same(left[k], right[k]) for k in left
-        )
-    return type(left) is type(right) and left == right
 
 
 INPUTS = st.fixed_dictionaries(
