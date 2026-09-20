@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from sfnx import state_machine
@@ -121,12 +122,17 @@ def test_instructions(capsys):
 
 
 def test_the_readme_shows_the_example_and_its_whole_definition(capsys):
+    """The whole definition is one JSON block, and the excerpt above it is
+    a piece of that definition, so neither can drift from the compiler."""
     root = Path(__file__).parent.parent
     readme = (root / "README.md").read_text()
     example = root / "examples" / "orders.py"
     assert f"```python\n{example.read_text()}```" in readme
     assert main(["compile", str(example)]) == 0
-    assert f"```json\n{capsys.readouterr().out}```" in readme
+    definition = capsys.readouterr().out
+    blocks = re.findall(r"```json\n(.*?)```", readme, re.DOTALL)
+    assert definition in blocks
+    assert all(block in definition for block in blocks)
 
 
 def test_a_rejected_line_names_the_character_column(tmp_path, capsys):

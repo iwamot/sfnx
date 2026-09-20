@@ -46,13 +46,43 @@ def fulfill(input):
     return {"order": input["id"], "receipt": receipt["Payload"]}
 ```
 
-With sfnx installed (`uv add sfnx`), compile it:
+Compile it; `uvx` runs sfnx without adding it to the project:
 
 ```bash
-uv run sfnx compile app.py -o fulfill.asl.json
+uvx sfnx compile app.py -o fulfill.asl.json
 ```
 
-The definition has the states a person would write by hand, named after what they do:
+The definition has the states a person would write by hand, named after what they do. It begins:
+
+```json
+{
+  "Comment": "Reserve every item of an order, then charge for it.",
+  "QueryLanguage": "JSONata",
+  "TimeoutSeconds": 300,
+  "StartAt": "items",
+  "States": {
+    "items": {
+      "Type": "Pass",
+      "Assign": {
+        "items": "{% $states.context.Execution.Input.items %}",
+        "item_index": 0
+      },
+      "Next": "for"
+    },
+    "for": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $item_index < $count($items) %}",
+          "Next": "updateItem"
+        }
+      ],
+      "Default": "receipt"
+    },
+```
+
+<details>
+<summary>The whole definition</summary>
 
 ```json
 {
@@ -150,6 +180,8 @@ The definition has the states a person would write by hand, named after what the
 }
 ```
 
+</details>
+
 ## Why
 
 ASL is a JSON document of states that name each other, with the logic in JSONata strings. Writing it means choosing the right spelling for every operation (`+`, `&` or `$append`), wiring `Next` by hand, and repeating Retry and Catch on every Task. sfnx lets you write the flow as Python and does that part.
@@ -162,11 +194,13 @@ sfnx compiles; it does not run workflows or mock tasks, and it does not deploy. 
 
 ## Setup
 
+`uvx sfnx compile app.py` compiles a file without adding sfnx to the project, since `compile` parses the file and never imports it. The module itself imports `sfnx`, so to run it as Python, in tests or from a CDK app, add sfnx to the project:
+
 ```bash
 uv add sfnx
 ```
 
-The workflow module imports `sfnx`, so it is a dependency of the project; `uv run sfnx compile app.py` runs the compiler.
+`uv run sfnx compile app.py` then runs the compiler from the project.
 
 ## What you write
 
@@ -201,7 +235,7 @@ $ sfnx compile app.py
 app.py:6:63: getItem has no argument Tablename; did you mean TableName?
 
 $ sfnx compile app.py
-app.py:6:12: calling any() is not supported; write it with operators or jsonata(), or compute it in a Lambda task
+app.py:6:12: any() is not supported; count what matches: len([x for x in xs if x["failed"]]) > 0
 
 $ sfnx compile app.py
 app.py:6:9: loop over one variable: for item in items (unpack inside the loop)
