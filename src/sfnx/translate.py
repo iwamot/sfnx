@@ -537,9 +537,11 @@ class Translator:
         would merge a single result that is a list, so a result that may hold
         lists is kept as an array with [] and appended to an empty one."""
         if len(node.generators) != 1:
+            # A comprehension clause has no position of its own; its variable
+            # is where the second for is written.
             raise CompileError(
                 "a comprehension takes one for; nest a for loop for more",
-                node.generators[1],
+                node.generators[1].target,
             )
         generator = node.generators[0]
         if not isinstance(generator.target, ast.Name):

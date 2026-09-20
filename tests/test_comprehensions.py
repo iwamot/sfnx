@@ -102,6 +102,20 @@ def test_a_generator_is_the_list_comprehension_it_would_be(generator, comprehens
     )
 
 
+def test_a_second_for_is_pointed_at_its_variable():
+    body = 'xs: list = input["xs"]\nys: list = input["ys"]\nreturn [x for x in xs for y in ys]'
+    with pytest.raises(CompileError) as raised:
+        output(body)
+    assert (raised.value.line, raised.value.column) == (8, 31)
+    with pytest.raises(CompileError) as raised:
+        output(
+            body.replace(
+                "[x for x in xs for y in ys]", "sum(x for x in xs for y in ys)"
+            )
+        )
+    assert (raised.value.line, raised.value.column) == (8, 34)
+
+
 def test_the_comprehension_variable_does_not_leak():
     body = 'x = "outer"\nxs: list = input["xs"]\ny = [x for x in xs]\nreturn [x, y]'
     assert output(body) == ["{% $x %}", "{% $y %}"]
