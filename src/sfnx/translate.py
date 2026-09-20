@@ -3,7 +3,7 @@
 import ast
 import difflib
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 
@@ -347,10 +347,13 @@ class Translator:
         constants: dict[str, Constant],
         partial: set[str],
         compose: Compose,
+        typed: Mapping[str, Type],
     ):
         self.bindings = bindings
         self.names = names
         self.spellings = spellings
+        # The TypedDict classes of the module, which an annotation may name.
+        self.typed = typed
         # What the module assigns outside the machine, less the names this
         # scope assigns, which are its own as they are in Python.
         self.constants = constants
@@ -402,7 +405,7 @@ class Translator:
         if found.declared is None:
             return value
         try:
-            return replace(value, type=annotation(found.declared))
+            return replace(value, type=annotation(found.declared, self.typed))
         except AnnotationError as exc:
             raise CompileError(str(exc), exc.node) from exc
 

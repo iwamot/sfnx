@@ -210,6 +210,7 @@ class Scope:
             },
             self.partial,
             self.compose,
+            module.typed,
         )
         self.translator.is_function = lambda name: (
             name in self.functions or name in module.functions
@@ -478,7 +479,7 @@ class Scope:
             raise CompileError("assign one variable per statement: x = ...", target)
         name = target.id
         self.claim(name, target)
-        declared = annotate(annotation_node)
+        declared = annotate(annotation_node, self.module)
         value, call = self.translator.statement_value(value_node)
         known = declared or value.type or self.declared.get(name)
         if call is not None:
@@ -798,7 +799,7 @@ class Scope:
         for parameter, source, kind in zip(parameters, sources, kinds, strict=False):
             name = parameter.arg
             selector[name] = "{% " + source + " %}"
-            declared = annotate(parameter.annotation) or kind
+            declared = annotate(parameter.annotation, self.module) or kind
             if binds:
                 bindings[name] = self.variable(name, declared)
                 pending[name] = step(expression("$states.input"), name)
@@ -934,7 +935,7 @@ class Scope:
                 bindings[name] = step(read, name)
         for parameter in function.args.args:
             self.check_variable(parameter.arg, parameter)
-            declared = annotate(parameter.annotation)
+            declared = annotate(parameter.annotation, self.module)
             if declared is not None:
                 bindings[parameter.arg] = replace(
                     bindings[parameter.arg], type=declared
@@ -1865,11 +1866,11 @@ def reraises(statements: list[ast.stmt]) -> bool:
     return False
 
 
-def annotate(node: ast.expr | None) -> Type | None:
+def annotate(node: ast.expr | None, context: Module) -> Type | None:
     if node is None:
         return None
     try:
-        return annotation(node)
+        return annotation(node, context.typed)
     except AnnotationError as exc:
         raise CompileError(str(exc), exc.node) from exc
 
@@ -1903,7 +1904,7 @@ def compile_machine(
     # becomes the result after a Task, Parallel or Map.
     bindings = {
         a.arg: expression(
-            "$states.context.Execution.Input", type=annotate(a.annotation)
+            "$states.context.Execution.Input", type=annotate(a.annotation, context)
         )
         for a in arguments.args
     }

@@ -1,6 +1,7 @@
 """JSON types, as annotations declare them and operators need them."""
 
 import ast
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 NUMBER = "number"
@@ -11,8 +12,8 @@ ARRAY = "array"
 OBJECT = "object"
 
 ANNOTATIONS = (
-    "annotate with float, str, bool, list, dict, None, list[X], dict[str, X] "
-    "or a union such as str | None"
+    "annotate with float, str, bool, list, dict, None, list[X], dict[str, X], "
+    "a union such as str | None, or a TypedDict class of this module"
 )
 
 
@@ -88,9 +89,12 @@ class AnnotationError(ValueError):
         self.node = node
 
 
-def annotation(node: ast.expr) -> Type:
-    """The type an annotation declares."""
+def annotation(node: ast.expr, named: Mapping[str, Type] | None = None) -> Type:
+    """The type an annotation declares. named holds the types the module
+    declares under a name, its TypedDict classes."""
     if isinstance(node, ast.Name):
+        if named is not None and node.id in named:
+            return named[node.id]
         scalar = {
             "float": NUMBER,
             "int": NUMBER,
@@ -104,12 +108,12 @@ def annotation(node: ast.expr) -> Type:
     elif isinstance(node, ast.Constant) and node.value is None:
         return of(NULL)
     elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        declared = union(annotation(node.left), annotation(node.right))
+        declared = union(annotation(node.left, named), annotation(node.right, named))
         assert declared is not None
         return declared
     elif isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
         if node.value.id == "list":
-            return of(ARRAY, items=annotation(node.slice))
+            return of(ARRAY, items=annotation(node.slice, named))
         if (
             node.value.id == "dict"
             and isinstance(node.slice, ast.Tuple)
@@ -117,7 +121,7 @@ def annotation(node: ast.expr) -> Type:
             and isinstance(node.slice.elts[0], ast.Name)
             and node.slice.elts[0].id == "str"
         ):
-            return of(OBJECT, values=annotation(node.slice.elts[1]))
+            return of(OBJECT, values=annotation(node.slice.elts[1], named))
     raise AnnotationError(node)
 
 
