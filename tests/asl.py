@@ -1,9 +1,13 @@
 """Run compiled definitions without an emulator, evaluating JSONata with
 jsonata-python, so a program's ASL result can be compared with CPython's."""
 
+import base64
+import binascii
 import hashlib
 import json
+import re
 import time
+import urllib.parse
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -52,6 +56,9 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     expression.register_lambda("millis", lambda: int(time.time() * 1000))
     expression.register_lambda("hash", digest)
     expression.register_lambda("partition", partition)
+    # The functions whose Step Functions behavior differs from jsonata-python's.
+    expression.register_lambda("decodeUrlComponent", decode_url_component)
+    expression.register_lambda("base64decode", base64_decode)
     for name, function in REPLACED.get({}).items():
         expression.register_lambda(name, function)
     try:
@@ -69,6 +76,27 @@ def parse(text: str) -> object:
     try:
         return nulls(json.loads(text))
     except ValueError as exc:
+        raise jsonata.JException(str(exc)) from exc
+
+
+def decode_url_component(text: str) -> str:
+    """$decodeUrlComponent as Step Functions evaluates it: + is a space, a
+    malformed escape such as %zz fails, and a broken UTF-8 sequence is U+FFFD
+    (measured)."""
+    if re.search(r"%(?![0-9A-Fa-f]{2})", text):
+        raise jsonata.JException(
+            f"Malformed URL passed to $decodeUrlComponent(): {text}"
+        )
+    return urllib.parse.unquote_plus(text)
+
+
+def base64_decode(text: str) -> str:
+    """$base64decode as Step Functions evaluates it: text missing its padding
+    is read, and a character outside the alphabet fails (measured)."""
+    padded = text + "=" * (-len(text) % 4)
+    try:
+        return base64.b64decode(padded, validate=True).decode()
+    except (binascii.Error, UnicodeDecodeError) as exc:
         raise jsonata.JException(str(exc)) from exc
 
 

@@ -251,10 +251,30 @@ STRINGIFIED = {
     FROM_TIMESTAMP: (1, "datetime.fromtimestamp(seconds)", "a datetime object"),
 }
 
+# The base64 functions, whose text is read out with .decode(), the JSONata
+# function of each, and how each is written.
+BASE64 = {
+    "base64.b64encode": "base64encode",
+    "base64.b64decode": "base64decode",
+}
+BASE64_WRITTEN = {
+    "base64.b64encode": "base64.b64encode(s.encode()).decode()",
+    "base64.b64decode": "base64.b64decode(s).decode()",
+}
+BASE64_ANY = " or ".join(BASE64_WRITTEN.values())
+
+# urllib.parse.unquote and unquote_plus, both $decodeUrlComponent: Step
+# Functions reads + as a space, which is what unquote_plus does, so unquote
+# escapes the + first to keep it.
+UNQUOTE = "urllib.parse.unquote"
+UNQUOTE_PLUS = "urllib.parse.unquote_plus"
+
 # The standard library functions sfnx compiles, by how a call to one reads
 # without its import, and the import to write.
 MODULE_IMPORTS = {
     "json.loads": "import json",
+    **dict.fromkeys(BASE64, "import base64"),
+    **dict.fromkeys((UNQUOTE, UNQUOTE_PLUS), "import urllib.parse"),
     "uuid.uuid4": "import uuid",
     "time.time": "import time",
     **dict.fromkeys(
@@ -1359,6 +1379,22 @@ class Translator:
                 f"{ast.unparse(node.func)}(s.encode()).hexdigest()",
                 node,
             )
+        if target in BASE64:
+            raise CompileError(
+                f"{ast.unparse(node.func)}() is bytes, not JSON; write "
+                f"{BASE64_WRITTEN[target]}",
+                node,
+            )
+        if target in {UNQUOTE, UNQUOTE_PLUS}:
+            name = target.rpartition(".")[2]
+            if len(node.args) != 1 or node.keywords:
+                raise CompileError(f"{name}() takes one string: {name}(s)", node)
+            escaped = self.operand(node.args[0], STRING, f"{name}() reads a string")
+            if target == UNQUOTE:
+                escaped = call(
+                    "replace", [escaped, literal("+"), literal("%2B")], of(STRING)
+                )
+            return call("decodeUrlComponent", [escaped], of(STRING))
         if target == "itertools.batched":
             raise CompileError(
                 "itertools.batched() is a list here only as "
@@ -1367,6 +1403,8 @@ class Translator:
             )
         if isinstance(node.func, ast.Attribute) and node.func.attr == "hexdigest":
             return self.hexdigest(node, node.func)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "decode":
+            return self.decoded(node, node.func)
         if isinstance(node.func, ast.Attribute) and node.func.attr == "timestamp":
             return self.timestamp(node, node.func)
         if target == "time.time":
@@ -2084,6 +2122,38 @@ class Translator:
             raise CompileError(f"hexdigest() is written {written}", node)
         text = self.operand(encoded.func.value, STRING, "encode() is a string method")
         return call("hash", [text, literal(HASHES[target])], of(STRING))
+
+    def decoded(self, node: ast.Call, method: ast.Attribute) -> Expr:
+        """base64.b64encode(s.encode()).decode() as $base64encode and
+        base64.b64decode(s).decode() as $base64decode: bytes are not JSON, so
+        the text is encoded and decoded in the same expression."""
+        made = method.value
+        if not isinstance(made, ast.Call) or node.args or node.keywords:
+            raise CompileError(f"decode() is written {BASE64_ANY}", node)
+        target = qualified(made.func, self.names) or ""
+        if not target and ast.unparse(made.func) in MODULE_IMPORTS:
+            raise CompileError("base64 is not imported; write import base64", made.func)
+        if target not in BASE64 or made.keywords or len(made.args) != 1:
+            raise CompileError(f"decode() is written {BASE64_ANY}", node)
+        written = BASE64_WRITTEN[target]
+        (argument,) = made.args
+        if target == "base64.b64decode":
+            text = self.operand(
+                argument, STRING, f"b64decode() reads a string: {written}"
+            )
+        elif (
+            isinstance(argument, ast.Call)
+            and isinstance(argument.func, ast.Attribute)
+            and argument.func.attr == "encode"
+            and not argument.args
+            and not argument.keywords
+        ):
+            text = self.operand(
+                argument.func.value, STRING, "encode() is a string method"
+            )
+        else:
+            raise CompileError(f"b64encode() is written {written}", made)
+        return call(BASE64[target], [text], of(STRING))
 
     def affix(self, text: Expr, node: ast.expr, name: str) -> Expr:
         """s.startswith(p) and s.endswith(p): the part of s as long as p,

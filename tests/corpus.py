@@ -22,7 +22,9 @@ from sfnx.compiler import compile_source
 from tests import asl
 
 HEADER = """\
+import base64
 import random
+import urllib.parse
 from sfnx import parallel, state_machine
 
 
@@ -346,6 +348,77 @@ CASES: tuple[Case, ...] = (
         "a missing key is undefined, which fails as an Output; CPython raises "
         "KeyError, so only the failure is compared",
         python=False,
+    ),
+    Case(
+        "base64-encode-utf8",
+        "encoding",
+        'return base64.b64encode(input["s"].encode()).decode()',
+        {"s": "日本 a"},
+        Value("5pel5pysIGE="),
+        "$base64encode reads the text as UTF-8, as .encode() does",
+    ),
+    Case(
+        "base64-decode-utf8",
+        "encoding",
+        'return base64.b64decode(input["s"]).decode()',
+        {"s": "5pel5pysIGE="},
+        Value("日本 a"),
+        "$base64decode gives the text back as UTF-8, as .decode() does",
+    ),
+    Case(
+        "base64-decode-without-padding",
+        "encoding",
+        'return base64.b64decode(input["s"]).decode()',
+        {"s": "YWJ"},
+        Value("ab"),
+        "$base64decode reads text missing its padding; Python raises "
+        "binascii.Error, so the value is not compared",
+        python=False,
+    ),
+    Case(
+        "base64-decode-outside-the-alphabet",
+        "encoding",
+        'return base64.b64decode(input["s"]).decode()',
+        {"s": "!!"},
+        Error(QUERY_ERROR),
+        "$base64decode fails on a character outside the alphabet; Python "
+        "discards it and gives an empty string, so only the failure is compared",
+        python=False,
+    ),
+    Case(
+        "unquote-keeps-plus",
+        "encoding",
+        'return urllib.parse.unquote(input["s"])',
+        {"s": "a+b%2Bc%20d"},
+        Value("a+b+c d"),
+        "$decodeUrlComponent reads + as a space, so unquote() escapes it first "
+        "to keep it, as Python does",
+    ),
+    Case(
+        "unquote-plus-reads-space",
+        "encoding",
+        'return urllib.parse.unquote_plus(input["s"])',
+        {"s": "a+b%2Bc%20d"},
+        Value("a b+c d"),
+        "unquote_plus() reads + as a space, as $decodeUrlComponent does",
+    ),
+    Case(
+        "unquote-malformed",
+        "encoding",
+        'return urllib.parse.unquote(input["s"])',
+        {"s": "%zz"},
+        Error(QUERY_ERROR),
+        "$decodeUrlComponent fails on a malformed escape; Python passes it "
+        "through, so only the failure is compared",
+        python=False,
+    ),
+    Case(
+        "unquote-broken-utf8",
+        "encoding",
+        'return urllib.parse.unquote(input["s"])',
+        {"s": "%E6"},
+        Value("�"),
+        "a broken UTF-8 sequence is U+FFFD in both",
     ),
     Case(
         "volatile-modulo-once",

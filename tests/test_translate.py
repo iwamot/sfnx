@@ -1,5 +1,7 @@
+import base64
 import re
 import textwrap
+import urllib.parse
 from datetime import datetime
 
 import pytest
@@ -744,6 +746,14 @@ def test_module_function_diagnostics(body, message):
     "body, message",
     [
         ('return json.loads(input["raw"])', "json is not imported; write import json"),
+        (
+            'return base64.b64encode(input["s"].encode()).decode()',
+            "base64 is not imported; write import base64",
+        ),
+        (
+            'return urllib.parse.unquote(input["s"])',
+            "urllib.parse is not imported; write import urllib.parse",
+        ),
         (
             "return str(datetime.now())",
             "datetime is not imported; write from datetime import datetime",
@@ -1491,7 +1501,7 @@ def test_get_evaluates():
 
 
 MORE = (
-    "import hashlib\nimport itertools\n",
+    "import base64\nimport hashlib\nimport itertools\nimport urllib.parse\n",
     's: str = input["s"]\nxs: list[float] = input["xs"]\nys: list = input["ys"]\n',
 )
 
@@ -1512,11 +1522,48 @@ def more_definition(body: str) -> dict:
         ("return list(zip(xs, ys))", "$zip($xs, $ys)"),
         ("return hashlib.sha256(s.encode()).hexdigest()", "$hash($s, 'SHA-256')"),
         ("return hashlib.md5(s.encode()).hexdigest()", "$hash($s, 'MD5')"),
+        ("return base64.b64encode(s.encode()).decode()", "$base64encode($s)"),
+        ("return base64.b64decode(s).decode()", "$base64decode($s)"),
+        (
+            "return urllib.parse.unquote(s)",
+            "$decodeUrlComponent($replace($s, '+', '%2B'))",
+        ),
+        ("return urllib.parse.unquote_plus(s)", "$decodeUrlComponent($s)"),
         ("return list(itertools.batched(xs, 2))", "[$partition($xs, 2)]"),
     ],
 )
 def test_more_functions(body, code):
     assert more_definition(body)["States"]["return"]["Output"] == "{% " + code + " %}"
+
+
+def test_unquote_imported_by_name():
+    preamble = "from urllib.parse import unquote\n"
+    body = 's: str = input["s"]\nreturn unquote(s)'
+    (compiled,) = compile_source(preamble + source(body)).values()
+    assert compiled["States"]["return"]["Output"] == (
+        "{% $decodeUrlComponent($replace($s, '+', '%2B')) %}"
+    )
+
+
+@pytest.mark.parametrize("text", ["ab", "日本 a/b", "", "a+b"])
+def test_base64_and_unquote_agree_with_python(text):
+    """The Base64 text is of the UTF-8 bytes, as .encode() gives them, and
+    %XX escapes are read as UTF-8; unquote() keeps a + and unquote_plus()
+    reads it as a space, as in Python."""
+    body = (
+        "return [base64.b64encode(s.encode()).decode(), "
+        'base64.b64decode(input["b"]).decode(), urllib.parse.unquote(input["q"]), '
+        'urllib.parse.unquote_plus(input["q"])]'
+    )
+    encoded = base64.b64encode(text.encode()).decode()
+    quoted = urllib.parse.quote(text) + "+%2B"
+    execution_input = {"s": text, "b": encoded, "q": quoted, "xs": [], "ys": []}
+    assert asl.run(more_definition(body), execution_input) == [
+        encoded,
+        text,
+        urllib.parse.unquote(quoted),
+        urllib.parse.unquote_plus(quoted),
+    ]
 
 
 def test_more_functions_evaluate():
@@ -1561,6 +1608,44 @@ def test_more_functions_evaluate():
             "hexdigest() is written hashlib.sha256(s.encode()).hexdigest()",
         ),
         ("return s.hexdigest(1)", "hexdigest() is written hashlib.sha256"),
+        (
+            "return base64.b64encode(s.encode())",
+            "base64.b64encode() is bytes, not JSON; write base64.b64encode(s.encode()).decode()",
+        ),
+        (
+            "return base64.b64decode(s)",
+            "base64.b64decode() is bytes, not JSON; write base64.b64decode(s).decode()",
+        ),
+        (
+            "return base64.b64encode(s).decode()",
+            "b64encode() is written base64.b64encode(s.encode()).decode()",
+        ),
+        (
+            "return base64.b64encode(s.encode(), altchars=b'-_').decode()",
+            "decode() is written base64.b64encode(s.encode()).decode() or base64.b64decode(s).decode()",
+        ),
+        (
+            "return base64.b64decode(1).decode()",
+            "1 is a number; b64decode() reads a string",
+        ),
+        (
+            "return base64.b64encode((1).encode()).decode()",
+            "1 is a number; encode() is a string method",
+        ),
+        (
+            "return s.decode()",
+            "decode() is written base64.b64encode(s.encode()).decode() or",
+        ),
+        (
+            "return urllib.parse.unquote(s, encoding='latin-1')",
+            "unquote() takes one string: unquote(s)",
+        ),
+        ("return urllib.parse.unquote(1)", "1 is a number; unquote() reads a string"),
+        (
+            "return urllib.parse.unquote_plus(s, 'x')",
+            "unquote_plus() takes one string: unquote_plus(s)",
+        ),
+        ("return urllib.parse.quote(s)", "urllib.parse.quote() is not supported"),
         ('return s.ljust("a")', "the width of ljust() takes numbers"),
         ("return s.ljust(5, 1)", "1 is a number; ljust() fills with a string"),
     ],
