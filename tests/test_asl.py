@@ -16,6 +16,30 @@ def test_null_is_a_value_and_undefined_fails():
     assert failure.value.error == "States.QueryEvaluationError"
 
 
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ("$decodeUrlComponent('a+b%2Bc%20d')", "a b+c d"),
+        ("$decodeUrlComponent('%E6%97%A5')", "日"),
+        ("$decodeUrlComponent('%E6')", "�"),
+        ("$base64decode('YWJ')", "ab"),
+        ("$base64decode('5pel5pysIGE=')", "日本 a"),
+    ],
+)
+def test_the_functions_read_as_step_functions_reads_them(code, expected):
+    assert (
+        asl.run(machine({"Type": "Succeed", "Output": "{% " + code + " %}"}), {})
+        == expected
+    )
+
+
+@pytest.mark.parametrize("code", ["$decodeUrlComponent('%zz')", "$base64decode('!!')"])
+def test_a_malformed_text_fails(code):
+    with pytest.raises(asl.Failure) as failure:
+        asl.run(machine({"Type": "Succeed", "Output": "{% " + code + " %}"}), {})
+    assert failure.value.error == "States.QueryEvaluationError"
+
+
 def test_assign_and_output_read_the_variables_from_before_the_state():
     task = {"Type": "Task", "Assign": {"x": 1}, "Output": "{% $x %}", "End": True}
     with pytest.raises(asl.Failure, match="undefined"):

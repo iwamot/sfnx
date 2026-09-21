@@ -101,6 +101,8 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$pad` fills on the right for a positive width and on the left for a negative one, repeating a fill of several characters and taking a width of 6.5 as 6 (measured).
 - `$distinct` keeps the first of each value in order, compares objects and arrays by value, and keeps `true` apart from `1`; `$zip` stops at the shortest array (measured).
 - `$hash` gives the lowercase hex digest of the UTF-8 text for `MD5`, `SHA-1`, `SHA-256`, `SHA-384` and `SHA-512`; `$partition` returns nothing for an empty array and for a size of 0, makes batches of one item for a size of 1.5, and fails below 0 (measured).
+- `$base64encode` and `$base64decode` read and write the text as UTF-8; `$base64decode` takes text missing its padding (`'YWJ'` is `"ab"`) and fails on a character outside the alphabet (measured).
+- `$decodeUrlComponent` reads `+` as a space, fails on a malformed escape such as `%zz` (`D3140`), and gives U+FFFD for a broken UTF-8 sequence such as `%E6` (measured). jsonata-python keeps the `+` and passes `%zz` through, so `tests/asl.py` replaces the function.
 - `$split` with a string separator splits at that exact text (`.` and `*` are not patterns), keeps empty parts, and splits into characters at `''` (measured).
 - `$trim` turns every run of whitespace into one space and removes it from both ends: `$split($trim('  a  b\t\nc '), ' ')` is `["a", "b", "c"]`, and `[""]` for blank text (measured).
 - `$replace` with a string pattern takes `$0` in the replacement literally, fails on an empty pattern and on a negative limit, replaces nothing with a limit of 0, and takes a limit of 2.5 as 2 (measured).
