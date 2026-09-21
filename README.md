@@ -279,6 +279,7 @@ Exit codes:
 ```
 
 - `compile` parses the file and never imports or runs it.
+- The compiler is a Python function too: [docs/api.md](https://github.com/iwamot/sfnx/blob/main/docs/api.md) describes `compile_file` and `compile_source`.
 - `-o` ending in `.json` writes the only machine to that file; any other path is a directory that receives `<function>.asl.json` per machine. Missing directories are created.
 - The first error stops the compilation, so one run reports one line.
 
