@@ -276,6 +276,19 @@ UNPICTURED = {
 }
 STRFTIME_WRITTEN = 'datetime.now().strftime("%Y-%m-%d")'
 
+# The format specs of an f-string: a width, with an alignment and the
+# character to fill with before it, and the digits after the decimal point a
+# number is written with. $pad fills on the right for a positive width and on
+# the left for a negative one, which is what < and > ask for, and a width
+# starting with 0 is left out, as the 0 there fills a number to its own width
+# and Python counts the sign inside it.
+FORMAT_SPEC = re.compile(
+    r"(?:(?P<fill>[^\n])?(?P<align>[<>]))?"
+    r"(?P<width>[1-9][0-9]*)?"
+    r"(?:(?P<grouping>,)?\.(?P<precision>[0-9]+)f)?"
+)
+SPEC_WRITTEN = 'f"{s:>10}", f"{s:*<8}" or f"{total:,.2f}"'
+
 # Calls whose value is an object that JSON holds as text, so they are written
 # in str() or an f-string, the datetimes also in .timestamp(): how many
 # arguments the call takes, how it is written and what it returns in Python.
@@ -918,17 +931,29 @@ class Translator:
                 raise CompileError(
                     "conversions such as !r and = are not supported; write {x}", value
                 )
-            if value.format_spec is not None:
-                raise CompileError(
-                    "format specs are not supported; JSONata formats numbers "
-                    "differently, so build the text from the number",
-                    value.format_spec,
-                )
+            spec = written_spec(value.format_spec)
             spelled = self.stringified(value.value)
             if spelled is not None:
+                if spec is not None:
+                    # Python gives the spec to the value itself, and a datetime
+                    # reads it as a strftime format rather than a width.
+                    advice = (
+                        f"; write the datetime with strftime: {STRFTIME_WRITTEN}"
+                        if self.datetime_moment(value.value) is not None
+                        else ""
+                    )
+                    raise CompileError(
+                        "a format spec here is a width or the digits of a "
+                        "number, and Python gives this one to the value "
+                        f"itself{advice}",
+                        value.format_spec,
+                    )
                 pieces.append(spelled)
                 continue
             part = self.expr(value.value)
+            if spec is not None:
+                pieces.append(self.formatted_value(part, value, spec))
+                continue
             if part.type is None or part.type.kinds != {STRING}:
                 part = text(part)
             pieces.append(part)
@@ -938,6 +963,56 @@ class Translator:
         for piece in pieces[1:]:
             result = binary(result, "&", piece, ADD, of(STRING))
         return result
+
+    def formatted_value(self, part: Expr, node: ast.FormattedValue, spec: str) -> Expr:
+        """A value with a format spec: the digits after the decimal point are
+        the picture $formatNumber takes, and the width is $pad, negative where
+        the text is pushed to the right, as it is for a number by default."""
+        found = FORMAT_SPEC.fullmatch(spec)
+        if found is None or not (found["width"] or found["precision"]):
+            raise CompileError(
+                "a format spec here is a width, with a fill and < or > before "
+                f"it, or the digits of a number: {SPEC_WRITTEN}",
+                node.format_spec,
+            )
+        number = found["precision"] is not None
+        written = self.spec_value(part, node, found)
+        if not found["width"]:
+            return written
+        size = int(found["width"])
+        # Python fills a string on the right and a number on the left.
+        right = found["align"] == ">" or (found["align"] is None and number)
+        width = literal(-size if right else size)
+        fill = [literal(found["fill"])] if found["fill"] else []
+        return call("pad", [written, width, *fill], of(STRING))
+
+    def spec_value(
+        self, part: Expr, node: ast.FormattedValue, found: re.Match[str]
+    ) -> Expr:
+        """The text a format spec fills to its width: a number written with
+        the digits the spec asks for, or the string itself."""
+        if found["precision"] is None:
+            kind = self.known(node.value, part, "str", "a width pads a string")
+            if kind != STRING:
+                raise CompileError(
+                    f"{ast.unparse(node.value)} is {article(kind)}, and a width "
+                    "pads a string here; write a number with .2f, or build the "
+                    "text from it",
+                    node.value,
+                )
+            return part
+        kind = self.known(node.value, part, "float", "the digits format a number")
+        if kind != NUMBER:
+            raise CompileError(
+                f"{ast.unparse(node.value)} is {article(kind)}, and the digits of "
+                "a format spec write a number here",
+                node.value,
+            )
+        picture = "#,##0" if found["grouping"] else "0"
+        places = int(found["precision"])
+        if places:
+            picture += "." + "0" * places
+        return call("formatNumber", [part, literal(picture)], of(STRING))
 
     def truth(self, value: Expr) -> Expr:
         """A JSON boolean with Python's truthiness. $boolean agrees with
@@ -3158,6 +3233,24 @@ def written_unit(keyword: ast.keyword) -> int | float:
         "for a span the input carries, write "
         "datetime.fromtimestamp(dt.timestamp() + seconds)",
         keyword.value,
+    )
+
+
+def written_spec(spec: ast.expr | None) -> str | None:
+    """The format spec of an f-string field as it is written, or None where
+    the field has none. One holding a field of its own is rejected: the width
+    is read where the file compiles, not where it runs."""
+    if spec is None:
+        return None
+    assert isinstance(spec, ast.JoinedStr)
+    if not spec.values:
+        return None
+    written = spec.values[0]
+    if len(spec.values) == 1 and isinstance(written, ast.Constant):
+        assert isinstance(written.value, str)
+        return written.value
+    raise CompileError(
+        f"the width of a format spec is written in the source: {SPEC_WRITTEN}", spec
     )
 
 

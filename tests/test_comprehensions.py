@@ -64,6 +64,38 @@ def run(body: str, execution_input: object) -> object:
             "'order ' & $string($order_id)",
         ),
         ('name: str = input["name"]\nreturn f"{name}!"', "$name & '!'"),
+        # A format spec fills the text to its width, where $pad takes a
+        # negative width to fill on the left.
+        ('s: str = input["s"]\nreturn f"{s:>10}"', "$pad($s, -10)"),
+        ('s: str = input["s"]\nreturn f"{s:<10}"', "$pad($s, 10)"),
+        ('s: str = input["s"]\nreturn f"{s:10}"', "$pad($s, 10)"),
+        ('s: str = input["s"]\nreturn f"{s:*>8}"', "$pad($s, -8, '*')"),
+        # A 0 fills as any other character does where the alignment is written;
+        # a width of its own (f"{s:08}") is number formatting and is rejected.
+        ('s: str = input["s"]\nreturn f"{s:0<8}"', "$pad($s, 8, '0')"),
+        ('s: str = input["s"]\nreturn f"[{s:->4}]"', "'[' & $pad($s, -4, '-') & ']'"),
+        # An empty spec is what Python gives str() for, which is the value.
+        ('s: str = input["s"]\nreturn f"{s:}"', "$s"),
+        # The digits after the decimal point are the picture $formatNumber
+        # takes, and a width pads what it writes.
+        ('x: float = input["x"]\nreturn f"{x:.2f}"', "$formatNumber($x, '0.00')"),
+        ('x: float = input["x"]\nreturn f"{x:.0f}"', "$formatNumber($x, '0')"),
+        (
+            'x: float = input["x"]\nreturn f"{x:,.2f}"',
+            "$formatNumber($x, '#,##0.00')",
+        ),
+        (
+            'x: float = input["x"]\nreturn f"{x:10.2f}"',
+            "$pad($formatNumber($x, '0.00'), -10)",
+        ),
+        (
+            'x: float = input["x"]\nreturn f"{x:<10.2f}"',
+            "$pad($formatNumber($x, '0.00'), 10)",
+        ),
+        (
+            'x: float = input["x"]\nreturn f"{x:*>12,.2f}"',
+            "$pad($formatNumber($x, '#,##0.00'), -12, '*')",
+        ),
         ('name: str = input["name"]\nreturn f"{name}"', "$name"),
         ("return f\"{input['n'] + 1} items\"", f"$string({INPUT}.n + 1) & ' items'"),
         # A dict comprehension is one pass whose objects are merged.
@@ -98,6 +130,60 @@ def run(body: str, execution_input: object) -> object:
 )
 def test_spelling(body, code):
     assert output(body) == "{% " + code + " %}"
+
+
+SPECS = ["<6", ">6", "6", ".<6", ".>6", "*>3", "->2"]
+
+
+@pytest.mark.parametrize("text", ["", "ab", "abcdefgh", "日本", "a😀b"])
+def test_a_format_spec_fills_the_text_as_python_does(text):
+    """$pad counts the width in code points, as Python counts characters
+    (measured on Step Functions)."""
+    body = (
+        's: str = input["s"]\nreturn ['
+        + ", ".join(f'f"{{s:{spec}}}"' for spec in SPECS)
+        + "]"
+    )
+    assert run(body, {"s": text}) == [format(text, spec) for spec in SPECS]
+
+
+NUMBER_SPECS = [".2f", ".0f", ",.2f", "10.2f", "<10.2f", "*>12,.2f"]
+
+
+@pytest.mark.parametrize(
+    "number",
+    # Values the decimal and the double round the same way at these digits:
+    # halves and quarters, which a double holds exactly, and values that are
+    # nowhere near a halfway digit. The one that differs (2.675) is a case of
+    # the corpus.
+    [0, 5, -7.5, 0.125, 0.375, 2.5, 3.5, -0.125, 1234.5678, 1234567],
+)
+def test_a_number_spec_writes_what_cpython_writes(number):
+    body = (
+        'x: float = input["x"]\nreturn ['
+        + ", ".join(f'f"{{x:{spec}}}"' for spec in NUMBER_SPECS)
+        + "]"
+    )
+    assert run(body, {"x": number}) == [format(number, spec) for spec in NUMBER_SPECS]
+
+
+def test_a_format_spec_on_a_datetime_is_its_own():
+    """Python gives the spec to the value, and a datetime reads it as a
+    strftime format rather than a width."""
+    imports = "import uuid\nfrom datetime import datetime\n"
+    with pytest.raises(CompileError) as raised:
+        compile_source(imports + source('return f"{datetime.now():>10}"'))
+    assert raised.value.message == (
+        "a format spec here is a width or the digits of a number, and Python "
+        "gives this one to the value itself; write the datetime with strftime: "
+        'datetime.now().strftime("%Y-%m-%d")'
+    )
+    with pytest.raises(CompileError) as raised:
+        compile_source(imports + source('return f"{uuid.uuid4():>10}"'))
+    assert raised.value.message == (
+        "a format spec here is a width or the digits of a number, and Python "
+        "gives this one to the value itself"
+    )
 
 
 def test_constant_f_strings_are_json():
@@ -524,7 +610,44 @@ def test_evaluation(body, execution_input, expected):
         ),
         ('x = 1\nreturn f"{x!r}"', "conversions such as !r and = are not supported"),
         ('x = 1\nreturn f"{x=}"', "conversions such as !r and = are not supported"),
-        ('x = 1.5\nreturn f"{x:.2f}"', "format specs are not supported"),
+        # The format specs outside a width and the digits of a number, and a
+        # width the spec does not hold itself.
+        ('s: str = input["s"]\nreturn f"{s:^10}"', "a format spec here is a width"),
+        ('x: float = input["x"]\nreturn f"{x:,}"', "a format spec here is a width"),
+        ('x: float = input["x"]\nreturn f"{x:.2%}"', "a format spec here is a width"),
+        ('x: float = input["x"]\nreturn f"{x:.2e}"', "a format spec here is a width"),
+        ('x: float = input["x"]\nreturn f"{x:05.2f}"', "a format spec here is a width"),
+        (
+            's: str = input["s"]\nreturn f"{s:.2f}"',
+            ("s is a string, and the digits of a format spec write a number here"),
+        ),
+        ('s: str = input["s"]\nreturn f"{s:010}"', "a format spec here is a width"),
+        ('s: str = input["s"]\nreturn f"{s:>}"', "a format spec here is a width"),
+        ('s: str = input["s"]\nreturn f"{s:>0}"', "a format spec here is a width"),
+        (
+            's: str = input["s"]\nw = 4\nreturn f"{s:>{w}}"',
+            "the width of a format spec is written in the source:",
+        ),
+        # A format spec pads a string, and the value must be known to be one.
+        (
+            'x: float = input["x"]\nreturn f"{x:>10}"',
+            (
+                "x is a number, and a width pads a string here; write a number "
+                "with .2f, or build the text from it"
+            ),
+        ),
+        (
+            "return f\"{input['s']:>10}\"",
+            "a width pads a string, so the type of input['s'] must be known",
+        ),
+        (
+            "return f\"{input['x']:.2f}\"",
+            "the digits format a number, so the type of input['x'] must be known",
+        ),
+        (
+            'v: str | None = input["v"]\nreturn f"{v:>10}"',
+            "v may be null | string; narrow it first",
+        ),
         ("return lambda: 1", "lambda is not supported; define the function with def"),
     ],
 )

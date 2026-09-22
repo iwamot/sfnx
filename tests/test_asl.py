@@ -24,6 +24,16 @@ def test_null_is_a_value_and_undefined_fails():
         ("$decodeUrlComponent('%E6')", "�"),
         ("$base64decode('YWJ')", "ab"),
         ("$base64decode('5pel5pysIGE=')", "日本 a"),
+        # $formatNumber rounds half to even on the decimal the number is
+        # written as, where jsonata-python rounds the double it holds.
+        ("$formatNumber(0.125, '0.00')", "0.12"),
+        ("$formatNumber(2.675, '0.00')", "2.68"),
+        ("$formatNumber(2.5, '0')", "2"),
+        ("$formatNumber(3.5, '0')", "4"),
+        ("$formatNumber(1234.5678, '#,##0.00')", "1,234.57"),
+        ("$formatNumber(1234.5, '#,##0')", "1,234"),
+        # A picture the compiler does not write is left to jsonata-python.
+        ("$formatNumber(-12, '00000')", "-00012"),
     ],
 )
 def test_the_functions_read_as_step_functions_reads_them(code, expected):
