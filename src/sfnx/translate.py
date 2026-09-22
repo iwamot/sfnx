@@ -1,6 +1,7 @@
 """Python expressions to JSONata, with the spelling chosen by the operand types."""
 
 import ast
+import datetime
 import difflib
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -239,12 +240,19 @@ HASHES = {
 }
 
 # The calls that make a datetime, a value JSON does not have: str() and an
-# f-string write one as the timestamp text it holds, and .timestamp() as the
-# seconds since the epoch.
+# f-string write one as the timestamp text it holds, .timestamp() as the
+# seconds since the epoch, and wait(until=) waits for the moment itself.
 NOW = "datetime.datetime.now"
 FROM_ISO = "datetime.datetime.fromisoformat"
 FROM_TIMESTAMP = "datetime.datetime.fromtimestamp"
 DATETIMES = (NOW, FROM_ISO, FROM_TIMESTAMP)
+
+# A span of time added to a datetime or taken from one. The units are those
+# timedelta takes to the millisecond: microseconds is left out, as Step
+# Functions keeps time to the millisecond.
+TIMEDELTA = "datetime.timedelta"
+TIMEDELTA_UNITS = ("weeks", "days", "hours", "minutes", "seconds", "milliseconds")
+TIMEDELTA_WRITTEN = "timedelta(hours=1)"
 
 # Calls whose value is an object that JSON holds as text, so they are written
 # in str() or an f-string, the datetimes also in .timestamp(): how many
@@ -286,6 +294,7 @@ MODULE_IMPORTS = {
         ("datetime.now", "datetime.fromisoformat", "datetime.fromtimestamp"),
         "from datetime import datetime",
     ),
+    "datetime.timedelta": "from datetime import timedelta",
     "itertools.batched": "import itertools",
     **dict.fromkeys(HASHES, "import hashlib"),
     **{target: f"import {target.partition('.')[0]}" for target in MATH_FUNCTIONS},
@@ -510,6 +519,12 @@ class Translator:
             and qualified(node, self.names) == "sfnx.context"
         ):
             return expression("$states.context", type=CONTEXT)
+        if isinstance(node, ast.Attribute) and self.timedelta_span(node.value):
+            raise CompileError(
+                "a timedelta is seconds through total_seconds() here: "
+                f"{parenthesized(node.value)}.total_seconds()",
+                node,
+            )
         if isinstance(node, ast.List):
             return array([self.expr(item) for item in node.elts])
         if isinstance(node, ast.Tuple):
@@ -1068,6 +1083,15 @@ class Translator:
         )
 
     def arithmetic(self, node: ast.BinOp) -> Expr:
+        if (
+            isinstance(node.op, (ast.Add, ast.Sub))
+            and self.datetime_moment(node) is not None
+        ):
+            raise CompileError(
+                f"{ast.unparse(node)} is a datetime object, not JSON; write "
+                "str(dt), dt.timestamp() or wait(until=dt)",
+                node,
+            )
         if isinstance(node.op, ast.Add):
             return self.add(node)
         symbol = {
@@ -1592,6 +1616,13 @@ class Translator:
             raise CompileError(
                 f"{spelled} is {returned}, not JSON; write {written}", node
             )
+        if target == TIMEDELTA:
+            raise CompileError(
+                f"{ast.unparse(node)} is a timedelta object, not JSON; add it to "
+                "a datetime or take it from one, or write "
+                f"{TIMEDELTA_WRITTEN}.total_seconds()",
+                node,
+            )
         if target in HASHES:
             raise CompileError(
                 f"{ast.unparse(node.func)}() is a hash object, not JSON; write "
@@ -1626,6 +1657,8 @@ class Translator:
             return self.decoded(node, node.func)
         if isinstance(node.func, ast.Attribute) and node.func.attr == "timestamp":
             return self.timestamp(node, node.func)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "total_seconds":
+            return self.total_seconds(node, node.func)
         if target == "time.time":
             if node.args or node.keywords:
                 raise CompileError("time.time() takes no arguments", node)
@@ -1769,17 +1802,154 @@ class Translator:
     def stringified(self, node: ast.expr) -> Expr | None:
         """uuid.uuid4() or a datetime in str() or an f-string, as the text it
         holds: $uuid(), $now(), or $fromMillis of the moment."""
+        if (
+            isinstance(node, ast.Call)
+            and (qualified(node.func, self.names) or "") == "uuid.uuid4"
+            and not node.args
+            and not node.keywords
+        ):
+            return call("uuid", [], of(STRING))
+        return self.datetime_string(node)
+
+    def datetime_string(self, node: ast.expr) -> Expr | None:
+        """A datetime expression as the timestamp text it holds, which is what
+        str(), an f-string and wait(until=) write: $now() for the moment
+        itself, $fromMillis of the milliseconds for any other."""
+        moment = self.datetime_moment(node)
+        if moment is None:
+            return None
+        made, shift = moment
+        target = qualified(made.func, self.names) or ""
+        if not shift and target == NOW:
+            return call("now", [], of(STRING))
+        millis = shifted(self.millis(made, target), shift)
+        return call("fromMillis", [millis], of(STRING))
+
+    def datetime_moment(self, node: ast.expr) -> tuple[ast.Call, int] | None:
+        """The call a datetime expression is made by and the milliseconds the
+        timedeltas around it move it, or None where the expression is not a
+        datetime. Nothing is translated here, so the expression it recognizes
+        is translated once, where it is read."""
+        if isinstance(node, ast.Call):
+            target = qualified(node.func, self.names) or ""
+            if target not in DATETIMES:
+                return None
+            arity = STRINGIFIED[target][0]
+            if len(node.args) != arity or node.keywords:
+                return None
+            return node, 0
+        if not isinstance(node, ast.BinOp) or not isinstance(
+            node.op, (ast.Add, ast.Sub)
+        ):
+            return None
+        moment, span = (
+            self.datetime_moment(node.left),
+            self.timedelta_millis(node.right),
+        )
+        if moment is None and isinstance(node.op, ast.Add):
+            # timedelta + datetime names the same moment as datetime + timedelta.
+            moment = self.datetime_moment(node.right)
+            span = self.timedelta_millis(node.left)
+        if moment is None or span is None:
+            return None
+        made, shift = moment
+        return made, shift + (span if isinstance(node.op, ast.Add) else -span)
+
+    def datetime_millis(self, node: ast.expr) -> Expr | None:
+        """A datetime expression as the milliseconds since the epoch, moved by
+        the timedeltas written around it."""
+        moment = self.datetime_moment(node)
+        if moment is None:
+            return None
+        made, shift = moment
+        millis = self.millis(made, qualified(made.func, self.names) or "")
+        return shifted(millis, shift)
+
+    def timedelta_millis(self, node: ast.expr) -> int | None:
+        """The whole milliseconds a timedelta() call spans, or None where the
+        expression is not one. The units are written in the source and added
+        up here, so one number goes into the expression."""
         if not isinstance(node, ast.Call):
             return None
-        target = qualified(node.func, self.names) or ""
-        found = STRINGIFIED.get(target)
-        if found is None or len(node.args) != found[0] or node.keywords:
+        if (qualified(node.func, self.names) or "") != TIMEDELTA:
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "timedelta"
+                and node.func.id not in self.names
+                and not self.is_function(node.func.id)
+            ):
+                raise CompileError(
+                    "timedelta is not imported; write from datetime import timedelta",
+                    node.func,
+                )
             return None
-        if target == "uuid.uuid4":
-            return call("uuid", [], of(STRING))
-        if target == NOW:
-            return call("now", [], of(STRING))
-        return call("fromMillis", [self.millis(node, target)], of(STRING))
+        if node.args:
+            raise CompileError(
+                f"timedelta takes its units by name here: {TIMEDELTA_WRITTEN}", node
+            )
+        units: dict[str, int | float] = {}
+        for keyword in node.keywords:
+            if keyword.arg == "microseconds":
+                raise CompileError(
+                    "Step Functions keeps time to the millisecond, so timedelta "
+                    "takes no microseconds here",
+                    keyword.value,
+                )
+            if keyword.arg not in TIMEDELTA_UNITS:
+                raise CompileError(
+                    f"timedelta takes {spoken(list(TIMEDELTA_UNITS))} here: "
+                    f"{TIMEDELTA_WRITTEN}",
+                    keyword.value if keyword.arg else node,
+                )
+            units[keyword.arg] = written_unit(keyword)
+        try:
+            span = datetime.timedelta(**units)
+        except OverflowError:
+            raise CompileError(
+                f"{ast.unparse(node)} is longer than a timedelta holds", node
+            ) from None
+        microseconds = span // datetime.timedelta(microseconds=1)
+        if microseconds % 1000:
+            raise CompileError(
+                f"Step Functions keeps time to the millisecond, and "
+                f"{ast.unparse(node)} is a fraction of one",
+                node,
+            )
+        return microseconds // 1000
+
+    def total_seconds(self, node: ast.Call, method: ast.Attribute) -> Expr:
+        """A timedelta's .total_seconds(): the seconds a written timedelta
+        spans, or the milliseconds between two datetimes divided."""
+        span = method.value
+        if not node.args and not node.keywords:
+            written = self.timedelta_millis(span)
+            if written is not None:
+                return literal(
+                    written // 1000 if written % 1000 == 0 else written / 1000
+                )
+            if isinstance(span, ast.BinOp) and isinstance(span.op, ast.Sub):
+                later = self.datetime_millis(span.left)
+                earlier = self.datetime_millis(span.right)
+                if later is not None and earlier is not None:
+                    between = binary(later, "-", earlier, ADD, of(NUMBER))
+                    return binary(between, "/", literal(1000), MULTIPLY, of(NUMBER))
+        raise CompileError(
+            "total_seconds() is written (dt - dt2).total_seconds() or "
+            f"{TIMEDELTA_WRITTEN}.total_seconds()",
+            node,
+        )
+
+    def timedelta_span(self, node: ast.expr) -> bool:
+        """Whether an expression makes a timedelta: a timedelta() call, or one
+        datetime taken from another."""
+        if isinstance(node, ast.Call):
+            return (qualified(node.func, self.names) or "") == TIMEDELTA
+        return (
+            isinstance(node, ast.BinOp)
+            and isinstance(node.op, ast.Sub)
+            and self.datetime_moment(node.left) is not None
+            and self.datetime_moment(node.right) is not None
+        )
 
     def millis(self, node: ast.Call, target: str) -> Expr:
         """A datetime as the milliseconds since the epoch that $fromMillis
@@ -1803,21 +1973,22 @@ class Translator:
         given."""
         made = method.value
         written = "datetime.fromisoformat(text).timestamp()"
-        if not isinstance(made, ast.Call) or node.args or node.keywords:
+        if node.args or node.keywords:
             raise CompileError(f"timestamp() is written {written}", node)
-        target = qualified(made.func, self.names) or ""
-        if not target and isinstance(made.func, ast.Attribute):
-            self.check_module_import(made.func)
-        if target not in DATETIMES:
+        if isinstance(made, ast.Call):
+            target = qualified(made.func, self.names) or ""
+            if not target and isinstance(made.func, ast.Attribute):
+                self.check_module_import(made.func)
+            if target in DATETIMES:
+                arity, spelled, _ = STRINGIFIED[target]
+                if len(made.args) != arity or made.keywords:
+                    raise CompileError(f"write {spelled}", made)
+                if target == FROM_TIMESTAMP:
+                    return self.numeric(made.args[0], "datetime.fromtimestamp()")
+        millis = self.datetime_millis(made)
+        if millis is None:
             raise CompileError(f"timestamp() is written {written}", node)
-        arity, spelled, _ = STRINGIFIED[target]
-        if len(made.args) != arity or made.keywords:
-            raise CompileError(f"write {spelled}", made)
-        if target == FROM_TIMESTAMP:
-            return self.numeric(made.args[0], "datetime.fromtimestamp()")
-        return binary(
-            self.millis(made, target), "/", literal(1000), MULTIPLY, of(NUMBER)
-        )
+        return binary(millis, "/", literal(1000), MULTIPLY, of(NUMBER))
 
     def range_arguments(self, node: ast.Call) -> tuple[Expr, Expr, Expr]:
         """The start, stop and step of range(), whose step is a whole number
@@ -2922,6 +3093,42 @@ def signed(bound: Bound) -> Expr:
         return bound.amount
     number = written(bound)
     return literal(-number) if number is not None else negate(bound.amount)
+
+
+def written_unit(keyword: ast.keyword) -> int | float:
+    """The number a unit of timedelta is given, written in the source."""
+    node = keyword.value
+    sign = 1
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        node, sign = node.operand, -1
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, (int, float))
+        and not isinstance(node.value, bool)
+    ):
+        return sign * node.value
+    raise CompileError(
+        f"the units of timedelta are numbers written here: {TIMEDELTA_WRITTEN}; "
+        "for a span the input carries, write "
+        "datetime.fromtimestamp(dt.timestamp() + seconds)",
+        keyword.value,
+    )
+
+
+def parenthesized(node: ast.expr) -> str:
+    """An expression as it is written, in parentheses where a method called on
+    it would otherwise read as a method of its last operand."""
+    written = ast.unparse(node)
+    return written if isinstance(node, ast.Call) else f"({written})"
+
+
+def shifted(moment: Expr, millis: int) -> Expr:
+    """A moment moved by whole milliseconds. A span that runs backwards is
+    subtracted rather than added as a negative number, so the expression reads
+    as the time it names, and a span of nothing leaves the moment as it is."""
+    if millis >= 0:
+        return sum_of(moment, literal(millis))
+    return difference(moment, literal(-millis))
 
 
 def difference(left: Expr, right: Expr) -> Expr:

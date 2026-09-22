@@ -7,6 +7,7 @@ any other Python.
 
 import inspect
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from typing import TypeVar, overload
 
 try:
@@ -39,9 +40,11 @@ def state_machine(
     return function
 
 
-def wait(seconds: float | None = None, /, *, until: str | None = None) -> None:
-    """A Wait state: pause for seconds, or until an RFC 3339 timestamp in UTC.
-    At run time it returns at once."""
+def wait(
+    seconds: float | None = None, /, *, until: str | datetime | None = None
+) -> None:
+    """A Wait state: pause for seconds, or until a datetime or an RFC 3339
+    timestamp in UTC. At run time it returns at once."""
 
 
 def task(

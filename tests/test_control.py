@@ -109,6 +109,47 @@ def test_wait(call, field):
     }
 
 
+DATETIME_IMPORTS = "from datetime import datetime, timedelta\n"
+
+
+def with_datetimes(body: str) -> dict:
+    (compiled,) = compile_source(DATETIME_IMPORTS + source(body)).values()
+    return compiled
+
+
+@pytest.mark.parametrize(
+    "call, timestamp",
+    [
+        ("wait(until=datetime.now())", "$now()"),
+        (
+            "wait(until=datetime.now() + timedelta(hours=1))",
+            "$fromMillis($millis() + 3600000)",
+        ),
+        (
+            'wait(until=datetime.fromisoformat(input["at"]) - timedelta(minutes=5))',
+            f"$fromMillis($toMillis({INPUT}.at) - 300000)",
+        ),
+        # A datetime written as its text is the text, as it was before.
+        ("wait(until=str(datetime.now()))", "$now()"),
+    ],
+)
+def test_wait_until_a_datetime(call, timestamp):
+    """until= takes a datetime, which is the timestamp text Timestamp holds."""
+    states = with_datetimes(f"{call}\nreturn 1")["States"]
+    assert states["wait"] == {
+        "Type": "Wait",
+        "Timestamp": "{% " + timestamp + " %}",
+        "Next": "return",
+    }
+
+
+def test_wait_until_a_datetime_runs():
+    body = (
+        'wait(until=datetime.fromisoformat(input["at"]) + timedelta(days=1))\nreturn 1'
+    )
+    assert asl.run(with_datetimes(body), {"at": "2026-09-15T13:43:06.735Z"}) == 1
+
+
 def test_wait_through_the_module():
     source = "import sfnx\n\n\n@sfnx.state_machine\ndef pay(input):\n    sfnx.wait(1)\n"
     (compiled,) = compile_source(source).values()

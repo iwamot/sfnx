@@ -1802,7 +1802,9 @@ class Scope:
                 )
             field = {"Seconds": seconds}
         elif until and len(node.keywords) == 1 and not node.args:
-            value = self.translator.expr(until[0].value)
+            # A datetime is written as the timestamp text Timestamp takes.
+            moment = self.translator.datetime_string(until[0].value)
+            value = moment or self.translator.expr(until[0].value)
             timestamp = value.template
             literal_timestamp = until[0].value
             if isinstance(literal_timestamp, ast.Constant) and isinstance(

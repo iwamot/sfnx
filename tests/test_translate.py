@@ -2,7 +2,7 @@ import base64
 import re
 import textwrap
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -579,7 +579,7 @@ def test_diagnostics(body, message):
 
 IMPORTS = (
     "import json\nimport math\nimport os\nimport time\nimport uuid\n"
-    "from datetime import datetime\nfrom uuid import uuid4\n"
+    "from datetime import datetime, timedelta\nfrom uuid import uuid4\n"
 )
 
 
@@ -616,6 +616,51 @@ def imported(body: str) -> dict:
             f"$fromMillis($toMillis({INPUT}.at))",
         ),
         ('return datetime.fromtimestamp(input["t"]).timestamp()', f"{INPUT}.t"),
+        # A timedelta moves a datetime by the milliseconds it spans, added up
+        # where it is written.
+        (
+            "return str(datetime.now() + timedelta(hours=1))",
+            "$fromMillis($millis() + 3600000)",
+        ),
+        (
+            "return str(timedelta(hours=1) + datetime.now())",
+            "$fromMillis($millis() + 3600000)",
+        ),
+        (
+            "return str(datetime.now() - timedelta(minutes=30))",
+            "$fromMillis($millis() - 1800000)",
+        ),
+        (
+            "return str(datetime.now() + timedelta(hours=-1))",
+            "$fromMillis($millis() - 3600000)",
+        ),
+        (
+            "return str(datetime.now() + timedelta(days=1, minutes=-30))",
+            "$fromMillis($millis() + 84600000)",
+        ),
+        (
+            'return str(datetime.fromisoformat(input["at"]) - timedelta(weeks=1))',
+            f"$fromMillis($toMillis({INPUT}.at) - 604800000)",
+        ),
+        (
+            'return f"at {datetime.now() + timedelta(milliseconds=1)}"',
+            "'at ' & $fromMillis($millis() + 1)",
+        ),
+        # Nothing to move leaves the moment as it is written.
+        ("return str(datetime.now() + timedelta())", "$now()"),
+        (
+            "return (datetime.now() + timedelta(seconds=1)).timestamp()",
+            "($millis() + 1000) / 1000",
+        ),
+        (
+            'return (datetime.fromtimestamp(input["t"]) - timedelta(days=1)).timestamp()',
+            f"({INPUT}.t * 1000 - 86400000) / 1000",
+        ),
+        # The seconds between two datetimes are the milliseconds divided.
+        (
+            'return (datetime.now() - datetime.fromisoformat(input["at"])).total_seconds()',
+            f"($millis() - $toMillis({INPUT}.at)) / 1000",
+        ),
     ],
 )
 def test_module_functions(body, code):
@@ -651,6 +696,186 @@ def test_datetimes_evaluate():
     assert seconds == datetime.fromisoformat(moment).timestamp()
     assert text == moment
     assert later is True
+
+
+@pytest.mark.parametrize(
+    "body, value",
+    [
+        ("return timedelta(minutes=90).total_seconds()", 5400),
+        ("return timedelta(seconds=1.5).total_seconds()", 1.5),
+        ("return timedelta(minutes=-1).total_seconds()", -60),
+        ("return timedelta().total_seconds()", 0),
+    ],
+)
+def test_a_written_timedelta_is_seconds_of_its_own(body, value):
+    """total_seconds() of a timedelta written in the source is the number
+    itself: the units are added up while it compiles."""
+    assert imported(body)["States"]["return"]["Output"] == value
+
+
+def test_a_moment_moved_by_a_timedelta_is_read_once():
+    """$millis() gives another value on every call, so a moment built on it is
+    bound once where the code would write it twice."""
+    body = "return (datetime.now() + timedelta(seconds=1)).timestamp() % 60"
+    assert imported(body)["States"]["return"]["Output"] == (
+        "{% ($v := (($millis() + 1000) / 1000); $v - 60 * $floor($v / 60)) %}"
+    )
+
+
+def test_datetime_arithmetic_evaluates():
+    """A moment moved by a timedelta, and the seconds between two moments,
+    hold the values CPython computes for them."""
+    body = (
+        'at: str = input["at"]\n'
+        'other: str = input["other"]\n'
+        "return [str(datetime.fromisoformat(at) + timedelta(days=1, hours=-2)), "
+        "(datetime.fromisoformat(at) - datetime.fromisoformat(other)).total_seconds(), "
+        "(datetime.fromisoformat(other) - datetime.fromisoformat(at)).total_seconds()]"
+    )
+    moment, other = "2026-09-15T13:43:06.735Z", "2026-09-16T01:00:00.500Z"
+    at, later = datetime.fromisoformat(moment), datetime.fromisoformat(other)
+    text, back, forward = asl.run(imported(body), {"at": moment, "other": other})
+    moved = at + timedelta(days=1, hours=-2)
+    assert text == moved.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    assert back == (at - later).total_seconds()
+    assert forward == (later - at).total_seconds()
+    # A moment taken from a later one is a negative number of seconds.
+    assert back < 0
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            "return datetime.now() + timedelta(hours=1)",
+            (
+                "datetime.now() + timedelta(hours=1) is a datetime object, not "
+                "JSON; write str(dt), dt.timestamp() or wait(until=dt)"
+            ),
+        ),
+        (
+            "return datetime.now() - timedelta(hours=1) < datetime.now()",
+            (
+                "datetime.now() - timedelta(hours=1) is a datetime object, not "
+                "JSON; write str(dt), dt.timestamp() or wait(until=dt)"
+            ),
+        ),
+        (
+            'return str(datetime.now() + timedelta(hours=input["h"]))',
+            (
+                "the units of timedelta are numbers written here: "
+                "timedelta(hours=1); for a span the input carries, write "
+                "datetime.fromtimestamp(dt.timestamp() + seconds)"
+            ),
+        ),
+        (
+            "return str(datetime.now() + timedelta(microseconds=5))",
+            (
+                "Step Functions keeps time to the millisecond, so timedelta "
+                "takes no microseconds here"
+            ),
+        ),
+        (
+            "return str(datetime.now() + timedelta(seconds=0.0005))",
+            (
+                "Step Functions keeps time to the millisecond, and "
+                "timedelta(seconds=0.0005) is a fraction of one"
+            ),
+        ),
+        (
+            "return str(datetime.now() + timedelta(1))",
+            "timedelta takes its units by name here: timedelta(hours=1)",
+        ),
+        (
+            "return str(datetime.now() + timedelta(fortnights=1))",
+            (
+                "timedelta takes weeks, days, hours, minutes, seconds and "
+                "milliseconds here: timedelta(hours=1)"
+            ),
+        ),
+        (
+            "return str(datetime.now() + timedelta(days=1e9))",
+            "timedelta(days=1000000000.0) is longer than a timedelta holds",
+        ),
+        (
+            "return timedelta(hours=1)",
+            (
+                "timedelta(hours=1) is a timedelta object, not JSON; add it to a "
+                "datetime or take it from one, or write "
+                "timedelta(hours=1).total_seconds()"
+            ),
+        ),
+        (
+            'return (datetime.now() - datetime.fromisoformat(input["at"])).days',
+            (
+                "a timedelta is seconds through total_seconds() here: "
+                "(datetime.now() - datetime.fromisoformat(input['at']))"
+                ".total_seconds()"
+            ),
+        ),
+        (
+            "return timedelta(hours=1).seconds",
+            (
+                "a timedelta is seconds through total_seconds() here: "
+                "timedelta(hours=1).total_seconds()"
+            ),
+        ),
+        (
+            'return input["span"].total_seconds()',
+            (
+                "total_seconds() is written (dt - dt2).total_seconds() or "
+                "timedelta(hours=1).total_seconds()"
+            ),
+        ),
+        (
+            "return (datetime.now() - 1).total_seconds()",
+            (
+                "total_seconds() is written (dt - dt2).total_seconds() or "
+                "timedelta(hours=1).total_seconds()"
+            ),
+        ),
+        (
+            "return timedelta(hours=1).total_seconds(2)",
+            (
+                "total_seconds() is written (dt - dt2).total_seconds() or "
+                "timedelta(hours=1).total_seconds()"
+            ),
+        ),
+        (
+            "return str(datetime.now() * timedelta(hours=1))",
+            (
+                "datetime.now() is a datetime object, not JSON; write "
+                "str(datetime.now()) or datetime.now().timestamp()"
+            ),
+        ),
+    ],
+)
+def test_timedelta_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        compile_source(IMPORTS + source(body))
+    assert raised.value.message == message
+
+
+def test_timedelta_without_its_import():
+    body = "return str(datetime.now() + timedelta(hours=1))"
+    with pytest.raises(CompileError) as raised:
+        compile_source("from datetime import datetime\n" + source(body))
+    assert raised.value.message == (
+        "timedelta is not imported; write from datetime import timedelta"
+    )
+
+
+def test_a_function_named_timedelta_is_not_the_datetime_one():
+    """A name the module defines is the function it defines, not an import it
+    does not have."""
+    body = "return str(datetime.now() + timedelta(hours=1))"
+    defined = "\n\ndef timedelta(hours):\n    return hours\n"
+    with pytest.raises(CompileError) as raised:
+        compile_source("from datetime import datetime\n" + source(body) + defined)
+    assert raised.value.message == (
+        "datetime.now() is a datetime object, not JSON; write "
+        "str(datetime.now()) or datetime.now().timestamp()"
+    )
 
 
 @pytest.mark.parametrize(
@@ -694,6 +919,10 @@ def test_datetimes_evaluate():
         ),
         (
             "return uuid.uuid4().timestamp()",
+            "timestamp() is written datetime.fromisoformat(text).timestamp()",
+        ),
+        (
+            "return datetime.now().timestamp(1)",
             "timestamp() is written datetime.fromisoformat(text).timestamp()",
         ),
         (
