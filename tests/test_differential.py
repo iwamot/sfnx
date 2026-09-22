@@ -377,6 +377,7 @@ class Program:
         forms = ["assign", "assign", "augment", "swap", "task"]
         if env.depth < self.nesting:
             forms += ["if", "none", "isinstance", "range", "for", "while"]
+            forms += ["enumerate", "zip", "items"]
             forms += ["forever", "try", "wait"]
             forms += ["parallel", "map", "distributed"]
         form = self.pick(forms)
@@ -429,6 +430,23 @@ class Program:
             stop = self.pick(["0", "1", "3", f"len({self.numbers(env, 0)})"])
             self.emit(indent, f"for {name} in range({stop}):")
             self.block(looping.reading(NUMBER, name), indent + 1)
+        elif form == "enumerate":
+            index, name = self.fresh("i"), self.fresh("x")
+            self.emit(
+                indent, f"for {index}, {name} in enumerate({self.numbers(env, 1)}):"
+            )
+            self.block(looping.reading(NUMBER, index).owning(NUMBER, name), indent + 1)
+        elif form == "zip":
+            first, second = self.fresh("x"), self.fresh("w")
+            lists = f"{self.numbers(env, 1)}, {self.strings(env, 1)}"
+            self.emit(indent, f"for {first}, {second} in zip({lists}):")
+            zipped = looping.owning(NUMBER, first).owning(STRING, second)
+            self.block(zipped, indent + 1)
+        elif form == "items":
+            key, name = self.fresh("w"), self.fresh("x")
+            self.emit(indent, f"for {key}, {name} in ({self.mapping(env, 1)}).items():")
+            keyed = looping.reading(KEY, key).reading(STRING, key).owning(NUMBER, name)
+            self.block(keyed, indent + 1)
         elif form == "for":
             kind, element = self.pick(
                 [(NUMBERS, NUMBER), (STRINGS, STRING), (MAPPING, KEY)]

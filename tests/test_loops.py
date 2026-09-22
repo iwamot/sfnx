@@ -60,6 +60,53 @@ def test_for_over_a_list_matches_the_handwritten_loop():
     }
 
 
+def test_enumerate_names_the_counter():
+    # The counter a person writes, under the name the source gives it.
+    body = 'xs: list[float] = input["xs"]\ntotal = 0\nfor i, x in enumerate(xs):\n    total = total + i * x\nreturn total'
+    assert states(body) == {
+        "xs": {
+            "Type": "Pass",
+            "Assign": {"xs": f"{{% {INPUT}.xs %}}", "total": 0, "i": 0},
+            "Next": "for",
+        },
+        "for": {
+            "Type": "Choice",
+            "Choices": [{"Condition": "{% $i < $count($xs) %}", "Next": "total"}],
+            "Default": "return",
+        },
+        "total": {
+            "Type": "Pass",
+            "Assign": {"total": "{% $total + $i * $xs[$i] %}", "i": "{% $i + 1 %}"},
+            "Next": "for",
+        },
+        "return": {"Type": "Succeed", "Output": "{% $total %}"},
+    }
+
+
+def test_zip_counts_to_the_shorter_list():
+    body = 'xs: list = input["xs"]\nys: list = input["ys"]\nfor a, b in zip(xs, ys):\n    pair = [a, b]'
+    compiled = states(body)
+    assert compiled["for"]["Choices"][0]["Condition"] == (
+        "{% $a_index < $min([$count($xs), $count($ys)]) %}"
+    )
+    assert compiled["pair"]["Assign"] == {
+        "pair": ["{% $xs[$a_index] %}", "{% $ys[$a_index] %}"],
+        "a_index": "{% $a_index + 1 %}",
+    }
+
+
+def test_items_reads_the_value_under_each_key():
+    body = 'd: dict[str, float] = input["d"]\ntotal = 0\nfor k, v in d.items():\n    total = total + v'
+    compiled = states(body)
+    assert compiled["for"]["Choices"][0]["Condition"] == (
+        "{% $k_index < $count($keys($d)) %}"
+    )
+    assert compiled["total"]["Assign"] == {
+        "total": "{% $total + $lookup($d, $keys($d)[$k_index]) %}",
+        "k_index": "{% $k_index + 1 %}",
+    }
+
+
 def test_while_leads_back_to_its_choice():
     body = 'n: float = input["n"]\nwhile n > 0:\n    n = n - 1\nreturn n'
     assert states(body) == {
@@ -369,6 +416,65 @@ def test_a_body_that_always_returns_has_no_increment():
             {},
             [-1, 10],
         ),
+        # enumerate: the index counts from 0, and the item is the body's to assign.
+        (
+            'xs: list[float] = input["xs"]\ntotal = 0\nfor i, x in enumerate(xs):\n    total = total + i * x\nreturn total',
+            {"xs": [3, 1, 2]},
+            5,
+        ),
+        (
+            'xs: list = input["xs"]\nfor i, x in enumerate(xs):\n    x = i\n    xs = xs + [x]\nreturn xs',
+            {"xs": [7, 8]},
+            [7, 8, 0, 1],
+        ),
+        (
+            'd: dict = input["d"]\nout = []\nfor i, k in enumerate(d):\n    out = out + [i, k]\nreturn out',
+            {"d": {"a": 1, "b": 2}},
+            [0, "a", 1, "b"],
+        ),
+        # zip stops at the shorter list.
+        (
+            'xs: list[float] = input["xs"]\nys: list[str] = input["ys"]\nout = []\nfor a, b in zip(xs, ys):\n    out = out + [b + str(a)]\nreturn out',
+            {"xs": [1, 2, 3], "ys": ["a", "b"]},
+            ["a1", "b2"],
+        ),
+        (
+            'xs: list[float] = input["xs"]\nys: list[str] = input["ys"]\nout = []\nfor a, b in zip(xs, ys):\n    out = out + [b + str(a)]\nreturn out',
+            {"xs": [1], "ys": ["a", "b"]},
+            ["a1"],
+        ),
+        (
+            'xs: list[float] = input["xs"]\nys: list[str] = input["ys"]\nout = []\nfor a, b in zip(xs, ys):\n    out = out + [b + str(a)]\nreturn out',
+            {"xs": [], "ys": ["a", "b"]},
+            [],
+        ),
+        (
+            'xs: list[float] = input["xs"]\nys: list[float] = input["ys"]\nout = []\nfor a, b in zip(xs, ys):\n    if a == 2:\n        continue\n    if b == 30:\n        break\n    a = a + b\n    out = out + [a]\nreturn out',
+            {"xs": [1, 2, 3, 4], "ys": [10, 20, 30, 40]},
+            [11],
+        ),
+        # A zipped list the body changes is copied first, like any other.
+        (
+            'xs: list[float] = input["xs"]\nys: list[float] = input["ys"]\nfor a, b in zip(xs, ys):\n    ys = ys + [a + b]\nreturn ys',
+            {"xs": [1, 2], "ys": [10, 20, 30]},
+            [10, 20, 30, 11, 22],
+        ),
+        # items() reads each value under its key.
+        (
+            'd: dict[str, float] = input["d"]\ntotal = 0\nkeys = ""\nfor k, v in d.items():\n    total = total + v\n    keys = keys + k\nreturn [total, keys]',
+            {"d": {"a": 1, "b": 2.5}},
+            [3.5, "ab"],
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nout = []\nfor k, v in d.items():\n    d = {}\n    out = out + [k, v]\nreturn out',
+            {"d": {"a": 1, "b": 2}},
+            ["a", 1, "b", 2],
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nout = []\nfor k, v in d.items():\n    v = v * 2\n    out = out + [v]\nreturn out',
+            {"d": {}},
+            [],
+        ),
     ],
 )
 def test_evaluation(body, execution_input, expected):
@@ -436,20 +542,109 @@ def test_a_failed_attempt_leaves_no_task_behind():
         ),
         (
             'xs: list = input["xs"]\nfor x in enumerate(xs):\n    pass',
-            "enumerate() is not supported; count with range",
-        ),
-        # The loop a writer counts with unpacks two variables, so enumerate()
-        # and zip() say what to count with before the message about unpacking.
-        (
-            'xs: list = input["xs"]\nfor i, x in enumerate(xs):\n    pass',
-            "enumerate() is not supported; count with range",
+            "enumerate() gives two variables: for i, item in enumerate(items)",
         ),
         (
+            'xs: list = input["xs"]\nfor i, x, y in enumerate(xs):\n    pass',
+            "enumerate() gives two variables: for i, item in enumerate(items)",
+        ),
+        (
+            'xs: list = input["xs"]\nfor (i, x), y in enumerate(xs):\n    pass',
+            "enumerate() gives two variables: for i, item in enumerate(items)",
+        ),
+        (
+            'xs: list = input["xs"]\nfor x in zip(xs, xs):\n    pass',
+            "zip() gives two variables: for a, b in zip(xs, ys)",
+        ),
+        (
+            'd: dict = input["d"]\nfor k in d.items():\n    pass',
+            "items() gives two variables: for k, v in d.items()",
+        ),
+        (
+            'xs: list = input["xs"]\nfor i, x in enumerate(xs, 1):\n    pass',
             (
-                'xs: list = input["xs"]\nys: list = input["ys"]\n'
-                "for x, y in zip(xs, ys):\n    pass"
+                "enumerate() counts from 0; add the start to i in the body: "
+                "for i, item in enumerate(items)"
             ),
-            "zip() is a list here only as list(zip(a, b))",
+        ),
+        (
+            'xs: list = input["xs"]\nfor i, x in enumerate():\n    pass',
+            "enumerate() counts from 0; add the start to i in the body",
+        ),
+        (
+            'xs: list = input["xs"]\nfor a, b in zip(xs, xs, xs):\n    pass',
+            (
+                "zip() takes two lists in a loop: for a, b in zip(xs, ys); for more, "
+                "count with range: for i in range(len(xs))"
+            ),
+        ),
+        (
+            'xs: list = input["xs"]\nfor a, b in zip(xs):\n    pass',
+            "zip() takes two lists in a loop",
+        ),
+        (
+            'd: dict = input["d"]\nfor k, v in d.items(1):\n    pass',
+            "items() is written for k, v in d.items()",
+        ),
+        (
+            'xs: list = input["xs"]\nfor i, x in enumerate(xs):\n    i = 0',
+            "i is the index of enumerate and cannot be assigned; copy it: j = i",
+        ),
+        (
+            'xs: list = input["xs"]\nfor i, x in enumerate(xs):\n    if x:\n        i += 1',
+            "i is the index of enumerate and cannot be assigned",
+        ),
+        (
+            'xs: list = input["xs"]\nfor x, x in zip(xs, xs):\n    pass',
+            "the two loop variables need different names: for a, b in zip(xs, ys)",
+        ),
+        (
+            'xs: list = input["xs"]\nfor k, v in xs.items():\n    pass',
+            "xs is a array; items() is a dict method: for k, v in d.items()",
+        ),
+        (
+            's: str = input["s"]\nfor i, c in enumerate(s):\n    pass',
+            "s is a string; for iterates lists, the keys of dicts and range()",
+        ),
+        (
+            'xs: list = input["xs"]\nfor a, b in zip(xs, input["ys"]):\n    pass',
+            "for depends on what it iterates, so the type of input['ys'] must be known",
+        ),
+        (
+            'xs: list = input["xs"]\nfor input, x in enumerate(xs):\n    pass',
+            "input is the execution input",
+        ),
+        (
+            'xs: list = input["xs"]\nfor i, input in enumerate(xs):\n    pass',
+            "input is the execution input",
+        ),
+        (
+            'xs: list = input["xs"]\nfor i, x in enumerate(xs):\n    pass\nreturn i',
+            "i is the loop variable and ends with the loop",
+        ),
+        (
+            'xs: list = input["xs"]\nfor a, b in zip(xs, xs):\n    pass\nreturn b',
+            "b is the loop variable and ends with the loop",
+        ),
+        # Outside a for statement, each says where it is taken.
+        (
+            'xs: list = input["xs"]\nreturn [x for i, x in enumerate(xs)]',
+            "enumerate() is only for a for loop: for i, item in enumerate(items)",
+        ),
+        (
+            'xs: list = input["xs"]\nreturn enumerate(xs)',
+            "enumerate() is only for a for loop",
+        ),
+        (
+            'xs: list = input["xs"]\nreturn [a for a, b in zip(xs, xs)]',
+            (
+                "zip() is a list here only as list(zip(a, b)), or a loop: "
+                "for a, b in zip(xs, ys)"
+            ),
+        ),
+        (
+            'd: dict = input["d"]\nreturn d.items()',
+            "items() is only for a for loop: for k, v in d.items()",
         ),
         ("return range(1, 2, 0)", "the step of range is a nonzero whole number"),
         ("for i in range():\n    pass", "range takes a stop"),

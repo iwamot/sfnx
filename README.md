@@ -207,7 +207,7 @@ uv add sfnx
 ## What you write
 
 - **The machine** is a function marked `@state_machine` or `@state_machine(timeout=300)`. Its parameter is the execution input, read as `$states.context.Execution.Input`; its return value is the output.
-- **Assignments, `if` / `elif` / `else`, `for`, `while`, `break`, `continue`, `return`, `raise`, `try` / `except`** become Pass, Choice, loops through Choice, Succeed, Fail and Catch.
+- **Assignments, `if` / `elif` / `else`, `for`, `while`, `break`, `continue`, `return`, `raise`, `try` / `except`** become Pass, Choice, loops through Choice, Succeed, Fail and Catch. `for` iterates a list, the keys of a dict, `range()`, `enumerate()`, `zip()` or `d.items()`.
 - **`task(resource, arguments, timeout=, heartbeat=, role=, retry=)`** is a Task for any integration: SDK (`arn:aws:states:::aws-sdk:dynamodb:getItem`), optimized (`arn:aws:states:::lambda:invoke`, with `.sync` or `.waitForTaskToken`), HTTP, activities, or a `${Placeholder}` filled in at deploy time.
 - **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
 - **`wait(10)`** and **`wait(until=timestamp)`** are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
@@ -218,7 +218,7 @@ uv add sfnx
   - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`, `sorted`, `max` and `min` take `key=lambda item: ...`, and `sum`, `max`, `min`, `sorted` and `list` take a generator expression: `sum(x for x in xs)`)
   - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()`, `str(uuid.uuid4())`, `hashlib.sha256(s.encode()).hexdigest()`, `base64.b64encode(s.encode()).decode()`, `base64.b64decode(s).decode()`, `urllib.parse.unquote(s)` and `unquote_plus(s)`
   - a datetime from `datetime.now()`, `datetime.fromisoformat(text)` or `datetime.fromtimestamp(seconds)`, converted where it is made: `str()` or an f-string for the timestamp text, `.timestamp()` for the seconds
-  - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and the dict methods `keys`, `values` and `get`
+  - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and the dict methods `keys`, `values` and `get` (and `items` in a `for`)
 - **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. A `TypedDict` class of the module declares the fields of an input, a Lambda `Payload` or a Task result once, for the compiler and the type checker alike. Literals, operator results and AWS API responses carry their types already.
 - **Comments** go into the definition: a function's docstring is the `Comment` of the machine, a Parallel branch or a Map processor, and the comment lines right above a statement are the `Comment` of the first state it makes.
 - **Anything else** (`with`, other methods, a `lambda` outside `key=`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
