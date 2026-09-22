@@ -1,0 +1,110 @@
+{
+  "Comment": "Transcribe an audio file, polling the job until it finishes.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "name",
+  "States": {
+    "name": {
+      "Type": "Pass",
+      "Assign": {
+        "name": "{% $states.context.Execution.Name %}"
+      },
+      "Next": "startTranscriptionJob"
+    },
+    "startTranscriptionJob": {
+      "Type": "Task",
+      "Comment": "Transcribe has no .sync integration, so the machine polls the job itself.",
+      "Resource": "arn:aws:states:::aws-sdk:transcribe:startTranscriptionJob",
+      "Arguments": {
+        "TranscriptionJobName": "{% $name %}",
+        "Media": {
+          "MediaFileUri": "{% $states.context.Execution.Input.uri %}"
+        },
+        "IdentifyLanguage": true
+      },
+      "Next": "polls"
+    },
+    "polls": {
+      "Type": "Pass",
+      "Assign": {
+        "polls": 0
+      },
+      "Next": "while"
+    },
+    "while": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $polls < 20 %}",
+          "Next": "wait"
+        }
+      ],
+      "Default": "raise_2"
+    },
+    "wait": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "job"
+    },
+    "job": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:transcribe:getTranscriptionJob",
+      "Arguments": {
+        "TranscriptionJobName": "{% $name %}"
+      },
+      "Assign": {
+        "job": "{% $states.result.TranscriptionJob %}"
+      },
+      "Next": "status"
+    },
+    "status": {
+      "Type": "Pass",
+      "Assign": {
+        "status": "{% $job.TranscriptionJobStatus %}"
+      },
+      "Next": "if"
+    },
+    "if": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $status = 'COMPLETED' %}",
+          "Next": "return"
+        }
+      ],
+      "Default": "if_2"
+    },
+    "return": {
+      "Type": "Succeed",
+      "Output": {
+        "transcript": "{% $job.Transcript.TranscriptFileUri %}"
+      }
+    },
+    "if_2": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $status = 'FAILED' %}",
+          "Next": "raise"
+        }
+      ],
+      "Default": "polls_2"
+    },
+    "raise": {
+      "Type": "Fail",
+      "Error": "TranscriptionFailed",
+      "Cause": "{% $job.FailureReason %}"
+    },
+    "polls_2": {
+      "Type": "Pass",
+      "Assign": {
+        "polls": "{% $polls + 1 %}"
+      },
+      "Next": "while"
+    },
+    "raise_2": {
+      "Type": "Fail",
+      "Error": "StillRunning",
+      "Cause": "{% $name & ' is still running after ' & $string(20) & ' polls' %}"
+    }
+  }
+}

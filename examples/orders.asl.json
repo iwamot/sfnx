@@ -1,0 +1,93 @@
+{
+  "Comment": "Reserve every item of an order, then charge for it.",
+  "QueryLanguage": "JSONata",
+  "TimeoutSeconds": 300,
+  "StartAt": "items",
+  "States": {
+    "items": {
+      "Type": "Pass",
+      "Assign": {
+        "items": "{% $states.context.Execution.Input.items %}",
+        "item_index": 0
+      },
+      "Next": "for"
+    },
+    "for": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $item_index < $count($items) %}",
+          "Next": "updateItem"
+        }
+      ],
+      "Default": "receipt"
+    },
+    "updateItem": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "stock",
+        "Key": {
+          "sku": {
+            "S": "{% $items[$item_index].sku %}"
+          }
+        },
+        "UpdateExpression": "SET quantity = quantity - :n",
+        "ConditionExpression": "quantity >= :n",
+        "ExpressionAttributeValues": {
+          ":n": {
+            "N": "{% $string($items[$item_index].quantity) %}"
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "MaxAttempts": 3
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "DynamoDb.ConditionalCheckFailedException"
+          ],
+          "Next": "raise"
+        }
+      ],
+      "Next": "item_index"
+    },
+    "raise": {
+      "Type": "Fail",
+      "Error": "OutOfStock",
+      "Cause": "{% $string($items[$item_index].sku) & ' is out of stock' %}"
+    },
+    "item_index": {
+      "Type": "Pass",
+      "Assign": {
+        "item_index": "{% $item_index + 1 %}"
+      },
+      "Next": "for"
+    },
+    "receipt": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "charge",
+        "Payload": "{% $states.context.Execution.Input %}"
+      },
+      "Assign": {
+        "receipt": "{% $states.result %}"
+      },
+      "Next": "return"
+    },
+    "return": {
+      "Type": "Succeed",
+      "Output": {
+        "order": "{% $states.context.Execution.Input.id %}",
+        "receipt": "{% $receipt.Payload %}"
+      }
+    }
+  }
+}

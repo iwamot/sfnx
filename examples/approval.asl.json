@@ -1,0 +1,74 @@
+{
+  "Comment": "Ask a person to approve a release, wait a day for the answer, and deploy it.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "decision",
+  "States": {
+    "decision": {
+      "Type": "Task",
+      "Comment": "The message carries the task token; the approver sends the decision\nback with SendTaskSuccess, and the Task ends with it as its result.",
+      "Resource": "arn:aws:states:::sns:publish.waitForTaskToken",
+      "Arguments": {
+        "TopicArn": "arn:aws:sns:us-east-1:123456789012:approvals",
+        "Message": {
+          "release": "{% $states.context.Execution.Input.version %}",
+          "token": "{% $states.context.Task.Token %}"
+        }
+      },
+      "TimeoutSeconds": 86400,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.Timeout"
+          ],
+          "Next": "return"
+        }
+      ],
+      "Assign": {
+        "decision": "{% $states.result %}"
+      },
+      "Next": "if"
+    },
+    "return": {
+      "Type": "Succeed",
+      "Output": {
+        "version": "{% $states.context.Execution.Input.version %}",
+        "deployed": false,
+        "reason": "no answer"
+      }
+    },
+    "if": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $decision.Status != 'Approved' %}",
+          "Next": "raise"
+        }
+      ],
+      "Default": "invoke"
+    },
+    "raise": {
+      "Type": "Fail",
+      "Error": "Rejected",
+      "Cause": "{% $decision.Comment %}"
+    },
+    "invoke": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "deploy",
+        "Payload": {
+          "version": "{% $states.context.Execution.Input.version %}"
+        }
+      },
+      "Next": "return_2"
+    },
+    "return_2": {
+      "Type": "Succeed",
+      "Output": {
+        "version": "{% $states.context.Execution.Input.version %}",
+        "deployed": true,
+        "reason": "{% $decision.Comment %}"
+      }
+    }
+  }
+}

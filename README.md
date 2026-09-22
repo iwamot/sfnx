@@ -182,6 +182,8 @@ The definition has the states a person would write by hand, named after what the
 
 </details>
 
+[examples/](https://github.com/iwamot/sfnx/blob/main/examples/README.md) has more patterns, each with the definition it compiles to: polling a job, waiting for a person's approval, and fanning out over items.
+
 ## Why
 
 ASL is a JSON document of states that name each other, with the logic in JSONata strings. Writing it means choosing the right spelling for every operation (`+`, `&` or `$append`), wiring `Next` by hand, and repeating Retry and Catch on every Task. sfnx lets you write the flow as Python and does that part.
