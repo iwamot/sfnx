@@ -52,6 +52,15 @@ def test_a_constant_is_written_where_it_is_used():
     assert arguments == {"TableName": "stock", "Key": {"id": {"S": "1"}}}
 
 
+def test_a_constant_in_an_f_string_is_written_as_its_text():
+    compiled = definition(
+        "MAX_POLLS = 20",
+        'name: str = input["name"]\nreturn f"{name} is still running after {MAX_POLLS} polls"',
+    )
+    output = compiled["States"]["return"]["Output"]
+    assert output == "{% $name & ' is still running after 20 polls' %}"
+
+
 def test_a_constant_reads_another_constant():
     compiled = definition(
         'TABLE = "stock"\nQUERY = {"TableName": TABLE, "Key": {"id": {"S": "1"}}}',
