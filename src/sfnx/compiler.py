@@ -1928,10 +1928,16 @@ def compile_machine(
     return {**comment, "QueryLanguage": "JSONata", **options, **graph.definition()}
 
 
+# The Python API, which docs/api.md describes: the compiler as the CLI runs
+# it, on text or on a file, and the error it raises.
+__all__ = ["CompileError", "compile_file", "compile_source"]
+
+
 def compile_source(
     source: str, filename: str = "<string>"
 ) -> dict[str, dict[str, object]]:
-    """Every state machine in a module, keyed by function name."""
+    """Every state machine in a module, keyed by function name. The source is
+    parsed, never imported or run; filename names it in diagnostics."""
     try:
         tree = ast.parse(source, filename)
         context = module(tree, source)
