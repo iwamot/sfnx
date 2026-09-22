@@ -104,8 +104,11 @@ def base64_decode(text: str) -> str:
 
 
 # The pictures the compiler writes for a format spec: whole numbers, grouped
-# or not, with the digits after the decimal point the spec asked for.
-GENERATED_PICTURE = re.compile(r"(?P<grouped>#,##)?0(?:\.(?P<decimals>0+))?")
+# or not, with the digits after the decimal point the spec asked for, and the
+# zeros a whole number is filled to, with the sign inside them.
+GENERATED_PICTURE = re.compile(
+    r"(?P<grouped>#,##)?0(?:\.(?P<decimals>0+))?|(?P<zeros>0+);-0+"
+)
 
 
 def format_number(
@@ -127,7 +130,14 @@ def format_number(
         written = decimal.Decimal(repr(value)).quantize(
             decimal.Decimal(1).scaleb(-places), rounding=decimal.ROUND_HALF_EVEN
         )
-    return f"{written:,f}" if found["grouped"] else f"{written:f}"
+    if not found["zeros"]:
+        return f"{written:,f}" if found["grouped"] else f"{written:f}"
+    # The sign is written before the zeros and counts inside the width.
+    width = len(found["zeros"])
+    digits = f"{abs(written):f}"
+    if written < 0:
+        return "-" + digits.rjust(width - 1, "0")
+    return digits.rjust(width, "0")
 
 
 def now(picture: str | None = None) -> str:

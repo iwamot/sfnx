@@ -96,6 +96,26 @@ def run(body: str, execution_input: object) -> object:
             'x: float = input["x"]\nreturn f"{x:*>12,.2f}"',
             "$pad($formatNumber($x, '#,##0.00'), -12, '*')",
         ),
+        # d writes a whole number, and the 0 before a width fills it with the
+        # sign inside, which the picture says with a negative one of its own.
+        ('x: float = input["x"]\nreturn f"{x:d}"', "$formatNumber($x, '0')"),
+        (
+            'x: float = input["x"]\nreturn f"{x:5d}"',
+            "$pad($formatNumber($x, '0'), -5)",
+        ),
+        (
+            'x: float = input["x"]\nreturn f"{x:05d}"',
+            "$formatNumber($x, '00000;-0000')",
+        ),
+        # An alignment written out fills as any other, as it does in Python.
+        (
+            'x: float = input["x"]\nreturn f"{x:0>5d}"',
+            "$pad($formatNumber($x, '0'), -5, '0')",
+        ),
+        (
+            'x: float = input["x"]\nreturn f"{x:*>05d}"',
+            "$pad($formatNumber($x, '0'), -5, '*')",
+        ),
         ('name: str = input["name"]\nreturn f"{name}"', "$name"),
         ("return f\"{input['n'] + 1} items\"", f"$string({INPUT}.n + 1) & ' items'"),
         # A dict comprehension is one pass whose objects are merged.
@@ -165,6 +185,21 @@ def test_a_number_spec_writes_what_cpython_writes(number):
         + "]"
     )
     assert run(body, {"x": number}) == [format(number, spec) for spec in NUMBER_SPECS]
+
+
+WHOLE_SPECS = ["d", "5d", "05d", "010d", "<6d", "*>6d", "0>6d", "02d"]
+
+
+@pytest.mark.parametrize("number", [0, 7, -12, -123456, 1234567])
+def test_a_whole_number_spec_writes_what_cpython_writes(number):
+    """The sign counts inside the zeros of a width, which the picture writes
+    with a negative sub-picture one digit shorter."""
+    body = (
+        'x: float = input["x"]\nreturn ['
+        + ", ".join(f'f"{{x:{spec}}}"' for spec in WHOLE_SPECS)
+        + "]"
+    )
+    assert run(body, {"x": number}) == [format(number, spec) for spec in WHOLE_SPECS]
 
 
 def test_a_format_spec_on_a_datetime_is_its_own():
@@ -617,9 +652,15 @@ def test_evaluation(body, execution_input, expected):
         ('x: float = input["x"]\nreturn f"{x:.2%}"', "a format spec here is a width"),
         ('x: float = input["x"]\nreturn f"{x:.2e}"', "a format spec here is a width"),
         ('x: float = input["x"]\nreturn f"{x:05.2f}"', "a format spec here is a width"),
+        ('x: float = input["x"]\nreturn f"{x:08,d}"', "a format spec here is a width"),
+        ('s: str = input["s"]\nreturn f"{s:05}"', "a format spec here is a width"),
+        (
+            's: str = input["s"]\nreturn f"{s:5d}"',
+            "s is a string, and d writes a whole number here",
+        ),
         (
             's: str = input["s"]\nreturn f"{s:.2f}"',
-            ("s is a string, and the digits of a format spec write a number here"),
+            "s is a string, and the digits format a number here",
         ),
         ('s: str = input["s"]\nreturn f"{s:010}"', "a format spec here is a width"),
         ('s: str = input["s"]\nreturn f"{s:>}"', "a format spec here is a width"),
@@ -632,8 +673,8 @@ def test_evaluation(body, execution_input, expected):
         (
             'x: float = input["x"]\nreturn f"{x:>10}"',
             (
-                "x is a number, and a width pads a string here; write a number "
-                "with .2f, or build the text from it"
+                "x is a number, and a width pads a string here; write a "
+                "number with .2f or d, or build the text from it"
             ),
         ),
         (

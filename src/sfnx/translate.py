@@ -278,16 +278,18 @@ STRFTIME_WRITTEN = 'datetime.now().strftime("%Y-%m-%d")'
 
 # The format specs of an f-string: a width, with an alignment and the
 # character to fill with before it, and the digits after the decimal point a
-# number is written with. $pad fills on the right for a positive width and on
-# the left for a negative one, which is what < and > ask for, and a width
-# starting with 0 is left out, as the 0 there fills a number to its own width
-# and Python counts the sign inside it.
+# number is written with, or d for a whole number. $pad fills on the right for
+# a positive width and on the left for a negative one, which is what < and >
+# ask for. The 0 before a width fills a whole number to that width with the
+# sign inside it, which is the picture's own business, and Python lets an
+# alignment written out override it.
 FORMAT_SPEC = re.compile(
     r"(?:(?P<fill>[^\n])?(?P<align>[<>]))?"
+    r"(?P<zero>0)?"
     r"(?P<width>[1-9][0-9]*)?"
-    r"(?:(?P<grouping>,)?\.(?P<precision>[0-9]+)f)?"
+    r"(?:(?P<grouping>,)?\.(?P<precision>[0-9]+)f|(?P<whole>d))?"
 )
-SPEC_WRITTEN = 'f"{s:>10}", f"{s:*<8}" or f"{total:,.2f}"'
+SPEC_WRITTEN = 'f"{s:>10}", f"{total:,.2f}" or f"{n:05d}"'
 
 # Calls whose value is an object that JSON holds as text, so they are written
 # in str() or an f-string, the datetimes also in .timestamp(): how many
@@ -965,19 +967,28 @@ class Translator:
         return result
 
     def formatted_value(self, part: Expr, node: ast.FormattedValue, spec: str) -> Expr:
-        """A value with a format spec: the digits after the decimal point are
-        the picture $formatNumber takes, and the width is $pad, negative where
-        the text is pushed to the right, as it is for a number by default."""
+        """A value with a format spec: the digits after the decimal point, or
+        d, are the picture $formatNumber takes, and the width is $pad,
+        negative where the text is pushed to the right, as it is for a number
+        by default."""
         found = FORMAT_SPEC.fullmatch(spec)
-        if found is None or not (found["width"] or found["precision"]):
+        # The 0 before a width fills a whole number to it; for a string Python
+        # reads the 0 as the fill, which is written out as a fill instead.
+        if (
+            found is None
+            or not (found["width"] or found["precision"] or found["whole"])
+            or (found["zero"] and not found["whole"])
+        ):
             raise CompileError(
                 "a format spec here is a width, with a fill and < or > before "
-                f"it, or the digits of a number: {SPEC_WRITTEN}",
+                "it, the digits of a number, or d for a whole one: "
+                f"{SPEC_WRITTEN}",
                 node.format_spec,
             )
-        number = found["precision"] is not None
+        number = found["precision"] is not None or found["whole"]
         written = self.spec_value(part, node, found)
-        if not found["width"]:
+        # A whole number zero-padded by its picture is at its width already.
+        if not found["width"] or (found["zero"] and not found["align"]):
             return written
         size = int(found["width"])
         # Python fills a string on the right and a number on the left.
@@ -991,28 +1002,28 @@ class Translator:
     ) -> Expr:
         """The text a format spec fills to its width: a number written with
         the digits the spec asks for, or the string itself."""
-        if found["precision"] is None:
+        if found["precision"] is None and not found["whole"]:
             kind = self.known(node.value, part, "str", "a width pads a string")
             if kind != STRING:
                 raise CompileError(
                     f"{ast.unparse(node.value)} is {article(kind)}, and a width "
-                    "pads a string here; write a number with .2f, or build the "
-                    "text from it",
+                    "pads a string here; write a number with .2f or d, or "
+                    "build the text from it",
                     node.value,
                 )
             return part
-        kind = self.known(node.value, part, "float", "the digits format a number")
+        rule = (
+            "d writes a whole number"
+            if found["whole"]
+            else "the digits format a number"
+        )
+        kind = self.known(node.value, part, "float", rule)
         if kind != NUMBER:
             raise CompileError(
-                f"{ast.unparse(node.value)} is {article(kind)}, and the digits of "
-                "a format spec write a number here",
+                f"{ast.unparse(node.value)} is {article(kind)}, and {rule} here",
                 node.value,
             )
-        picture = "#,##0" if found["grouping"] else "0"
-        places = int(found["precision"])
-        if places:
-            picture += "." + "0" * places
-        return call("formatNumber", [part, literal(picture)], of(STRING))
+        return call("formatNumber", [part, literal(number_picture(found))], of(STRING))
 
     def truth(self, value: Expr) -> Expr:
         """A JSON boolean with Python's truthiness. $boolean agrees with
@@ -3234,6 +3245,21 @@ def written_unit(keyword: ast.keyword) -> int | float:
         "datetime.fromtimestamp(dt.timestamp() + seconds)",
         keyword.value,
     )
+
+
+def number_picture(found: re.Match[str]) -> str:
+    """The picture $formatNumber writes a number with: the digits after the
+    decimal point the spec asks for, or, for a whole number filled with zeros
+    to its width, that width with the sign inside it, which is a picture of
+    its own after the ; for a negative number."""
+    if not found["whole"]:
+        picture = "#,##0" if found["grouping"] else "0"
+        places = int(found["precision"])
+        return picture + "." + "0" * places if places else picture
+    size = int(found["width"] or 0)
+    if not found["zero"] or found["align"] or size < 2:
+        return "0"
+    return "0" * size + ";-" + "0" * (size - 1)
 
 
 def written_spec(spec: ast.expr | None) -> str | None:
