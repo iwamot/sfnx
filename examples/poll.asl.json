@@ -104,7 +104,7 @@
     "raise_2": {
       "Type": "Fail",
       "Error": "StillRunning",
-      "Cause": "{% $name & ' is still running after ' & $string(20) & ' polls' %}"
+      "Cause": "{% $name & ' is still running after 20 polls' %}"
     }
   }
 }

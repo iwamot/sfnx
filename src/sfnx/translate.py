@@ -922,7 +922,8 @@ class Translator:
 
     def formatted(self, node: ast.JoinedStr) -> Expr:
         """An f-string as the pieces joined with &, each value through $string
-        unless it is known to be a string."""
+        unless it is known to be a string. A value known while the file
+        compiles becomes the text itself, which joins the text beside it."""
         pieces = []
         for value in node.values:
             if isinstance(value, ast.Constant):
@@ -959,6 +960,7 @@ class Translator:
             if part.type is None or part.type.kinds != {STRING}:
                 part = text(part)
             pieces.append(part)
+        pieces = collapsed(pieces)
         if not pieces:
             return literal("")
         result = pieces[0]
@@ -3174,10 +3176,28 @@ def retry_option(node: ast.Call) -> ast.expr | None:
 
 def text(value: Expr) -> Expr:
     """str(x), and what an f-string or a raise makes of a value: the message
-    of a caught exception, or the value through $string."""
+    of a caught exception, the text a value known here is written as, or the
+    value through $string."""
     if value.type == ERROR_OUTPUT:
         return field(value, "Cause")
+    written = known_text(value)
+    if written is not None:
+        return literal(written)
     return call("string", [value], of(STRING))
+
+
+def collapsed(pieces: list[Expr]) -> list[Expr]:
+    """The pieces of an f-string with neighbouring ones whose text is known
+    written as one string, as they would be written by hand."""
+    result: list[Expr] = []
+    for piece in pieces:
+        known = known_text(piece)
+        before = known_text(result[-1]) if result else None
+        if known is None or before is None:
+            result.append(piece)
+            continue
+        result[-1] = literal(before + known)
+    return result
 
 
 def spoken(names: list[str]) -> str:
@@ -3408,6 +3428,26 @@ def written_text(value: Expr) -> str | None:
     if type(template) is not str or template.startswith("{%"):
         return None
     return template
+
+
+def known_text(value: Expr) -> str | None:
+    """The text a value becomes where the value is known while the file
+    compiles, so that the text itself stands in the definition rather than a
+    call that always writes it. A float is left to $string, which writes one
+    as JavaScript does rather than as Python does, and so is an integer past
+    2^53, whose double is not the number in the source."""
+    written = written_text(value)
+    if written is not None:
+        return written
+    template = value.template
+    if type(template) is bool:
+        return "true" if template else "false"
+    if template is None:
+        return "null"
+    number = written_number(value)
+    if type(number) is int and abs(number) < 2**53:
+        return str(number)
+    return None
 
 
 def divided(divisor: Expr, value: Expr) -> Expr:

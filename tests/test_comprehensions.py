@@ -118,6 +118,27 @@ def run(body: str, execution_input: object) -> object:
         ),
         ('name: str = input["name"]\nreturn f"{name}"', "$name"),
         ("return f\"{input['n'] + 1} items\"", f"$string({INPUT}.n + 1) & ' items'"),
+        # A value known where it is written becomes the text itself, which
+        # joins the text around it.
+        (
+            'name: str = input["name"]\nreturn f"{name} left {3} of {True} at {None}"',
+            "$name & ' left 3 of true at null'",
+        ),
+        # A float is left to $string, which writes one as JavaScript does, and
+        # so is an integer past 2^53, which is not the double the number is.
+        (
+            'name: str = input["name"]\nreturn f"{name} {1.5}"',
+            "$name & ' ' & $string(1.5)",
+        ),
+        (
+            'name: str = input["name"]\nreturn f"{name} {9007199254740993}"',
+            "$name & ' ' & $string(9007199254740993)",
+        ),
+        # A format spec writes the number, whether it is known here or not.
+        (
+            'name: str = input["name"]\nreturn f"{name}{2.5:.2f}"',
+            "$name & $formatNumber(2.5, '0.00')",
+        ),
         # A dict comprehension is one pass whose objects are merged.
         (
             'xs: list[str] = input["xs"]\nreturn {x: 1 for x in xs}',
@@ -224,6 +245,11 @@ def test_a_format_spec_on_a_datetime_is_its_own():
 def test_constant_f_strings_are_json():
     assert output('return f"plain"') == "plain"
     assert output('return f""') == ""
+    # A value known while the file compiles leaves nothing to evaluate here
+    # either, in an f-string or in str().
+    written = output('return f"{20} polls and {True} and {None}"')
+    assert written == "20 polls and true and null"
+    assert output("return str(20)") == "20"
 
 
 # The functions that read every item take a generator expression as the list
