@@ -252,6 +252,7 @@ class Program:
         form = self.pick(
             ["leaf", "order", "chain", "equal", "text", "member", "word"]
             + ["substring", "key", "not", "and", "or", "truth", "lists", "empty"]
+            + ["every"]
         )
         if form == "empty":
             return f"(not {self.pick([self.numbers(env, d), self.strings(env, d)])})"
@@ -287,6 +288,18 @@ class Program:
             return f"bool({self.expr(env, kind, d)})"
         if form == "lists":
             return f"({self.numbers(env, d)} == {self.numbers(env, d)})"
+        if form == "every":
+            quantifier = self.pick(["any", "all"])
+            if self.number_in(0, 1):
+                items = self.pick([self.numbers(env, d), self.strings(env, d)])
+                return f"{quantifier}({items})"
+            name = self.fresh("q")
+            kind = self.pick([NUMBER, STRING])
+            source = self.numbers(env, d) if kind == NUMBER else self.strings(env, d)
+            inner = env.reading(kind, name)
+            element = name if self.number_in(0, 1) else self.boolean(inner, d)
+            test = f" if {self.boolean(inner, d)}" if self.number_in(0, 1) else ""
+            return f"{quantifier}({element} for {name} in {source}{test})"
         return leaf
 
     def numbers(self, env: Env, depth: int) -> str:

@@ -34,6 +34,7 @@ def test_every_category_has_a_case():
         "unpack",
         "lists",
         "dicts",
+        "quantifiers",
         "missing",
         "encoding",
         "volatile",

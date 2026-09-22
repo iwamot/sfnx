@@ -215,7 +215,7 @@ uv add sfnx
 - **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). `except Exception` is `States.ALL`.
 - **Names assigned outside the machine** (`RETRIES = [{"ErrorEquals": [Timeout], "MaxAttempts": 3}]`) hold JSON data and exception classes, and are written into the definition where they are read, so what ASL repeats state by state is written once.
 - **Expressions** are Python operators, conditional expressions, list and dict comprehensions, f-strings, slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
-  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed` and `range`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`, `sorted`, `max` and `min` take `key=lambda item: ...`, and `sum`, `max`, `min`, `sorted` and `list` take a generator expression: `sum(x for x in xs)`)
+  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed`, `range`, `any` and `all`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`, `sorted`, `max` and `min` take `key=lambda item: ...`, and `sum`, `max`, `min`, `sorted`, `list`, `any` and `all` take a generator expression: `any(r["failed"] for r in results)`, which `any` and `all` stop reading once the result is decided)
   - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()`, `str(uuid.uuid4())`, `hashlib.sha256(s.encode()).hexdigest()`, `base64.b64encode(s.encode()).decode()`, `base64.b64decode(s).decode()`, `urllib.parse.unquote(s)` and `unquote_plus(s)`
   - a datetime from `datetime.now()`, `datetime.fromisoformat(text)` or `datetime.fromtimestamp(seconds)`, converted where it is made: `str()` or an f-string for the timestamp text, `.timestamp()` for the seconds
   - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and the dict methods `keys`, `values` and `get` (and `items` in a `for` or a dict comprehension: `{k: v for k, v in d.items() if v > 0}`)
@@ -237,7 +237,7 @@ $ sfnx compile app.py
 app.py:6:63: getItem has no argument Tablename; did you mean TableName?
 
 $ sfnx compile app.py
-app.py:6:12: any() is not supported; count what matches: len([x for x in xs if x["failed"]]) > 0
+app.py:6:12: calling print() is not supported; write it with operators or jsonata(), or compute it in a Lambda task
 
 $ sfnx compile app.py
 app.py:6:9: loop over one variable: for item in items (unpack inside the loop)
