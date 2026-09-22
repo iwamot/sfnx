@@ -15,6 +15,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 
 import jsonata
+from jsonata.functions import Functions
 from jsonata.utils import Utils
 
 EXCEEDED = "The specified tolerated failure threshold was exceeded"
@@ -100,9 +101,18 @@ def base64_decode(text: str) -> str:
         raise jsonata.JException(str(exc)) from exc
 
 
-def now() -> str:
-    """$now(): the time in UTC to the millisecond, as Step Functions gives it."""
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+def now(picture: str | None = None) -> str:
+    """$now(): the time in UTC to the millisecond, as Step Functions gives it,
+    or written with the picture string given, which jsonata-python formats the
+    way Step Functions does (measured)."""
+    moment = datetime.now(UTC)
+    if picture is None:
+        return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    written = Functions.datetime_from_millis(
+        int(moment.timestamp() * 1000), picture, None
+    )
+    assert written is not None
+    return written
 
 
 def digest(text: str, algorithm: str) -> str:
