@@ -14,6 +14,7 @@ from sfnx.expressions import (
     ADD,
     COMPARE,
     Expr,
+    array,
     binary,
     call,
     expression,
@@ -38,7 +39,7 @@ from sfnx.jsontypes import (
     union,
 )
 from sfnx.module import Module, holds, module, qualified
-from sfnx.translate import StateCall, Translator, direct_call, text, unpacking
+from sfnx.translate import StateCall, Translator, direct_call, text, unpacked
 
 # Step Functions reserves $states for its own variables.
 MAX_VARIABLE = 80
@@ -1495,13 +1496,13 @@ class Scope:
 
     def for_loop(self, node: ast.For) -> None:
         """for over a list, the keys of a dict, or a range, as a counter the
-        body leads back to through its increment."""
+        body leads back to through its increment. Two variables come from
+        enumerate(), zip() or d.items()."""
         self.no_else(node)
+        if unpacked(node.iter):
+            self.unpacking_loop(node)
+            return
         if not isinstance(node.target, ast.Name):
-            if unpacking(node.iter):
-                # Raise the advice of enumerate() or zip(), which says what to
-                # count with, rather than the message below.
-                self.translator.expr(node.iter)
             raise CompileError(
                 "loop over one variable: for item in items (unpack inside the loop)",
                 node.target,
@@ -1511,15 +1512,7 @@ class Scope:
         if counting:
             self.claim(target, node.target)
         else:
-            # The variable of a list or dict loop is an expression, not a
-            # Step Functions variable, so only its name is checked.
-            if target in self.parameters:
-                raise CompileError(
-                    f"{target} is the execution input; name the loop variable "
-                    "otherwise",
-                    node.target,
-                )
-            self.check_variable(target, node.target)
+            self.loop_variable(node.target)
         assigned = assigned_names(node.body)
         if counting:
             if target in assigned:
@@ -1529,41 +1522,167 @@ class Scope:
                 )
             self.range_loop(node, target, assigned)
             return
-        items = self.translator.expr(node.iter)
-        kind = self.translator.known(
-            node.iter, items, "list", "for depends on what it iterates"
-        )
-        if kind not in {ARRAY, OBJECT}:
-            raise CompileError(
-                f"{ast.unparse(node.iter)} is a {kind}; for iterates lists, "
-                "the keys of dicts and range()",
-                node.iter,
-            )
+        items, kind = self.iterated(node.iter)
 
         def attempt() -> tuple[Loop, dict[str, Type | None]]:
-            source = items
-            if items.variables & assigned or items.volatile:
-                if items.variables & self.pending.keys():
-                    self.flush()
-                # The body changes what the loop iterates, or evaluating it
-                # again would give other items, so the loop keeps the value it
-                # started with, as Python does.
-                copy = self.fresh(f"{self.spelling(target)}_items", node)
-                self.pending[copy] = items
-                self.pending_node = self.pending_node or node
-                source = self.variable(copy, items.type)
-            if kind == OBJECT:
-                source = call("keys", [source], of(ARRAY, items=of(STRING)))
+            source = self.listed(items, kind, target, assigned, node)
             counter = self.fresh(f"{self.spelling(target)}_index", node)
-            self.pending[counter] = literal(0)
-            self.pending_node = self.pending_node or node
-            index = self.variable(counter, of(NUMBER))
+            index = self.count_from_zero(counter, node)
             limit = call("count", [source], of(NUMBER))
             return self.counted(
-                node, target, element(source, index), counter, index, limit, literal(1)
+                node, {target: element(source, index)}, counter, index, limit
             )
 
         self.settle(attempt, node.body)
+
+    def loop_variable(self, target: ast.Name) -> None:
+        """The variable of a list or dict loop is an expression, not a Step
+        Functions variable, so only its name is checked."""
+        if target.id in self.parameters:
+            raise CompileError(
+                f"{target.id} is the execution input; name the loop variable otherwise",
+                target,
+            )
+        self.check_variable(target.id, target)
+
+    def iterated(self, node: ast.expr) -> tuple[Expr, str]:
+        """What a loop iterates: a list, or a dict for its keys."""
+        items = self.translator.expr(node)
+        kind = self.translator.known(
+            node, items, "list", "for depends on what it iterates"
+        )
+        if kind not in {ARRAY, OBJECT}:
+            raise CompileError(
+                f"{ast.unparse(node)} is a {kind}; for iterates lists, "
+                "the keys of dicts and range()",
+                node,
+            )
+        return items, kind
+
+    def kept(self, items: Expr, target: str, assigned: set[str], node: ast.For) -> Expr:
+        """What a loop iterates, kept in a variable of the loop's own when the
+        body changes it, or evaluating it again would give other items, so the
+        loop keeps the value it started with, as Python does."""
+        if not (items.variables & assigned or items.volatile):
+            return items
+        if items.variables & self.pending.keys():
+            self.flush()
+        copy = self.fresh(f"{self.spelling(target)}_items", node)
+        self.pending[copy] = items
+        self.pending_node = self.pending_node or node
+        return self.variable(copy, items.type)
+
+    def listed(
+        self, items: Expr, kind: str, target: str, assigned: set[str], node: ast.For
+    ) -> Expr:
+        """The list a loop counts over: the items, or the keys of a dict."""
+        source = self.kept(items, target, assigned, node)
+        if kind == OBJECT:
+            return call("keys", [source], of(ARRAY, items=of(STRING)))
+        return source
+
+    def count_from_zero(self, counter: str, node: ast.For) -> Expr:
+        """The counter of a loop, assigned 0 before it. A pending value of the
+        same name is written over: the loop assigns the counter first, and it
+        ends with the loop."""
+        self.pending[counter] = literal(0)
+        self.pending_node = self.pending_node or node
+        return self.variable(counter, of(NUMBER))
+
+    def unpacking_loop(self, node: ast.For) -> None:
+        """for i, item in enumerate(items), for a, b in zip(xs, ys) and
+        for k, v in d.items(): one counter, and each variable an expression of
+        it, as the variable of a list loop is. The i of enumerate is the counter
+        itself, so the body cannot assign it."""
+        assert isinstance(node.iter, ast.Call)
+        form = unpacked(node.iter)
+        assert form is not None
+        example = UNPACKED[form]
+        names = node.target.elts if isinstance(node.target, ast.Tuple) else []
+        if len(names) != 2 or not all(isinstance(n, ast.Name) for n in names):
+            raise CompileError(f"{form}() gives two variables: {example}", node.target)
+        first, second = names
+        assert isinstance(first, ast.Name) and isinstance(second, ast.Name)
+        if first.id == second.id:
+            raise CompileError(
+                f"the two loop variables need different names: {example}", second
+            )
+        assigned = assigned_names(node.body)
+        counted = form == "enumerate"
+        if counted:
+            if len(node.iter.args) != 1 or node.iter.keywords:
+                raise CompileError(
+                    f"enumerate() counts from 0; add the start to {first.id} in "
+                    f"the body: {example}",
+                    node.iter,
+                )
+            self.claim(first.id, first)
+            if first.id in assigned:
+                raise CompileError(
+                    f"{first.id} is the index of enumerate and cannot be assigned; "
+                    f"copy it: j = {first.id}",
+                    first,
+                )
+        else:
+            self.loop_variable(first)
+        self.loop_variable(second)
+        if form == "zip" and (len(node.iter.args) != 2 or node.iter.keywords):
+            raise CompileError(
+                f"zip() takes two lists in a loop: {example}; for more, count "
+                "with range: for i in range(len(xs))",
+                node.iter,
+            )
+        if form == "items" and (node.iter.args or node.iter.keywords):
+            raise CompileError(f"items() is written {example}", node.iter)
+        if form == "items":
+            assert isinstance(node.iter.func, ast.Attribute)
+            mapping = self.translator.operand(
+                node.iter.func.value, OBJECT, f"items() is a dict method: {example}"
+            )
+            self.settle(
+                lambda: self.items_loop(node, first.id, second.id, mapping, assigned),
+                node.body,
+            )
+            return
+        lists = [self.iterated(argument) for argument in node.iter.args]
+
+        def attempt() -> tuple[Loop, dict[str, Type | None]]:
+            if counted:
+                source = self.listed(*lists[0], second.id, assigned, node)
+                index = self.count_from_zero(first.id, node)
+                self.bindings[first.id] = index
+                self.partial.discard(first.id)
+                targets = {first.id: index, second.id: element(source, index)}
+                limit = call("count", [source], of(NUMBER))
+                return self.counted(node, targets, first.id, index, limit)
+            left = self.listed(*lists[0], first.id, assigned, node)
+            right = self.listed(*lists[1], second.id, assigned, node)
+            counter = self.fresh(f"{self.spelling(first.id)}_index", node)
+            index = self.count_from_zero(counter, node)
+            targets = {first.id: element(left, index), second.id: element(right, index)}
+            counts = [
+                call("count", [left], of(NUMBER)),
+                call("count", [right], of(NUMBER)),
+            ]
+            limit = call("min", [array(counts)], of(NUMBER))
+            return self.counted(node, targets, counter, index, limit)
+
+        self.settle(attempt, node.body)
+
+    def items_loop(
+        self, node: ast.For, key: str, value: str, mapping: Expr, assigned: set[str]
+    ) -> tuple[Loop, dict[str, Type | None]]:
+        """for k, v in d.items(): the keys counted as a dict loop counts them,
+        and v read under the key."""
+        source = self.kept(mapping, key, assigned, node)
+        keys = call("keys", [source], of(ARRAY, items=of(STRING)))
+        counter = self.fresh(f"{self.spelling(key)}_index", node)
+        index = self.count_from_zero(counter, node)
+        each = element(keys, index)
+        values = source.type.values if source.type else None
+        targets = {key: each, value: call("lookup", [source, each], values)}
+        limit = call("count", [keys], of(NUMBER))
+        return self.counted(node, targets, counter, index, limit)
 
     def range_loop(self, node: ast.For, target: str, assigned: set[str]) -> None:
         assert isinstance(node.iter, ast.Call)
@@ -1592,7 +1711,7 @@ class Scope:
             counter = self.variable(target, of(NUMBER))
             assert isinstance(step.template, int)
             return self.counted(
-                node, target, counter, target, counter, limit, step, step.template < 0
+                node, {target: counter}, target, counter, limit, step, step.template < 0
             )
 
         self.settle(attempt, node.body)
@@ -1600,16 +1719,17 @@ class Scope:
     def counted(
         self,
         node: ast.For,
-        target: str,
-        value: Expr,
+        targets: dict[str, Expr],
         counter: str,
         index: Expr,
         limit: Expr,
-        step: Expr,
+        step: Expr | None = None,
         down: bool = False,
     ) -> tuple[Loop, dict[str, Type | None]]:
         """The loop shared by lists, dicts and ranges: a Choice on the counter,
-        the body with the loop variable bound, and the increment."""
+        the body with the loop variables bound to what targets gives them, and
+        the increment."""
+        step = literal(1) if step is None else step
         self.flush()
         loop = self.enter_loop()
         start = self.save()
@@ -1620,7 +1740,7 @@ class Scope:
         head = self.add("for", state, node)
         self.restore(start)
         self.graph.tails = [(rule, "Next")]
-        self.bindings[target] = value
+        self.bindings.update(targets)
         self.materialize(node.body, node)
         self.block(node.body)
         self.loops.pop()
@@ -1636,7 +1756,7 @@ class Scope:
             self.pending[counter] = increment
             self.flush()
         body_end = self.save()
-        if target != counter:
+        for target in targets.keys() - {counter}:
             body_end.bindings.pop(target, None)
         needed = self.back(loop, [body_end], head)
         exit_flow = Flow(
@@ -1646,15 +1766,16 @@ class Scope:
             dict(start.functions),
             set(start.partial),
         )
-        # The loop variable ends with the loop. A range variable counts past
-        # its last value, and keeps no value from before an empty range.
-        exit_flow.bindings.pop(target, None)
-        for flow in loop.breaks:
-            flow.bindings.pop(target, None)
-        self.translator.expired.add(target)
+        # The loop variables end with the loop. A counter counts past its last
+        # value, and keeps no value from before an empty range.
+        for target in targets:
+            exit_flow.bindings.pop(target, None)
+            for flow in loop.breaks:
+                flow.bindings.pop(target, None)
+            self.translator.expired.add(target)
         self.join([exit_flow, *loop.breaks])
         # What only the body assigns may be unassigned after zero iterations.
-        body_only = assigned_names(node.body) - self.bindings.keys() - {target}
+        body_only = assigned_names(node.body) - self.bindings.keys() - targets.keys()
         self.partial.update(
             body_only, defined_functions(node.body) - self.functions.keys()
         )
@@ -1707,6 +1828,13 @@ class Scope:
             )
         self.add("wait", {"Type": "Wait", **field}, node)
 
+
+# How a loop over two variables is written, by what gives them.
+UNPACKED = {
+    "enumerate": "for i, item in enumerate(items)",
+    "zip": "for a, b in zip(xs, ys)",
+    "items": "for k, v in d.items()",
+}
 
 # What to write instead of the statements the language leaves out, by node.
 STATEMENTS = {
@@ -1806,6 +1934,11 @@ def assigned_names(statements: list[ast.stmt]) -> set[str]:
         children = list(ast.iter_child_nodes(statement))
         if isinstance(statement, ast.For) and not is_range(statement):
             children = [statement.iter, *statement.body, *statement.orelse]
+            if unpacked(statement.iter) == "enumerate" and isinstance(
+                statement.target, ast.Tuple
+            ):
+                # The i of enumerate is the counter, a variable of its own.
+                children.insert(0, statement.target.elts[0])
         for node in children:
             if isinstance(node, ast.stmt):
                 names |= assigned_names([node])

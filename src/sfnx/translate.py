@@ -337,7 +337,8 @@ BUILTIN_REWRITES = {
 # the rest the message gives an example of an f-string rather than write one.
 CONVERSIONS = frozenset({"s", "d", "i"})
 
-# The built-in functions that give a loop or a comprehension two variables.
+# The built-in functions that give a loop two variables, and would give a
+# comprehension two.
 UNPACKING = frozenset({"enumerate", "zip"})
 
 # The built-in functions that read every item of a generator expression given
@@ -1426,6 +1427,15 @@ class Translator:
             and node.func.attr in DICT_METHODS
         ):
             return self.dict_method(node, node.func)
+        if (
+            not target
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "items"
+        ):
+            # d.items() gives a loop its two variables and is nothing else.
+            raise CompileError(
+                "items() is only for a for loop: for k, v in d.items()", node
+            )
         if not isinstance(node.func, ast.Name):
             called = target or ast.unparse(node.func)
             advice = MODULE_REWRITES.get(called)
@@ -1499,14 +1509,13 @@ class Translator:
             return call("reverse", [listed], listed.type)
         if name == "enumerate":
             raise CompileError(
-                "enumerate() is not supported; count with range: "
-                "for i in range(len(items)): item = items[i]",
+                "enumerate() is only for a for loop: for i, item in enumerate(items)",
                 node,
             )
         if name == "zip":
             raise CompileError(
-                "zip() is a list here only as list(zip(a, b)); in a loop, count "
-                "with range: for i in range(len(items)): item = items[i]",
+                "zip() is a list here only as list(zip(a, b)), or a loop: "
+                "for a, b in zip(xs, ys)",
                 node,
             )
         if name == "set":
@@ -2527,13 +2536,21 @@ def consumed(node: ast.Call) -> ast.Call:
 
 def unpacking(node: ast.expr) -> bool:
     """Whether an iterable is the enumerate() or zip() two variables come from.
-    Each says what to count with instead, which the message about unpacking
+    Each says where it is taken instead, which the message about unpacking
     would hide."""
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in UNPACKING
-    )
+    return unpacked(node) in UNPACKING
+
+
+def unpacked(node: ast.expr) -> str | None:
+    """What gives a loop its two variables: enumerate, zip or items (the dict
+    method), or None for any other iterable."""
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Name) and node.func.id in UNPACKING:
+        return node.func.id
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "items":
+        return "items"
+    return None
 
 
 def tested(node: ast.expr) -> tuple[str | None, frozenset[str]]:

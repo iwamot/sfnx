@@ -278,11 +278,11 @@ def test_evaluation(body, execution_input, expected):
             'xs: list = input["xs"]\nreturn [a for a, b in xs]',
             "a comprehension iterates one variable",
         ),
-        # enumerate() says what to count with before the message about
-        # unpacking, as it does in a loop.
+        # enumerate() says where it is taken before the message about
+        # unpacking.
         (
             'xs: list = input["xs"]\nreturn [i for i, x in enumerate(xs)]',
-            "enumerate() is not supported; count with range",
+            "enumerate() is only for a for loop: for i, item in enumerate(items)",
         ),
         (
             'return [x for x in input["xs"]]',
