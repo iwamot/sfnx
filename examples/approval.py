@@ -1,4 +1,11 @@
+from typing import TypedDict
+
 from sfnx import Timeout, context, state_machine, task
+
+
+class Decision(TypedDict):
+    approved: bool
+    comment: str
 
 
 class Rejected(Exception):
@@ -11,7 +18,7 @@ def release(input):
     try:
         # The message carries the task token; the approver sends the decision
         # back with SendTaskSuccess, and the Task ends with it as its result.
-        decision = task(
+        decision: Decision = task(
             "arn:aws:states:::sns:publish.waitForTaskToken",
             {
                 "TopicArn": "arn:aws:sns:us-east-1:123456789012:approvals",
@@ -24,8 +31,8 @@ def release(input):
         )
     except Timeout:
         return {"version": input["version"], "deployed": False, "reason": "no answer"}
-    if decision["Status"] != "Approved":
-        raise Rejected(decision["Comment"])
+    if not decision["approved"]:
+        raise Rejected(decision["comment"])
     task(
         "arn:aws:states:::lambda:invoke",
         {"FunctionName": "deploy", "Payload": {"version": input["version"]}},
@@ -33,5 +40,5 @@ def release(input):
     return {
         "version": input["version"],
         "deployed": True,
-        "reason": decision["Comment"],
+        "reason": decision["comment"],
     }

@@ -6,7 +6,7 @@ any other Python.
 """
 
 import inspect
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TypeVar, overload
 
 try:
@@ -15,6 +15,10 @@ except ImportError:
     __version__ = "0.0.0+unknown"
 
 F = TypeVar("F", bound=Callable[..., object])
+# A result has the type its annotation declares (a TypedDict class, str, ...):
+# a type variable only the return type mentions leaves that to the annotation.
+R = TypeVar("R", bound=Mapping[str, object])
+V = TypeVar("V")
 
 
 @overload
@@ -49,16 +53,18 @@ def task(
     heartbeat: float | None = None,
     role: str | None = None,
     retry: list[dict[str, object]] | None = None,
-) -> dict:
+) -> R:
     """A Task state calling resource, an integration ARN, with arguments. The
-    value is the task result, a JSON object. It only runs in Step Functions."""
+    value is the task result, a JSON object; an annotation on the assignment
+    (a TypedDict class) declares its fields. It only runs in Step Functions."""
     raise NotImplementedError(f"task({resource!r}) runs in Step Functions")
 
 
-def jsonata(expression: str, /, **values: object) -> object:
+def jsonata(expression: str, /, **values: object) -> V:
     """A JSONata expression, for what has no Python spelling here. Each value
-    is bound to the variable of its name: jsonata("$pad($s, -5, '0')", s=code).
-    It only runs in Step Functions."""
+    is bound to the variable of its name: jsonata("$pad($s, -5, '0')", s=code),
+    and an annotation on the assignment declares the type of the result. It
+    only runs in Step Functions."""
     raise NotImplementedError(f"jsonata({expression!r}) runs in Step Functions")
 
 

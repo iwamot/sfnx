@@ -182,7 +182,7 @@ The definition has the states a person would write by hand, named after what the
 
 </details>
 
-[examples/](https://github.com/iwamot/sfnx/blob/main/examples/README.md) has more patterns, each with the definition it compiles to: polling a job, waiting for a person's approval, and fanning out over items.
+[examples/](https://github.com/iwamot/sfnx/blob/main/examples/README.md) has more patterns, each with the definition it compiles to: polling a job, waiting for a person's approval, fanning out over items, and an expression written out in JSONata.
 
 ## Why
 
@@ -219,7 +219,7 @@ uv add sfnx
   - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()`, `str(uuid.uuid4())`, `hashlib.sha256(s.encode()).hexdigest()`, `base64.b64encode(s.encode()).decode()`, `base64.b64decode(s).decode()`, `urllib.parse.unquote(s)` and `unquote_plus(s)`
   - a datetime from `datetime.now()`, `datetime.fromisoformat(text)` or `datetime.fromtimestamp(seconds)`, converted where it is made: `str()` or an f-string for the timestamp text, `.timestamp()` for the seconds
   - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and the dict methods `keys`, `values` and `get`
-- **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. A `TypedDict` class of the module declares the fields of an input or a Lambda `Payload` once, for the compiler and the type checker alike. Literals, operator results and AWS API responses carry their types already.
+- **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. A `TypedDict` class of the module declares the fields of an input, a Lambda `Payload` or a Task result once, for the compiler and the type checker alike. Literals, operator results and AWS API responses carry their types already.
 - **Comments** go into the definition: a function's docstring is the `Comment` of the machine, a Parallel branch or a Map processor, and the comment lines right above a statement are the `Comment` of the first state it makes.
 - **Anything else** (`with`, other methods, a `lambda` outside `key=`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
 

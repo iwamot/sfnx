@@ -40,7 +40,7 @@
       "Type": "Choice",
       "Choices": [
         {
-          "Condition": "{% $decision.Status != 'Approved' %}",
+          "Condition": "{% $not($decision.approved) %}",
           "Next": "raise"
         }
       ],
@@ -49,7 +49,7 @@
     "raise": {
       "Type": "Fail",
       "Error": "Rejected",
-      "Cause": "{% $decision.Comment %}"
+      "Cause": "{% $decision.comment %}"
     },
     "invoke": {
       "Type": "Task",
@@ -67,7 +67,7 @@
       "Output": {
         "version": "{% $states.context.Execution.Input.version %}",
         "deployed": true,
-        "reason": "{% $decision.Comment %}"
+        "reason": "{% $decision.comment %}"
       }
     }
   }
