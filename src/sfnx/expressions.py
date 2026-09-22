@@ -79,6 +79,7 @@ FUNCTIONS = frozenset(
         "replace",
         "reverse",
         "round",
+        "sift",
         "sort",
         "split",
         "sqrt",
@@ -319,6 +320,40 @@ def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> E
         then.boolean and otherwise.boolean,
         volatile=changes([test, then, otherwise]),
     )
+
+
+def kept(test: Expr, value: Expr) -> Expr:
+    """value where test holds, and nothing where it does not: a conditional
+    with no else. $map and $each leave out an item their function returns
+    nothing for, which is how a comprehension's condition drops one."""
+    return expression(
+        f"{operand(test, CONDITIONAL + 1)} ? {value.code}",
+        uses([test, value]),
+        CONDITIONAL,
+        value.type,
+        volatile=changes([test, value]),
+    )
+
+
+def entry(key: Expr, value: Expr) -> Expr:
+    """A one-key object whose key is computed: `{$string($x): $x * 2}`. The key
+    is parenthesized when it binds as loosely as the `:` that follows it."""
+    return expression(
+        "{" + operand(key, CONDITIONAL + 1) + ": " + value.code + "}",
+        uses([key, value]),
+        type=of(OBJECT, values=value.type),
+        volatile=changes([key, value]),
+    )
+
+
+def merged(objects: Expr, values: Type | None) -> Expr:
+    """The objects of a sequence merged into one, a later key winning over an
+    earlier one, as a later entry of a dict comprehension does. $merge of no
+    object is {}, so a sequence with nothing in it gives an empty dict."""
+    listed = expression(
+        "[" + objects.code + "]", objects.variables, volatile=objects.volatile
+    )
+    return call("merge", [listed], of(OBJECT, values=values))
 
 
 def block(bindings: list[tuple[str, Expr]], body: Expr) -> Expr:

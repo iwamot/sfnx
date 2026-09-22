@@ -35,6 +35,7 @@ from sfnx.jsontypes import (
     AnnotationError,
     Type,
     annotation,
+    article,
     of,
     union,
 )
@@ -759,7 +760,7 @@ class Scope:
                 raise CompileError(f"{name} is a whole number from 0{limit}", node)
         elif value.type is not None and value.type.kinds != {NUMBER}:
             raise CompileError(
-                f"{name} is a number, not a {value.type.describe()}", node
+                f"{name} is a number, not {article(value.type.describe())}", node
             )
         return value.template
 
@@ -786,7 +787,7 @@ class Scope:
         items = self.translator.expr(node.args[1])
         if items.type is not None and ARRAY not in items.type.kinds:
             raise CompileError(
-                f"{ast.unparse(node.args[1])} is a {items.type.describe()}; "
+                f"{ast.unparse(node.args[1])} is {article(items.type.describe())}; "
                 "inline_map takes a list",
                 node.args[1],
             )
@@ -890,7 +891,7 @@ class Scope:
             items = self.translator.expr(node.args[1])
             if items.type is not None and not {ARRAY, OBJECT} & items.type.kinds:
                 raise CompileError(
-                    f"{ast.unparse(node.args[1])} is a {items.type.describe()}; "
+                    f"{ast.unparse(node.args[1])} is {article(items.type.describe())}; "
                     "distributed_map takes a list or a dict",
                     node.args[1],
                 )
@@ -1553,7 +1554,7 @@ class Scope:
         )
         if kind not in {ARRAY, OBJECT}:
             raise CompileError(
-                f"{ast.unparse(node)} is a {kind}; for iterates lists, "
+                f"{ast.unparse(node)} is {article(kind)}; for iterates lists, "
                 "the keys of dicts and range()",
                 node,
             )
@@ -1795,7 +1796,7 @@ class Scope:
                     )
             elif value.type is not None and value.type.kinds != {NUMBER}:
                 raise CompileError(
-                    f"{ast.unparse(node.args[0])} is a {value.type.describe()}; "
+                    f"{ast.unparse(node.args[0])} is {article(value.type.describe())}; "
                     "wait takes seconds, or a timestamp as until=",
                     node.args[0],
                 )
@@ -1815,7 +1816,7 @@ class Scope:
                     )
             elif value.type is not None and value.type.kinds != {STRING}:
                 raise CompileError(
-                    f"{ast.unparse(until[0].value)} is a {value.type.describe()}; "
+                    f"{ast.unparse(until[0].value)} is {article(value.type.describe())}; "
                     "until takes a timestamp string",
                     until[0].value,
                 )

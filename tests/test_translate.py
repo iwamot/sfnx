@@ -547,7 +547,7 @@ def test_dividing_by_zero_fails_where_it_divides():
         ('return isinstance(input["a"], list[str])', "isinstance takes str, float"),
         ('return isinstance(input["a"], None)', "test None with `is None`"),
         ('return input["a"][1:2]', "a slice depends on the type"),
-        ('d: dict = input["d"]\nreturn d[1:]', "d is a object; slices take lists"),
+        ('d: dict = input["d"]\nreturn d[1:]', "d is an object; slices take lists"),
         (
             'xs: list = input["xs"]\nreturn xs["a":]',
             "'a' is a string, and a slice takes numbers",
@@ -555,7 +555,7 @@ def test_dividing_by_zero_fails_where_it_divides():
         ('return input[input["k"]]', "a variable key depends on the container"),
         (
             'items: list = input["items"]\nreturn items["a"]',
-            "items is a array; string keys look into dicts",
+            "items is an array; string keys look into dicts",
         ),
         (
             'k: str = input["k"]\nitems: list = input["items"]\nreturn items[k]',
@@ -563,7 +563,7 @@ def test_dividing_by_zero_fails_where_it_divides():
         ),
         (
             'tags: dict = input["tags"]\nreturn tags[0]',
-            "tags is a object; positions look into lists and strings",
+            "tags is an object; positions look into lists and strings",
         ),
         (
             'k: str | float = input["k"]\nreturn input["a"][k]',
@@ -882,7 +882,7 @@ def test_string_methods_evaluate():
 @pytest.mark.parametrize(
     "body, message",
     [
-        ('return parts.split("/")', "parts is a array; split() is a string method"),
+        ('return parts.split("/")', "parts is an array; split() is a string method"),
         ("return s.split(1)", "1 is a number; split() splits at a string"),
         ('return s.split("/", 1)', "split() takes no maximum"),
         ('return s.split(sep="/")', "split() takes no keyword arguments here"),
@@ -1057,7 +1057,7 @@ def test_keys_and_values_evaluate():
         ("return list()", "list() takes one argument"),
         (
             'xs: list = input["xs"]\nreturn xs.keys()',
-            "xs is a array; keys() is a dict method",
+            "xs is an array; keys() is a dict method",
         ),
         ("return d.keys(1)", "keys() is written d.keys()"),
         ("return d.get()", "get() is written d.get(key) or d.get(key, default)"),
@@ -1450,7 +1450,7 @@ def test_a_key_orders_by_what_it_reads():
         ),
         ("return reversed(n)", "n is a number; reversed() takes a dict"),
         ("return reversed(xs, s)", "reversed() takes one argument"),
-        ("return d[::-1]", "d is a object; slices take lists and strings"),
+        ("return d[::-1]", "d is an object; slices take lists and strings"),
         ("return xs[::2]", "a slice takes no step other than xs[::-1]"),
         (
             "return s.startswith(1)",
