@@ -241,6 +241,15 @@ CASES: tuple[Case, ...] = (
         "0.125 is a value a double holds exactly",
     ),
     Case(
+        "format-spec-zeros-hold-the-sign",
+        "numbers",
+        'return f"{-12:05d}"',
+        {},
+        Value("-0012"),
+        "Python counts the sign inside the zeros of a width, which the picture "
+        "says with a negative sub-picture one digit shorter",
+    ),
+    Case(
         "format-spec-decimal-digits",
         "numbers",
         'return f"{2.675:.2f}"',

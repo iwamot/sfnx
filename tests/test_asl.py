@@ -32,6 +32,11 @@ def test_null_is_a_value_and_undefined_fails():
         ("$formatNumber(3.5, '0')", "4"),
         ("$formatNumber(1234.5678, '#,##0.00')", "1,234.57"),
         ("$formatNumber(1234.5, '#,##0')", "1,234"),
+        # The sign is written inside the zeros of the width.
+        ("$formatNumber(-12, '00000;-0000')", "-0012"),
+        ("$formatNumber(7, '00000;-0000')", "00007"),
+        ("$formatNumber(-123456, '00000;-0000')", "-123456"),
+        ("$formatNumber(-1.5, '00000;-0000')", "-0002"),
         # A picture the compiler does not write is left to jsonata-python.
         ("$formatNumber(-12, '00000')", "-00012"),
     ],
