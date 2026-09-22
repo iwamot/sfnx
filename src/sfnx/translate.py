@@ -23,10 +23,13 @@ from sfnx.expressions import (
     call,
     changes,
     conditional,
+    entry,
     expression,
     field,
     index,
+    kept,
     literal,
+    merged,
     negate,
     obj,
     spelling,
@@ -47,6 +50,7 @@ from sfnx.jsontypes import (
     AnnotationError,
     Type,
     annotation,
+    article,
     exclude,
     of,
     restrict,
@@ -341,6 +345,10 @@ CONVERSIONS = frozenset({"s", "d", "i"})
 # comprehension two.
 UNPACKING = frozenset({"enumerate", "zip"})
 
+# The dict comprehension that reads a dict entry by entry, the one place
+# besides a for loop where d.items() gives two variables.
+ITEMS_COMPREHENSION = "{k: v for k, v in d.items()}"
+
 # The built-in functions that read every item of a generator expression given
 # to them, so sum(x for x in xs) means what sum([x for x in xs]) means.
 CONSUMERS = frozenset({"sum", "max", "min", "sorted", "list"})
@@ -541,11 +549,7 @@ class Translator:
                 node,
             )
         if isinstance(node, ast.DictComp):
-            raise CompileError(
-                "dict comprehensions are not supported; write the dict with its keys, "
-                'such as {"id": x}, or build it in a Lambda task',
-                node,
-            )
+            return self.dict_comprehension(node)
         name = type(node).__name__
         raise CompileError(
             EXPRESSIONS.get(name, f"{name} expressions are not supported"), node
@@ -557,14 +561,7 @@ class Translator:
         nothing for an empty one, so the result is wrapped in a list. Brackets
         would merge a single result that is a list, so a result that may hold
         lists is kept as an array with [] and appended to an empty one."""
-        if len(node.generators) != 1:
-            # A comprehension clause has no position of its own; its variable
-            # is where the second for is written.
-            raise CompileError(
-                "a comprehension takes one for; nest a for loop for more",
-                node.generators[1].target,
-            )
-        generator = node.generators[0]
+        generator = self.one_for(node)
         if not isinstance(generator.target, ast.Name):
             if unpacking(generator.iter):
                 # Raise the advice of enumerate() or zip(), which says what to
@@ -575,67 +572,30 @@ class Translator:
                 generator.target,
             )
         name = generator.target.id
-        source = self.expr(generator.iter)
-        kind = self.known(
-            generator.iter,
-            source,
-            "list",
-            "a comprehension depends on what it iterates",
-        )
-        if kind == OBJECT:
-            source = call("keys", [source], of(ARRAY, items=of(STRING)))
-        elif kind != ARRAY:
-            raise CompileError(
-                f"{ast.unparse(generator.iter)} is a {kind}; a comprehension "
-                "iterates lists and the keys of dicts",
-                generator.iter,
-            )
+        source = self.iterated(generator.iter)
         item = source.type.items if source.type else None
-        saved = self.bindings.get(name)
-        # The parameter of the JSONata function, not a Step Functions variable:
-        # a variable of the same name that another binding reads would be hidden.
-        self.bindings[name] = expression("$" + self.spelling(name), type=item)
-        self.comprehending += 1
-        self.inner.append(self.spelling(name))
-        try:
-            tests = []
-            narrowed: dict[str, Type] = {}
-            for test in generator.ifs:
-                with self.narrowed(narrowed):
-                    tests.append(self.condition(test))
-                    when, _ = self.narrowing(test)
-                narrowed = {**narrowed, **when}
+        with self.parameters({name: item}):
+            tests, narrowed = self.conditions(generator.ifs)
             with self.narrowed(narrowed):
                 element = self.expr(node.elt)
-        finally:
-            self.comprehending -= 1
-            self.inner.pop()
-            if saved is None:
-                del self.bindings[name]
-            else:
-                self.bindings[name] = saved
-        if name in element.variables | uses(tests):
-            raise CompileError(
-                f"{name} is a variable that this comprehension reads through another "
-                f"name, which its own {name} would hide; choose another name for it",
-                generator.target,
-            )
+        self.check_hiding({name: generator.target}, [element, *tests])
         result = source
         if tests:
-            test = tests[0]
-            for more in tests[1:]:
-                test = binary(test, "and", more, AND, of(BOOLEAN), True)
             result = call(
-                "filter", [source, function(self.spelling(name), test)], source.type
+                "filter",
+                [source, function([self.spelling(name)], conjunction(tests))],
+                source.type,
             )
-        mapped = not (isinstance(node.elt, ast.Name) and node.elt.id == name)
+        mapped = not named(node.elt, name)
         if mapped:
             if tests and may_be_list(item):
                 # $map would iterate the items of a single list $filter kept.
                 result = expression(
                     result.code + "[]", result.variables, volatile=result.volatile
                 )
-            result = call("map", [result, function(self.spelling(name), element)], None)
+            result = call(
+                "map", [result, function([self.spelling(name)], element)], None
+            )
         else:
             element = replace(element, type=item)
         # The functions leave out their parameter; what the source reads stays,
@@ -652,6 +612,189 @@ class Translator:
             type=of(ARRAY, items=element.type),
             constructor=True,
             volatile=result.volatile,
+        )
+
+    @contextmanager
+    def parameters(self, names: dict[str, Type | None]) -> Iterator[None]:
+        """The variables of a comprehension while its conditions and results
+        are translated. Each is the parameter of the JSONata function, not a
+        Step Functions variable: a variable of the same name that another
+        binding reads would be hidden."""
+        saved = {name: self.bindings.get(name) for name in names}
+        for name, declared in names.items():
+            self.bindings[name] = expression("$" + self.spelling(name), type=declared)
+            self.inner.append(self.spelling(name))
+        self.comprehending += 1
+        try:
+            yield
+        finally:
+            self.comprehending -= 1
+            for name in names:
+                self.inner.pop()
+                outer = saved[name]
+                if outer is None:
+                    del self.bindings[name]
+                else:
+                    self.bindings[name] = outer
+
+    def conditions(self, ifs: list[ast.expr]) -> tuple[list[Expr], dict[str, Type]]:
+        """The if conditions of a comprehension, each narrowing the ones after
+        it and the result, as they do in an if statement."""
+        tests = []
+        narrowed: dict[str, Type] = {}
+        for test in ifs:
+            with self.narrowed(narrowed):
+                tests.append(self.condition(test))
+                when, _ = self.narrowing(test)
+            narrowed = {**narrowed, **when}
+        return tests, narrowed
+
+    def check_hiding(self, names: dict[str, ast.expr], values: list[Expr]) -> None:
+        """A comprehension variable that hides a variable the comprehension
+        reads under another name, such as the list a for loop around it
+        iterates."""
+        read = uses(values)
+        for name, target in names.items():
+            if name in read:
+                raise CompileError(
+                    f"{name} is a variable that this comprehension reads through "
+                    f"another name, which its own {name} would hide; choose "
+                    "another name for it",
+                    target,
+                )
+
+    def dict_comprehension(self, node: ast.DictComp) -> Expr:
+        """{f(x): g(x) for x in xs if c} as one pass over xs whose objects are
+        merged: the function returns nothing for an item the condition drops,
+        which $map leaves out, and $merge of nothing is {}. The condition, the
+        key and the value are each evaluated once per item, in the order
+        Python evaluates them, and a repeated key keeps the last value, as
+        $merge gives a later object precedence."""
+        generator = self.one_for(node)
+        if unpacked(generator.iter) == "items":
+            return self.items_comprehension(node, generator)
+        if not isinstance(generator.target, ast.Name):
+            if unpacking(generator.iter):
+                # Raise the advice of enumerate() or zip(), which says what to
+                # count with, rather than the message below.
+                self.expr(generator.iter)
+            raise CompileError(
+                "a dict comprehension iterates one variable, or the key and the "
+                f"value of d.items(): {ITEMS_COMPREHENSION}",
+                generator.target,
+            )
+        name = generator.target.id
+        source = self.iterated(generator.iter)
+        item = source.type.items if source.type else None
+        with self.parameters({name: item}):
+            tests, narrowed = self.conditions(generator.ifs)
+            with self.narrowed(narrowed):
+                key = self.expr(node.key)
+                value = self.expr(node.value)
+        self.check_hiding({name: generator.target}, [key, value, *tests])
+        self.json_key(node.key, key)
+        body = entry(key, value)
+        if tests:
+            body = kept(conjunction(tests), body)
+        mapped = call("map", [source, function([self.spelling(name)], body)], None)
+        return merged(mapped, value.type)
+
+    def items_comprehension(
+        self, node: ast.DictComp, generator: ast.comprehension
+    ) -> Expr:
+        """{k: v for k, v in d.items() if c} over the dict itself: $sift where
+        the entries pass through as they are, and $each where the key or the
+        value is rewritten, both merged as the comprehension over a list is."""
+        assert isinstance(generator.iter, ast.Call)
+        names = generator.target.elts if isinstance(generator.target, ast.Tuple) else []
+        if len(names) != 2 or not all(isinstance(n, ast.Name) for n in names):
+            raise CompileError(
+                f"items() gives two variables: {ITEMS_COMPREHENSION}",
+                generator.target,
+            )
+        key_name, value_name = names
+        assert isinstance(key_name, ast.Name) and isinstance(value_name, ast.Name)
+        if key_name.id == value_name.id:
+            raise CompileError(
+                f"the two variables need different names: {ITEMS_COMPREHENSION}",
+                value_name,
+            )
+        if generator.iter.args or generator.iter.keywords:
+            raise CompileError(
+                f"items() is written {ITEMS_COMPREHENSION}", generator.iter
+            )
+        assert isinstance(generator.iter.func, ast.Attribute)
+        source = self.operand(
+            generator.iter.func.value,
+            OBJECT,
+            f"items() is a dict method: {ITEMS_COMPREHENSION}",
+        )
+        values = source.type.values if source.type else None
+        with self.parameters({key_name.id: of(STRING), value_name.id: values}):
+            tests, narrowed = self.conditions(generator.ifs)
+            with self.narrowed(narrowed):
+                key = self.expr(node.key)
+                value = self.expr(node.value)
+        self.check_hiding(
+            {key_name.id: key_name, value_name.id: value_name}, [key, value, *tests]
+        )
+        # $sift and $each take the value first and the key second.
+        spelled = [self.spelling(value_name.id), self.spelling(key_name.id)]
+        if named(node.key, key_name.id) and named(node.value, value_name.id):
+            if not tests:
+                # Every key of a JSON object is a string already, so the
+                # comprehension is the dict, and a JSON value is a copy.
+                return replace(source, type=source.type or of(OBJECT))
+            sifted = call("sift", [source, function(spelled, conjunction(tests))], None)
+            return merged(sifted, values)
+        self.json_key(node.key, key)
+        body = entry(key, value)
+        if tests:
+            body = kept(conjunction(tests), body)
+        return merged(call("each", [source, function(spelled, body)], None), value.type)
+
+    def one_for(self, node: ast.ListComp | ast.DictComp) -> ast.comprehension:
+        if len(node.generators) != 1:
+            # A comprehension clause has no position of its own; its variable
+            # is where the second for is written.
+            raise CompileError(
+                "a comprehension takes one for; nest a for loop for more",
+                node.generators[1].target,
+            )
+        return node.generators[0]
+
+    def iterated(self, node: ast.expr) -> Expr:
+        """What a comprehension iterates: a list, or the keys of a dict."""
+        source = self.expr(node)
+        kind = self.known(
+            node, source, "list", "a comprehension depends on what it iterates"
+        )
+        if kind == OBJECT:
+            return call("keys", [source], of(ARRAY, items=of(STRING)))
+        if kind != ARRAY:
+            raise CompileError(
+                f"{ast.unparse(node)} is {article(kind)}; a comprehension iterates "
+                "lists and the keys of dicts",
+                node,
+            )
+        return source
+
+    def json_key(self, node: ast.expr, value: Expr) -> None:
+        """A key a dict comprehension writes into an object. JSON object keys
+        are strings, and $string of an unknown type would write two Python
+        keys as one, so a key of another type is rejected rather than
+        converted: {x: x for x in [1, "1"]} has two entries in Python and
+        would have one here."""
+        if value.type is not None and value.type.kinds == {STRING}:
+            return
+        text = ast.unparse(node)
+        subject = (
+            f"the type of {text} is not known here"
+            if value.type is None
+            else f"{text} is {value.type.describe()}"
+        )
+        raise CompileError(
+            f"JSON object keys are strings, and {subject}; write str({text})", node
         )
 
     def formatted(self, node: ast.JoinedStr) -> Expr:
@@ -793,7 +936,8 @@ class Translator:
             if value.type.kind is None:
                 raise CompileError(several(node, value.type), node)
             raise CompileError(
-                f"{ast.unparse(node)} is a {value.type.kind}; ** unpacks dicts", node
+                f"{ast.unparse(node)} is {article(value.type.kind)}; ** unpacks dicts",
+                node,
             )
         if value.type is not None:
             return value
@@ -822,7 +966,7 @@ class Translator:
             if value.type.kind is None:
                 raise CompileError(several(node, value.type), node)
             raise CompileError(
-                f"{ast.unparse(node)} is a {value.type.kind}, and {operator} takes "
+                f"{ast.unparse(node)} is {article(value.type.kind)}, and {operator} takes "
                 f"numbers; convert it with float({ast.unparse(node)})",
                 node,
             )
@@ -941,7 +1085,9 @@ class Translator:
             joined = union(left.type, right.type)
             items = joined.items if joined else None
             return call("append", [left, right], of(ARRAY, items=items))
-        raise CompileError(f"+ takes numbers, strings or lists, not a {kind}", node)
+        raise CompileError(
+            f"+ takes numbers, strings or lists, not {article(kind)}", node
+        )
 
     def operands(
         self, node: ast.BoolOp, translate: Callable[[ast.expr], Expr]
@@ -1087,7 +1233,7 @@ class Translator:
                     raise CompileError(several(operand, value.type), operand)
                 if value.type.kind not in {NUMBER, STRING}:
                     raise CompileError(
-                        f"{ast.unparse(operand)} is a {value.type.kind}; "
+                        f"{ast.unparse(operand)} is {article(value.type.kind)}; "
                         "JSONata orders only numbers and strings",
                         operand,
                     )
@@ -1147,7 +1293,7 @@ class Translator:
         if kind == STRING:
             return call("contains", [right, left], boolean, boolean=True)
         raise CompileError(
-            f"{ast.unparse(right_node)} is a {kind}; in looks into lists, dicts "
+            f"{ast.unparse(right_node)} is {article(kind)}; in looks into lists, dicts "
             "and strings",
             right_node,
         )
@@ -1178,7 +1324,7 @@ class Translator:
                 return call("lookup", [value, position], values)
         elif key_kind != NUMBER:
             raise CompileError(
-                f"{ast.unparse(key)} is a {key_kind}; "
+                f"{ast.unparse(key)} is {article(key_kind)}; "
                 "keys are strings and positions are numbers",
                 key,
             )
@@ -1195,7 +1341,8 @@ class Translator:
         kind = self.known(node, value, "list", "a slice depends on the type")
         if kind not in {ARRAY, STRING}:
             raise CompileError(
-                f"{ast.unparse(node)} is a {kind}; slices take lists and strings", node
+                f"{ast.unparse(node)} is {article(kind)}; slices take lists and strings",
+                node,
             )
         if key.step is not None:
             if (
@@ -1337,7 +1484,7 @@ class Translator:
     def container(self, node: ast.expr, value: Expr, kind: str, rule: str) -> None:
         if value.type is not None and kind not in value.type.kinds:
             raise CompileError(
-                f"{ast.unparse(node)} is a {value.type.describe()}; {rule}", node
+                f"{ast.unparse(node)} is {article(value.type.describe())}; {rule}", node
             )
 
     def call(self, node: ast.Call) -> Expr:
@@ -1432,9 +1579,12 @@ class Translator:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "items"
         ):
-            # d.items() gives a loop its two variables and is nothing else.
+            # d.items() gives a loop or a dict comprehension its two variables
+            # and is nothing else.
             raise CompileError(
-                "items() is only for a for loop: for k, v in d.items()", node
+                "items() gives two variables: for k, v in d.items() or "
+                f"{ITEMS_COMPREHENSION}",
+                node,
             )
         if not isinstance(node.func, ast.Name):
             called = target or ast.unparse(node.func)
@@ -1757,7 +1907,7 @@ class Translator:
             )
         symbol = "<" if descending else ">"
         test = binary(keys[0], symbol, keys[1], COMPARE, of(BOOLEAN), True)
-        return comparing(first, second, test)
+        return function([first, second], test)
 
     def jsonata(self, node: ast.Call) -> Expr:
         """jsonata(expression, name=value): the expression as it is written, in
@@ -1970,7 +2120,7 @@ class Translator:
             items = self.expr(arguments[0])
             if items.type is not None and not items.type.kinds <= {ARRAY, STRING}:
                 raise CompileError(
-                    f"{ast.unparse(arguments[0])} is a {items.type.describe()}; "
+                    f"{ast.unparse(arguments[0])} is {article(items.type.describe())}; "
                     "join() takes a list of strings",
                     arguments[0],
                 )
@@ -2059,7 +2209,7 @@ class Translator:
         if kind == ARRAY:
             return value
         raise CompileError(
-            f"{ast.unparse(node)} is a {kind}; {name}() takes a dict, a list or a "
+            f"{ast.unparse(node)} is {article(kind)}; {name}() takes a dict, a list or a "
             "string",
             node,
         )
@@ -2195,7 +2345,7 @@ class Translator:
             if value.type.kind is None:
                 raise CompileError(several(node, value.type), node)
             raise CompileError(
-                f"{ast.unparse(node)} is a {value.type.kind}; {rule}", node
+                f"{ast.unparse(node)} is {article(value.type.kind)}; {rule}", node
             )
         return value
 
@@ -2412,7 +2562,7 @@ class Translator:
         if kind == OBJECT:
             return call("count", [call("keys", [value], of(ARRAY))], number)
         raise CompileError(
-            f"{ast.unparse(node)} is a {kind}; len takes lists, strings and dicts",
+            f"{ast.unparse(node)} is {article(kind)}; len takes lists, strings and dicts",
             node,
         )
 
@@ -2638,7 +2788,7 @@ def check_seconds(node: ast.Call, name: str, value: Expr) -> None:
             )
     elif value.type is not None and value.type.kinds != {NUMBER}:
         raise CompileError(
-            f"{name} is a number of seconds, not a {value.type.describe()}", node
+            f"{name} is a number of seconds, not {article(value.type.describe())}", node
         )
 
 
@@ -2735,18 +2885,26 @@ def unused(base: str, taken: set[str]) -> str:
     return name
 
 
-def comparing(first: str, second: str, body: Expr) -> Expr:
-    """The function $sort takes: whether the first item comes after the second."""
-    return expression(
-        f"function(${first}, ${second}) {{ {body.code} }}",
-        body.variables,
-        volatile=body.volatile,
-    )
+def conjunction(tests: list[Expr]) -> Expr:
+    """The conditions of a comprehension as one: [x for x in xs if a if b]
+    keeps the items where both hold."""
+    test = tests[0]
+    for more in tests[1:]:
+        test = binary(test, "and", more, AND, of(BOOLEAN), True)
+    return test
 
 
-def function(parameter: str, body: Expr) -> Expr:
+def named(node: ast.expr, name: str) -> bool:
+    """Whether an expression is that name read as it is."""
+    return isinstance(node, ast.Name) and node.id == name
+
+
+def function(parameters: list[str], body: Expr) -> Expr:
+    """The function $filter, $map, $sift, $each and $sort take, of one
+    parameter or of two."""
+    spelled = ", ".join("$" + parameter for parameter in parameters)
     return expression(
-        f"function(${parameter}) {{ {body.code} }}",
+        f"function({spelled}) {{ {body.code} }}",
         body.variables,
         volatile=body.volatile,
     )

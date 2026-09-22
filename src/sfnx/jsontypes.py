@@ -46,6 +46,12 @@ class Type:
         return " | ".join(sorted(self.kinds))
 
 
+def article(described: str) -> str:
+    """A type as a sentence names it, with the article English wants before it:
+    a number, an array, an object."""
+    return ("an " if described[0] in "aeiou" else "a ") + described
+
+
 def of(kind: str, items: Type | None = None, values: Type | None = None) -> Type:
     return Type(frozenset({kind}), items, values)
 

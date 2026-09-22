@@ -33,6 +33,7 @@ def test_every_category_has_a_case():
         "join",
         "unpack",
         "lists",
+        "dicts",
         "missing",
         "encoding",
         "volatile",

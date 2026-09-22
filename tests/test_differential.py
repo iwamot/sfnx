@@ -335,7 +335,23 @@ class Program:
         if depth <= 0 or not self.number_in(0, 1):
             return leaf
         d = depth - 1
-        return f'{{"a": {self.number(env, d)}, "b": {self.number(env, d)}}}'
+        form = self.pick(["literal", "comprehension", "items"])
+        if form == "literal":
+            return f'{{"a": {self.number(env, d)}, "b": {self.number(env, d)}}}'
+        # A subscript reads a key a dict loop bound, so every dict here has the
+        # keys a and b and no others, and a comprehension keeps that key set: a
+        # condition that dropped one would leave the subscript with no value.
+        if form == "comprehension":
+            name = self.fresh("w")
+            keys = self.pick(['["a", "b"]', '["b", "a"]', '["a", "b", "a"]'])
+            inner = env.reading(STRING, name)
+            return f"{{{name}: {self.number(inner, d)} for {name} in {keys}}}"
+        key, value = self.fresh("k"), self.fresh("v")
+        inner = env.reading(STRING, key).reading(NUMBER, value)
+        return (
+            f"{{{key}: {self.number(inner, d)} "
+            f"for {key}, {value} in {self.mapping(env, d)}.items()}}"
+        )
 
     def optional(self, env: Env, depth: int) -> str:
         return "None" if self.number_in(0, 2) == 0 else self.number(env, depth)

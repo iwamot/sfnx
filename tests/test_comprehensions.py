@@ -4,7 +4,7 @@ import pytest
 
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
-from tests import asl
+from tests import asl, corpus
 
 INPUT = "$states.context.Execution.Input"
 
@@ -14,6 +14,12 @@ def source(body: str) -> str:
         "from sfnx import state_machine, task\n\n\n@state_machine\ndef pay(input):\n"
         + textwrap.indent(body, "    ")
     )
+
+
+def randomized(body: str) -> dict[str, object]:
+    """A machine that calls random.random(), compiled with the module imported."""
+    (compiled,) = compile_source("import random\n" + source(body)).values()
+    return compiled
 
 
 def output(body: str) -> object:
@@ -60,6 +66,34 @@ def run(body: str, execution_input: object) -> object:
         ('name: str = input["name"]\nreturn f"{name}!"', "$name & '!'"),
         ('name: str = input["name"]\nreturn f"{name}"', "$name"),
         ("return f\"{input['n'] + 1} items\"", f"$string({INPUT}.n + 1) & ' items'"),
+        # A dict comprehension is one pass whose objects are merged.
+        (
+            'xs: list[str] = input["xs"]\nreturn {x: 1 for x in xs}',
+            "$merge([$map($xs, function($x) { {$x: 1} })])",
+        ),
+        (
+            'xs: list[float] = input["xs"]\nreturn {str(x): x * 2 for x in xs if x > 1}',
+            "$merge([$map($xs, function($x) { $x > 1 ? {$string($x): $x * 2} })])",
+        ),
+        (
+            'd: dict = input["d"]\nreturn {k: d[k] for k in d}',
+            "$merge([$map($keys($d), function($k) { {$k: $lookup($d, $k)} })])",
+        ),
+        # $sift keeps the entries that pass through as they are.
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 1}',
+            "$merge([$sift($d, function($v, $k) { $v > 1 })])",
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v + 1 for k, v in d.items() if v > 0}',
+            "$merge([$each($d, function($v, $k) { $v > 0 ? {$k: $v + 1} })])",
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k.upper(): v for k, v in d.items()}',
+            "$merge([$each($d, function($v, $k) { {$uppercase($k): $v} })])",
+        ),
+        # Every key of a JSON object is a string, so this is the dict itself.
+        ('d: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items()}', "$d"),
     ],
 )
 def test_spelling(body, code):
@@ -153,6 +187,62 @@ def test_types():
     assert output(body) == "{% $ys[0] & '!' %}"
     body = 'xs: list[str] = input["xs"]\nys = [x for x in xs if x != ""]\nreturn len(ys[0])'
     assert output(body) == "{% $length($ys[0]) %}"
+    body = 'xs: list[str] = input["xs"]\nd = {x: 1 for x in xs}\nreturn d["a"] + 1'
+    assert output(body) == "{% $d.a + 1 %}"
+    body = 'e: dict[str, str] = input["e"]\nd = {k: v for k, v in e.items() if v != ""}\nreturn d["a"] + "!"'
+    assert output(body) == "{% $d.a & '!' %}"
+
+
+def test_a_dict_comprehension_evaluates_the_condition_the_key_and_the_value_once():
+    # Python takes the condition, then the key, then the value, once per item.
+    # A $filter before a $map would test every item before it read any value,
+    # and give {"1": 0.8} after three calls.
+    values = iter([0.9, 0.1, 0.8, 0.2])
+    assert {str(x): next(values) for x in [1, 2] if next(values) > 0.5} == {
+        "1": 0.1,
+        "2": 0.2,
+    }
+    compiled = randomized(
+        "return {str(x): random.random() for x in [1, 2] if random.random() > 0.5}"
+    )
+    sequence = corpus.Sequence([0.9, 0.1, 0.8, 0.2])
+    with asl.replaced(random=sequence):
+        assert asl.run(compiled, {}) == {"1": 0.1, "2": 0.2}
+    assert sequence.calls == 4
+
+
+def test_the_entries_of_a_dict_are_read_once_each():
+    values = iter([0.9, 2.0, 0.1, 0.8, 4.0])
+    entries = {"a": 1, "b": 2, "c": 3}
+    assert {k: v * next(values) for k, v in entries.items() if next(values) > 0.5} == {
+        "a": 2.0,
+        "c": 12.0,
+    }
+    compiled = randomized(
+        'd: dict[str, float] = input["d"]\n'
+        "return {k: v * random.random() for k, v in d.items() if random.random() > 0.5}"
+    )
+    sequence = corpus.Sequence([0.9, 2.0, 0.1, 0.8, 4.0])
+    with asl.replaced(random=sequence):
+        assert asl.run(compiled, {"d": {"a": 1, "b": 2, "c": 3}}) == {
+            "a": 2.0,
+            "c": 12.0,
+        }
+    assert sequence.calls == 5
+
+
+def test_a_dict_comprehension_variable_cannot_hide_what_another_name_reads():
+    # item is $items[$item_index], which a function parameter $items would hide.
+    body = 'items: list[str] = input["items"]\nzs: list = input["zs"]\nfor item in items:\n    ys = {item: 1 for items in zs}'
+    with pytest.raises(
+        CompileError, match="items is a variable that this comprehension reads"
+    ):
+        compile_source(source(body))
+    body = 'items: list[str] = input["items"]\nd: dict = input["d"]\nfor item in items:\n    ys = {k: item for k, items in d.items()}'
+    with pytest.raises(
+        CompileError, match="items is a variable that this comprehension reads"
+    ):
+        compile_source(source(body))
 
 
 @pytest.mark.parametrize(
@@ -261,6 +351,72 @@ def test_types():
             {"xs": [1, 3, 2]},
             [3, 2, 1],
         ),
+        # A dict comprehension over a list: nothing to merge, several items, a
+        # condition that drops every item, and a key written twice, where the
+        # last value wins as it does in Python.
+        ('xs: list[str] = input["xs"]\nreturn {x: 1 for x in xs}', {"xs": []}, {}),
+        (
+            'xs: list[str] = input["xs"]\nreturn {x: 1 for x in xs}',
+            {"xs": ["a", "b"]},
+            {"a": 1, "b": 1},
+        ),
+        (
+            'xs: list[float] = input["xs"]\nreturn {str(x): x for x in xs if x > 5}',
+            {"xs": [1, 2]},
+            {},
+        ),
+        (
+            'ps: list[dict[str, str]] = input["ps"]\nreturn {p["k"]: p["v"] for p in ps}',
+            {"ps": [{"k": "a", "v": "1"}, {"k": "a", "v": "2"}]},
+            {"a": "2"},
+        ),
+        # A value that is a list stays one value of the object.
+        (
+            'xs: list[str] = input["xs"]\nys: list = input["ys"]\nreturn {x: ys for x in xs}',
+            {"xs": ["a"], "ys": [1, 2]},
+            {"a": [1, 2]},
+        ),
+        (
+            'xs: list[str] = input["xs"]\nys: list = input["ys"]\nreturn {x: [y for y in ys] for x in xs}',
+            {"xs": ["a"], "ys": []},
+            {"a": []},
+        ),
+        # The entries of a dict, kept as they are and rewritten.
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 1}',
+            {"d": {"a": 1, "b": 2}},
+            {"b": 2},
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 5}',
+            {"d": {"a": 1}},
+            {},
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 5}',
+            {"d": {}},
+            {},
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v + 1 for k, v in d.items() if v > 0}',
+            {"d": {"a": 0, "b": 2}},
+            {"b": 3},
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v + 1 for k, v in d.items() if v > 0}',
+            {"d": {}},
+            {},
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k + "!": v for k, v in d.items()}',
+            {"d": {"a": 1}},
+            {"a!": 1},
+        ),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items()}',
+            {"d": {"a": 1}},
+            {"a": 1},
+        ),
     ],
 )
 def test_evaluation(body, execution_input, expected):
@@ -313,7 +469,54 @@ def test_evaluation(body, execution_input, expected):
         ),
         (
             'xs: list = input["xs"]\nreturn {x: 1 for x in xs}',
-            'dict comprehensions are not supported; write the dict with its keys, such as {"id": x}, or build it in a Lambda task',
+            "JSON object keys are strings, and the type of x is not known here; write str(x)",
+        ),
+        (
+            'xs: list[float] = input["xs"]\nreturn {x: 1 for x in xs}',
+            "JSON object keys are strings, and x is number; write str(x)",
+        ),
+        (
+            'xs: list[str | None] = input["xs"]\nreturn {x: 1 for x in xs}',
+            "JSON object keys are strings, and x is null | string; write str(x)",
+        ),
+        (
+            'xs: list = input["xs"]\nys: list = input["ys"]\nreturn {str(x): 1 for x in xs for y in ys}',
+            "a comprehension takes one for",
+        ),
+        (
+            'xs: list = input["xs"]\nreturn {a: b for a, b in xs}',
+            (
+                "a dict comprehension iterates one variable, or the key and the "
+                "value of d.items(): {k: v for k, v in d.items()}"
+            ),
+        ),
+        (
+            'xs: list = input["xs"]\nreturn {str(i): x for i, x in enumerate(xs)}',
+            "enumerate() is only for a for loop: for i, item in enumerate(items)",
+        ),
+        (
+            'd: dict = input["d"]\nreturn {k: v for k in d.items()}',
+            "items() gives two variables: {k: v for k, v in d.items()}",
+        ),
+        (
+            'd: dict = input["d"]\nreturn {k: k for k, k in d.items()}',
+            "the two variables need different names: {k: v for k, v in d.items()}",
+        ),
+        (
+            'd: dict = input["d"]\nreturn {k: v for k, v in d.items(1)}',
+            "items() is written {k: v for k, v in d.items()}",
+        ),
+        (
+            'xs: list = input["xs"]\nreturn {k: v for k, v in xs.items()}',
+            "xs is an array; items() is a dict method: {k: v for k, v in d.items()}",
+        ),
+        (
+            'xs: list[str] = input["xs"]\nreturn {x: task("arn:aws:states:::aws-sdk:sns:publish", {"Message": x}) for x in xs}',
+            "task() in a comprehension would need a state per item",
+        ),
+        (
+            'xs: list[str] = input["xs"]\nreturn {x for x in xs}',
+            "JSON has lists only; write a list comprehension: [x for x in xs]",
         ),
         (
             'xs: list = input["xs"]\nreturn [task("arn:aws:states:::aws-sdk:sns:publish", {"Message": x}) for x in xs]',

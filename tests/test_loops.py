@@ -600,7 +600,7 @@ def test_a_failed_attempt_leaves_no_task_behind():
         ),
         (
             'xs: list = input["xs"]\nfor k, v in xs.items():\n    pass',
-            "xs is a array; items() is a dict method: for k, v in d.items()",
+            "xs is an array; items() is a dict method: for k, v in d.items()",
         ),
         (
             's: str = input["s"]\nfor i, c in enumerate(s):\n    pass',
@@ -644,7 +644,10 @@ def test_a_failed_attempt_leaves_no_task_behind():
         ),
         (
             'd: dict = input["d"]\nreturn d.items()',
-            "items() is only for a for loop: for k, v in d.items()",
+            (
+                "items() gives two variables: for k, v in d.items() or "
+                "{k: v for k, v in d.items()}"
+            ),
         ),
         ("return range(1, 2, 0)", "the step of range is a nonzero whole number"),
         ("for i in range():\n    pass", "range takes a stop"),

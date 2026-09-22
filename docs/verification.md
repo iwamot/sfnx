@@ -20,7 +20,7 @@ A case is a program body, an input, what it must give and why. It also says whic
 - **`random` and `calls`**: what `$random` returns locally, in order, and how many times it is called. A call past the end of the values fails the run, so a definition that evaluates an expression twice is caught, and so is one that evaluates it when it should not.
 - **`on_aws`**: for a result that changes on every evaluation, the condition the result must satisfy in Step Functions, in place of the value. The number of calls is not measured there; a value in range is not evidence of a single evaluation, and the results file says `unmeasured`.
 
-The categories are truth of a value, numbers, `join`, `**`, lists of none, one and several items, missing keys and null, volatile expressions, and a Catch with the variables it sees. Add a case by appending to `CASES`; its id must be new, and `test_corpus.py` runs it locally at once.
+The categories are truth of a value, numbers, `join`, `**`, lists of none, one and several items, dicts from a comprehension, missing keys and null, volatile expressions, and a Catch with the variables it sees. Add a case by appending to `CASES`; its id must be new, and `test_corpus.py` runs it locally at once.
 
 ## Running on AWS
 

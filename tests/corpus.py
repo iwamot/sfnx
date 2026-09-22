@@ -139,6 +139,11 @@ CONDITIONS: Mapping[str, Callable[[object], bool]] = {
 
 COMPREHENSION = 'xs: list[float] = input["xs"]\nreturn [x * 2 for x in xs]'
 NESTED = 'xs: list = input["xs"]\nreturn [[x] for x in xs]'
+ENTRIES = 'ps: list[dict[str, str]] = input["ps"]\nreturn {p["k"]: p["v"] for p in ps}'
+KEPT = 'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 1}'
+REWRITTEN = (
+    'd: dict[str, float] = input["d"]\nreturn {k: v + 1 for k, v in d.items() if v > 1}'
+)
 CATCH = """\
 status = "new"
 
@@ -305,6 +310,68 @@ CASES: tuple[Case, ...] = (
         {"xs": [[1]]},
         Value([[[1]]]),
         "the level is kept when the item is a list too",
+    ),
+    Case(
+        "dict-comprehension-of-none",
+        "dicts",
+        ENTRIES,
+        {"ps": []},
+        Value({}),
+        "$map of no items is undefined, and $merge of no object is {}",
+    ),
+    Case(
+        "dict-comprehension-of-one",
+        "dicts",
+        ENTRIES,
+        {"ps": [{"k": "a", "v": "1"}]},
+        Value({"a": "1"}),
+        "$map of one item is the object itself, and the brackets around it make "
+        "it the one-object array $merge takes",
+    ),
+    Case(
+        "dict-comprehension-repeated-key",
+        "dicts",
+        ENTRIES,
+        {"ps": [{"k": "a", "v": "1"}, {"k": "a", "v": "2"}]},
+        Value({"a": "2"}),
+        "$merge gives a later object's key precedence, as a later entry of a "
+        "dict comprehension wins in Python",
+    ),
+    Case(
+        "dict-comprehension-list-value",
+        "dicts",
+        'xs: list[str] = input["xs"]\nys: list = input["ys"]\nreturn {x: ys for x in xs}',
+        {"xs": ["a"], "ys": [1, 2]},
+        Value({"a": [1, 2]}),
+        "an object keeps a list as one value, where an array constructor would "
+        "merge its items",
+    ),
+    Case(
+        "items-comprehension-keeps-none",
+        "dicts",
+        KEPT,
+        {"d": {"a": 1}},
+        Value({}),
+        "$sift that keeps no entry returns undefined, which $merge of no object "
+        "turns into {}",
+    ),
+    Case(
+        "items-comprehension-keeps-some",
+        "dicts",
+        KEPT,
+        {"d": {"a": 1, "b": 2}},
+        Value({"b": 2}),
+        "$sift keeps the entries its function is true for, with the key and the "
+        "value as they are",
+    ),
+    Case(
+        "items-comprehension-rewrites-the-value",
+        "dicts",
+        REWRITTEN,
+        {"d": {"a": 1, "b": 2}},
+        Value({"b": 3}),
+        "$each returns nothing for an entry the condition drops, so the "
+        "condition stays in the function rather than filtering the dict first",
     ),
     Case(
         "get-missing-key",
