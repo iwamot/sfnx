@@ -55,6 +55,7 @@ FUNCTIONS = frozenset(
         "exists",
         "filter",
         "floor",
+        "formatNumber",
         "fromMillis",
         "hash",
         "join",

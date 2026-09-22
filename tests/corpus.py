@@ -232,6 +232,26 @@ CASES: tuple[Case, ...] = (
         python=False,
     ),
     Case(
+        "format-spec-half-to-even",
+        "numbers",
+        'return f"{0.125:.2f}"',
+        {},
+        Value("0.12"),
+        "$formatNumber rounds half to even, as Python's format() does, and "
+        "0.125 is a value a double holds exactly",
+    ),
+    Case(
+        "format-spec-decimal-digits",
+        "numbers",
+        'return f"{2.675:.2f}"',
+        {},
+        Value("2.68"),
+        "$formatNumber rounds the decimal the number is written as, where "
+        "CPython rounds the double it holds (2.67499...), as round(2.675, 2) "
+        "already does",
+        python=False,
+    ),
+    Case(
         "join-list",
         "join",
         'return ",".join(input["xs"])',

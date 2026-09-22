@@ -3,6 +3,7 @@ jsonata-python, so a program's ASL result can be compared with CPython's."""
 
 import base64
 import binascii
+import decimal
 import hashlib
 import json
 import re
@@ -60,6 +61,7 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     # The functions whose Step Functions behavior differs from jsonata-python's.
     expression.register_lambda("decodeUrlComponent", decode_url_component)
     expression.register_lambda("base64decode", base64_decode)
+    expression.register_lambda("formatNumber", format_number)
     for name, function in REPLACED.get({}).items():
         expression.register_lambda(name, function)
     try:
@@ -99,6 +101,33 @@ def base64_decode(text: str) -> str:
         return base64.b64decode(padded, validate=True).decode()
     except (binascii.Error, UnicodeDecodeError) as exc:
         raise jsonata.JException(str(exc)) from exc
+
+
+# The pictures the compiler writes for a format spec: whole numbers, grouped
+# or not, with the digits after the decimal point the spec asked for.
+GENERATED_PICTURE = re.compile(r"(?P<grouped>#,##)?0(?:\.(?P<decimals>0+))?")
+
+
+def format_number(
+    value: float, picture: str, options: Mapping[str, str] | None = None
+) -> str | None:
+    """$formatNumber as Step Functions evaluates it: the number is rounded
+    half to even on the decimal it is written as, so 0.125 to two places is
+    0.12 and 2.675 is 2.68 (measured). jsonata-python rounds the binary value
+    instead, giving 0.13 and 2.67, so the pictures the compiler writes are
+    evaluated here and any other is left to it."""
+    found = GENERATED_PICTURE.fullmatch(picture)
+    if found is None or options is not None:
+        return Functions.format_number(value, picture, options)
+    places = len(found["decimals"] or "")
+    with decimal.localcontext() as context:
+        # The widest decimal a double holds is 309 digits, and the picture
+        # asks for its own after the point.
+        context.prec = 309 + places + 1
+        written = decimal.Decimal(repr(value)).quantize(
+            decimal.Decimal(1).scaleb(-places), rounding=decimal.ROUND_HALF_EVEN
+        )
+    return f"{written:,f}" if found["grouped"] else f"{written:f}"
 
 
 def now(picture: str | None = None) -> str:
