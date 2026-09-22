@@ -1,0 +1,110 @@
+{
+  "Comment": "Resize every photo of an album, a few at a time, then notify the owner and index the album at once.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "album",
+  "States": {
+    "album": {
+      "Type": "Pass",
+      "Assign": {
+        "album": "{% $states.context.Execution.Input.album %}",
+        "photos": "{% $states.context.Execution.Input.photos %}"
+      },
+      "Next": "resized"
+    },
+    "resized": {
+      "Type": "Map",
+      "Items": "{% $photos %}",
+      "ItemSelector": {
+        "photo": "{% $states.context.Map.Item.Value %}",
+        "index": "{% $states.context.Map.Item.Index %}"
+      },
+      "MaxConcurrency": 4,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "INLINE"
+        },
+        "StartAt": "resize.photo",
+        "States": {
+          "resize.photo": {
+            "Type": "Pass",
+            "Assign": {
+              "photo": "{% $states.input.photo %}",
+              "index": "{% $states.input.index %}"
+            },
+            "Next": "resize.return"
+          },
+          "resize.return": {
+            "Type": "Task",
+            "Comment": "The index names the output, so two photos never overwrite each other.",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+              "FunctionName": "resize",
+              "Payload": {
+                "source": "{% $photo %}",
+                "target": "{% $album & '/' & $string($index) & '.jpg' %}"
+              }
+            },
+            "Output": "{% $states.result.Payload %}",
+            "End": true
+          }
+        }
+      },
+      "Assign": {
+        "resized": "{% $states.result %}"
+      },
+      "Next": "notice"
+    },
+    "notice": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "notify.return",
+          "States": {
+            "notify.return": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Arguments": {
+                "TopicArn": "arn:aws:sns:us-east-1:123456789012:albums",
+                "Message": "{% $string($count($resized)) & ' photos of ' & $album & ' are ready' %}"
+              },
+              "Output": "{% $states.result.MessageId %}",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "index.return",
+          "States": {
+            "index.return": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Arguments": {
+                "FunctionName": "index",
+                "Payload": {
+                  "album": "{% $album %}",
+                  "photos": "{% $resized %}"
+                }
+              },
+              "Output": "{% $states.result.Payload %}",
+              "End": true
+            }
+          }
+        }
+      ],
+      "Assign": {
+        "notice": "{% $states.result[0] %}",
+        "entry": "{% $states.result[1] %}"
+      },
+      "Next": "return"
+    },
+    "return": {
+      "Type": "Succeed",
+      "Output": {
+        "album": "{% $album %}",
+        "photos": "{% $resized %}",
+        "index": "{% $entry %}",
+        "notice": "{% $notice %}"
+      }
+    }
+  }
+}
