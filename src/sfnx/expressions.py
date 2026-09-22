@@ -76,6 +76,7 @@ FUNCTIONS = frozenset(
         "power",
         "random",
         "range",
+        "reduce",
         "replace",
         "reverse",
         "round",
@@ -319,6 +320,22 @@ def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> E
         type,
         then.boolean and otherwise.boolean,
         volatile=changes([test, then, otherwise]),
+    )
+
+
+def grouped(value: Expr) -> Expr:
+    """value in parentheses where a conditional around it would otherwise read
+    as one expression: a branch that is itself a conditional, or an expression
+    written by hand, which may bind as loosely as any."""
+    if value.precedence > CONDITIONAL:
+        return value
+    return expression(
+        "(" + value.code + ")",
+        value.variables,
+        ATOM,
+        value.type,
+        value.boolean,
+        volatile=value.volatile,
     )
 
 

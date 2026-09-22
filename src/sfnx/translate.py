@@ -26,6 +26,7 @@ from sfnx.expressions import (
     entry,
     expression,
     field,
+    grouped,
     index,
     kept,
     literal,
@@ -331,8 +332,6 @@ METHOD_REWRITES = {
 # The built-in functions sfnx does not compile that have one spelling here, by
 # name, and what to write instead.
 BUILTIN_REWRITES = {
-    "any": 'count what matches: len([x for x in xs if x["failed"]]) > 0',
-    "all": 'count what does not match: len([x for x in xs if not x["ok"]]) == 0',
     "map": "write a comprehension: [str(x) for x in xs]",
     "filter": "write a comprehension: [x for x in xs if x]",
 }
@@ -348,6 +347,9 @@ UNPACKING = frozenset({"enumerate", "zip"})
 # The dict comprehension that reads a dict entry by entry, the one place
 # besides a for loop where d.items() gives two variables.
 ITEMS_COMPREHENSION = "{k: v for k, v in d.items()}"
+
+# The generator expression the messages of any() and all() write.
+EVERY = 'x["ok"] for x in xs'
 
 # The built-in functions that read every item of a generator expression given
 # to them, so sum(x for x in xs) means what sum([x for x in xs]) means.
@@ -753,7 +755,68 @@ class Translator:
             body = kept(conjunction(tests), body)
         return merged(call("each", [source, function(spelled, body)], None), value.type)
 
-    def one_for(self, node: ast.ListComp | ast.DictComp) -> ast.comprehension:
+    def quantified(self, node: ast.Call, name: str) -> Expr:
+        """any(xs) and all(xs) as $reduce over the items, whose function keeps
+        the result once it is decided: any() stops at the first item that is
+        true and all() at the first that is false. A generator expression
+        writes its condition and its item into that function, so neither is
+        evaluated for an item past the one that decided the result, as Python
+        evaluates neither; a list comprehension written in the call builds the
+        whole list first, as Python does. $reduce of an empty list gives the
+        initial value, which is any()'s False and all()'s True."""
+        if len(node.args) != 1:
+            raise CompileError(f"{name}() takes one argument: {name}({EVERY})", node)
+        argument = node.args[0]
+        tests: list[Expr] = []
+        if isinstance(argument, ast.GeneratorExp):
+            generator = self.one_for(argument)
+            if not isinstance(generator.target, ast.Name):
+                if unpacking(generator.iter):
+                    # Raise the advice of enumerate() or zip(), which says what
+                    # to count with, rather than the message below.
+                    self.expr(generator.iter)
+                raise CompileError(
+                    f"{name}() iterates one variable: {name}({EVERY})",
+                    generator.target,
+                )
+            variable = generator.target.id
+            source = self.iterated(generator.iter, f"{name}()", whole=True)
+            item = source.type.items if source.type else None
+            with self.parameters({variable: item}):
+                tests, narrowed = self.conditions(generator.ifs)
+                with self.narrowed(narrowed):
+                    element = self.truth(self.expr(argument.elt))
+            self.check_hiding({variable: generator.target}, [element, *tests])
+            spelled = self.spelling(variable)
+        else:
+            source = self.iterated(argument, f"{name}()", whole=True)
+            item = source.type.items if source.type else None
+            spelled = self.parameter("x", [source])
+            element = self.truth(expression("$" + spelled, type=item))
+        # The item that decides the result is the one that differs from the
+        # initial value: a true item for any(), a false one for all(). An item
+        # a condition drops leaves the result as it is, which is that initial
+        # value again.
+        neutral = literal(name == "all")
+        decided = literal(name == "any")
+        element = grouped(element)
+        if tests:
+            element = grouped(
+                conditional(conjunction(tests), element, neutral, of(BOOLEAN))
+            )
+        accumulator = unused("a", self.hides([source, element, *tests]) | {spelled})
+        carried = expression("$" + accumulator, type=of(BOOLEAN), boolean=True)
+        body = (
+            conditional(carried, decided, element, of(BOOLEAN))
+            if name == "any"
+            else conditional(carried, element, decided, of(BOOLEAN))
+        )
+        reducer = function([accumulator, spelled], body)
+        return call("reduce", [source, reducer, neutral], of(BOOLEAN), boolean=True)
+
+    def one_for(
+        self, node: ast.ListComp | ast.DictComp | ast.GeneratorExp
+    ) -> ast.comprehension:
         if len(node.generators) != 1:
             # A comprehension clause has no position of its own; its variable
             # is where the second for is written.
@@ -763,17 +826,25 @@ class Translator:
             )
         return node.generators[0]
 
-    def iterated(self, node: ast.expr) -> Expr:
-        """What a comprehension iterates: a list, or the keys of a dict."""
+    def iterated(
+        self, node: ast.expr, subject: str = "a comprehension", *, whole: bool = False
+    ) -> Expr:
+        """What a comprehension iterates: a list, or the keys of a dict. whole
+        asks for a list even where the dict is empty, which $keys gives nothing
+        for: $map and $filter of nothing give nothing, which the brackets
+        around a comprehension turn into an empty list, while $reduce of
+        nothing gives nothing in the place of its initial value."""
         source = self.expr(node)
         kind = self.known(
-            node, source, "list", "a comprehension depends on what it iterates"
+            node, source, "list", f"{subject} depends on what it iterates"
         )
         if kind == OBJECT:
+            if whole:
+                return keys_of(source)
             return call("keys", [source], of(ARRAY, items=of(STRING)))
         if kind != ARRAY:
             raise CompileError(
-                f"{ast.unparse(node)} is {article(kind)}; a comprehension iterates "
+                f"{ast.unparse(node)} is {article(kind)}; {subject} iterates "
                 "lists and the keys of dicts",
                 node,
             )
@@ -1650,6 +1721,8 @@ class Translator:
             return call(name, [listed], of(NUMBER))
         if name in {"abs", "round", "sum", "max", "min"}:
             raise CompileError(f"{name}() is written {NUMBER_FUNCTIONS[name]}", node)
+        if name in {"all", "any"}:
+            return self.quantified(node, name)
         if name == "range":
             return self.range_list(node)
         if name == "reversed":

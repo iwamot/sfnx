@@ -451,20 +451,6 @@ def test_dividing_by_zero_fails_where_it_divides():
         ),
         # Rejected spellings whose messages name what to write instead.
         (
-            'return any(input["a"])',
-            (
-                "any() is not supported; count what matches: "
-                'len([x for x in xs if x["failed"]]) > 0'
-            ),
-        ),
-        (
-            'return all(input["a"])',
-            (
-                "all() is not supported; count what does not match: "
-                'len([x for x in xs if not x["ok"]]) == 0'
-            ),
-        ),
-        (
             'return map(str, input["a"])',
             "map() is not supported; write a comprehension: [str(x) for x in xs]",
         ),

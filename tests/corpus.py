@@ -141,6 +141,8 @@ COMPREHENSION = 'xs: list[float] = input["xs"]\nreturn [x * 2 for x in xs]'
 NESTED = 'xs: list = input["xs"]\nreturn [[x] for x in xs]'
 ENTRIES = 'ps: list[dict[str, str]] = input["ps"]\nreturn {p["k"]: p["v"] for p in ps}'
 KEPT = 'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 1}'
+QUANTIFIED = 'xs: list = input["xs"]\nreturn {}(xs)'
+SHORT_CIRCUIT = 'xs: list[float] = input["xs"]\nreturn {}(10 / x > 1 for x in xs)'
 REWRITTEN = (
     'd: dict[str, float] = input["d"]\nreturn {k: v + 1 for k, v in d.items() if v > 1}'
 )
@@ -372,6 +374,71 @@ CASES: tuple[Case, ...] = (
         Value({"b": 3}),
         "$each returns nothing for an entry the condition drops, so the "
         "condition stays in the function rather than filtering the dict first",
+    ),
+    Case(
+        "any-of-none",
+        "quantifiers",
+        QUANTIFIED.format("any"),
+        {"xs": []},
+        Value(False),
+        "$reduce of an empty array gives the value it starts from, which is "
+        "any()'s False",
+    ),
+    Case(
+        "all-of-none",
+        "quantifiers",
+        QUANTIFIED.format("all"),
+        {"xs": []},
+        Value(True),
+        "$reduce of an empty array gives the value it starts from, which is "
+        "all()'s True",
+    ),
+    Case(
+        "any-nested-empty-list",
+        "quantifiers",
+        QUANTIFIED.format("any"),
+        {"xs": [[]]},
+        Value(False),
+        "an item is read for its truth as bool() reads it: an empty list is "
+        "false, where $boolean of [[]] would look into the items",
+    ),
+    Case(
+        "all-nested-list-of-zero",
+        "quantifiers",
+        QUANTIFIED.format("all"),
+        {"xs": [[0]]},
+        Value(True),
+        "a list with items is true, whatever the items are, where $boolean of "
+        "[[0]] is false",
+    ),
+    Case(
+        "any-stops-at-the-first-true-item",
+        "quantifiers",
+        SHORT_CIRCUIT.format("any"),
+        {"xs": [1, 0]},
+        Value(True),
+        "the first item decides the result, so the second, which divides by "
+        "zero, is never evaluated, as Python never evaluates it",
+    ),
+    Case(
+        "all-stops-at-the-first-false-item",
+        "quantifiers",
+        SHORT_CIRCUIT.format("all"),
+        {"xs": [-1, 0]},
+        Value(False),
+        "the first item decides the result, so the second, which divides by "
+        "zero, is never evaluated, as Python never evaluates it",
+    ),
+    Case(
+        "any-of-a-list-comprehension-reads-every-item",
+        "quantifiers",
+        'xs: list[float] = input["xs"]\nreturn any([10 / x > 1 for x in xs])',
+        {"xs": [1, 0]},
+        Error(QUERY_ERROR),
+        "a list comprehension is built before any() reads it, so the item that "
+        "divides by zero fails the execution; CPython raises ZeroDivisionError, "
+        "so only the failure is compared",
+        python=False,
     ),
     Case(
         "get-missing-key",
