@@ -2,7 +2,7 @@ import base64
 import re
 import textwrap
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -656,6 +656,28 @@ def imported(body: str) -> dict:
             'return (datetime.fromtimestamp(input["t"]) - timedelta(days=1)).timestamp()',
             f"({INPUT}.t * 1000 - 86400000) / 1000",
         ),
+        # strftime writes the datetime with the picture string that writes
+        # what its format writes.
+        (
+            'return datetime.now().strftime("%Y-%m-%d")',
+            "$now('[Y0001]-[M01]-[D01]')",
+        ),
+        (
+            'return datetime.fromisoformat(input["at"]).strftime("%H:%M:%S")',
+            f"$fromMillis($toMillis({INPUT}.at), '[H01]:[m01]:[s01]')",
+        ),
+        (
+            'return (datetime.now() + timedelta(days=1)).strftime("%j")',
+            "$fromMillis($millis() + 86400000, '[d001]')",
+        ),
+        (
+            'return datetime.now().strftime("100%% [ok] %y")',
+            "$now('100% [[ok]] [Y01]')",
+        ),
+        (
+            "return f\"key-{datetime.now().strftime('%Y%m%d')}\"",
+            "'key-' & $now('[Y0001][M01][D01]')",
+        ),
         # The seconds between two datetimes are the milliseconds divided.
         (
             'return (datetime.now() - datetime.fromisoformat(input["at"])).total_seconds()',
@@ -741,6 +763,25 @@ def test_datetime_arithmetic_evaluates():
     assert forward == (later - at).total_seconds()
     # A moment taken from a later one is a negative number of seconds.
     assert back < 0
+
+
+FORMAT = "%Y-%y-%m-%d %H:%M:%S %j %%"
+
+
+@pytest.mark.parametrize("seconds", [1789479786.735, 0, 946684800])
+def test_strftime_writes_what_cpython_writes(seconds):
+    """Each directive the picture string covers, on a time written in the
+    source so both sides read the same moment."""
+    body = f'return datetime.fromtimestamp({seconds}).strftime("{FORMAT}")'
+    written = asl.run(imported(body), {})
+    assert written == datetime.fromtimestamp(seconds, UTC).strftime(FORMAT)
+
+
+def test_strftime_of_the_moment_runs():
+    """$now() takes the picture too, so the moment needs no milliseconds of
+    its own."""
+    written = asl.run(imported('return datetime.now().strftime("%Y")'), {})
+    assert re.fullmatch(r"\d{4}", written)
 
 
 @pytest.mark.parametrize(
@@ -851,6 +892,76 @@ def test_datetime_arithmetic_evaluates():
     ],
 )
 def test_timedelta_diagnostics(body, message):
+    with pytest.raises(CompileError) as raised:
+        compile_source(IMPORTS + source(body))
+    assert raised.value.message == message
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            'return datetime.now().strftime("%A %d")',
+            (
+                "strftime() takes %Y, %y, %m, %d, %H, %M, %S, %j and %% here, not %A; jsonata() reaches "
+                "the picture strings $fromMillis takes"
+            ),
+        ),
+        (
+            'return datetime.now().strftime("%f")',
+            (
+                "strftime() takes %Y, %y, %m, %d, %H, %M, %S, %j and %% here, not %f, which is "
+                "microseconds where Step Functions keeps time to the "
+                "millisecond; jsonata() reaches the picture strings "
+                "$fromMillis takes"
+            ),
+        ),
+        (
+            'return datetime.now().strftime("%z")',
+            (
+                "strftime() takes %Y, %y, %m, %d, %H, %M, %S, %j and %% here, not %z, whose offset is "
+                "empty in Python for a datetime with no time zone; jsonata() "
+                "reaches the picture strings $fromMillis takes"
+            ),
+        ),
+        (
+            'return datetime.now().strftime("%Z")',
+            (
+                "strftime() takes %Y, %y, %m, %d, %H, %M, %S, %j and %% here, not %Z, whose name is "
+                "empty in Python for a datetime with no time zone; jsonata() "
+                "reaches the picture strings $fromMillis takes"
+            ),
+        ),
+        (
+            'return datetime.now().strftime("%Y %")',
+            (
+                "strftime() takes %Y, %y, %m, %d, %H, %M, %S, %j and %% here, not the % at the end; "
+                "jsonata() reaches the picture strings $fromMillis takes"
+            ),
+        ),
+        (
+            'return datetime.now().strftime(input["fmt"])',
+            (
+                "the format of strftime() is a literal string, as the picture "
+                "string it becomes is built here: "
+                'datetime.now().strftime("%Y-%m-%d")'
+            ),
+        ),
+        (
+            'return datetime.now().strftime("%Y", "x")',
+            'strftime() is written datetime.now().strftime("%Y-%m-%d")',
+        ),
+        (
+            "return datetime.now().strftime()",
+            'strftime() is written datetime.now().strftime("%Y-%m-%d")',
+        ),
+        (
+            'return input["at"].strftime("%Y")',
+            'strftime() is written datetime.now().strftime("%Y-%m-%d")',
+        ),
+    ],
+)
+def test_strftime_diagnostics(body, message):
     with pytest.raises(CompileError) as raised:
         compile_source(IMPORTS + source(body))
     assert raised.value.message == message

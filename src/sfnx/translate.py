@@ -254,6 +254,28 @@ TIMEDELTA = "datetime.timedelta"
 TIMEDELTA_UNITS = ("weeks", "days", "hours", "minutes", "seconds", "milliseconds")
 TIMEDELTA_WRITTEN = "timedelta(hours=1)"
 
+# The strftime directives that have a picture component writing the same
+# value, measured against CPython on Step Functions. The rest are left out:
+# the locale names and the week numbers are spelled differently, and the three
+# below differ in what they hold.
+DIRECTIVES = {
+    "Y": "[Y0001]",
+    "y": "[Y01]",
+    "m": "[M01]",
+    "d": "[D01]",
+    "H": "[H01]",
+    "M": "[m01]",
+    "S": "[s01]",
+    "j": "[d001]",
+}
+# Why a directive that looks close enough is left out anyway.
+UNPICTURED = {
+    "f": ", which is microseconds where Step Functions keeps time to the millisecond",
+    "z": ", whose offset is empty in Python for a datetime with no time zone",
+    "Z": ", whose name is empty in Python for a datetime with no time zone",
+}
+STRFTIME_WRITTEN = 'datetime.now().strftime("%Y-%m-%d")'
+
 # Calls whose value is an object that JSON holds as text, so they are written
 # in str() or an f-string, the datetimes also in .timestamp(): how many
 # arguments the call takes, how it is written and what it returns in Python.
@@ -1659,6 +1681,8 @@ class Translator:
             return self.timestamp(node, node.func)
         if isinstance(node.func, ast.Attribute) and node.func.attr == "total_seconds":
             return self.total_seconds(node, node.func)
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "strftime":
+            return self.strftime(node, node.func)
         if target == "time.time":
             if node.args or node.keywords:
                 raise CompileError("time.time() takes no arguments", node)
@@ -1811,19 +1835,41 @@ class Translator:
             return call("uuid", [], of(STRING))
         return self.datetime_string(node)
 
-    def datetime_string(self, node: ast.expr) -> Expr | None:
-        """A datetime expression as the timestamp text it holds, which is what
-        str(), an f-string and wait(until=) write: $now() for the moment
-        itself, $fromMillis of the milliseconds for any other."""
+    def datetime_string(
+        self, node: ast.expr, picture: Expr | None = None
+    ) -> Expr | None:
+        """A datetime expression as the text it is written as, which is what
+        str(), an f-string, wait(until=) and strftime() take: $now() for the
+        moment itself, $fromMillis of the milliseconds for any other. Both
+        take the picture strftime() gives, and write the timestamp without
+        one."""
         moment = self.datetime_moment(node)
         if moment is None:
             return None
         made, shift = moment
         target = qualified(made.func, self.names) or ""
+        written = [picture] if picture is not None else []
         if not shift and target == NOW:
-            return call("now", [], of(STRING))
+            return call("now", written, of(STRING))
         millis = shifted(self.millis(made, target), shift)
-        return call("fromMillis", [millis], of(STRING))
+        return call("fromMillis", [millis, *written], of(STRING))
+
+    def strftime(self, node: ast.Call, method: ast.Attribute) -> Expr:
+        """dt.strftime(format) as the datetime written with the picture string
+        that writes what the format writes."""
+        if len(node.args) != 1 or node.keywords:
+            raise CompileError(f"strftime() is written {STRFTIME_WRITTEN}", node)
+        template = node.args[0]
+        if not (isinstance(template, ast.Constant) and isinstance(template.value, str)):
+            raise CompileError(
+                "the format of strftime() is a literal string, as the picture "
+                f"string it becomes is built here: {STRFTIME_WRITTEN}",
+                template,
+            )
+        written = self.datetime_string(method.value, literal(picture(template)))
+        if written is None:
+            raise CompileError(f"strftime() is written {STRFTIME_WRITTEN}", node)
+        return written
 
     def datetime_moment(self, node: ast.expr) -> tuple[ast.Call, int] | None:
         """The call a datetime expression is made by and the milliseconds the
@@ -3113,6 +3159,37 @@ def written_unit(keyword: ast.keyword) -> int | float:
         "datetime.fromtimestamp(dt.timestamp() + seconds)",
         keyword.value,
     )
+
+
+def picture(node: ast.Constant) -> str:
+    """The picture string that writes what a strftime format writes. The text
+    between the directives is literal, where the picture syntax reads [ and ]
+    as the ends of a component, so each is written twice."""
+    template = node.value
+    assert isinstance(template, str)
+    written = []
+    position = 0
+    while position < len(template):
+        character = template[position]
+        if character != "%":
+            written.append({"[": "[[", "]": "]]"}.get(character, character))
+            position += 1
+            continue
+        directive = template[position + 1 : position + 2]
+        position += 2
+        if directive == "%":
+            written.append("%")
+        elif directive in DIRECTIVES:
+            written.append(DIRECTIVES[directive])
+        else:
+            named = f"%{directive}" if directive else "the % at the end"
+            raise CompileError(
+                f"strftime() takes {spoken(['%' + d for d in DIRECTIVES] + ['%%'])} "
+                f"here, not {named}{UNPICTURED.get(directive, '')}; jsonata() "
+                "reaches the picture strings $fromMillis takes",
+                node,
+            )
+    return "".join(written)
 
 
 def parenthesized(node: ast.expr) -> str:

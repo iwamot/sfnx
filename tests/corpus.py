@@ -25,6 +25,8 @@ HEADER = """\
 import base64
 import random
 import urllib.parse
+from datetime import datetime
+
 from sfnx import parallel, state_machine
 
 
@@ -553,6 +555,28 @@ CASES: tuple[Case, ...] = (
         {"s": "%E6"},
         Value("�"),
         "a broken UTF-8 sequence is U+FFFD in both",
+    ),
+    Case(
+        "strftime-picture",
+        "times",
+        'return datetime.fromtimestamp(1789479786).strftime("%Y-%m-%d %H:%M:%S")',
+        {},
+        Value("2026-09-15 13:43:06"),
+        "the picture components of $fromMillis write what the directives of "
+        "strftime write; Step Functions has no local time zone, so the text is "
+        "of the UTC time, where CPython writes the local one",
+        python=False,
+    ),
+    Case(
+        "strftime-literals",
+        "times",
+        'return datetime.fromtimestamp(0).strftime("100%% [ok] %y-%j")',
+        {},
+        Value("100% [ok] 70-001"),
+        "the text between the directives is kept as it is, where a picture "
+        "string reads [ and ] as the ends of a component, so each is written "
+        "twice",
+        python=False,
     ),
     Case(
         "volatile-modulo-once",

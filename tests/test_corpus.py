@@ -37,6 +37,7 @@ def test_every_category_has_a_case():
         "quantifiers",
         "missing",
         "encoding",
+        "times",
         "volatile",
         "catch",
     }

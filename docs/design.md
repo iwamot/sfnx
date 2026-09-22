@@ -77,7 +77,7 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 ## What the compiler relies on
 
-From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14 and 2026-09-18).
+From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14, 2026-09-18 and 2026-09-22).
 
 ### JSONata in Step Functions
 
@@ -103,6 +103,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$parse` fails on text JSON does not allow (`NaN`, `Infinity`), on a number past the range of a double (`1e400`) and on a repeated key, but reads single-quoted strings (`{'a': 1}`; measured).
 - `$uuid()` returns a new lowercase version 4 UUID on every call (measured).
 - `$now()` returns the time in UTC to the millisecond with a `Z` (`"2026-09-15T13:36:42.245Z"`), `$now('[Y0001]-[M01]-[D01]')` formats it with a picture string, and `$millis()` returns the milliseconds since 1970 (measured). Every `$now()` and `$millis()` in one evaluation of an expression returns the same time.
+- The picture components `[Y0001]`, `[Y01]`, `[M01]`, `[D01]`, `[H01]`, `[m01]`, `[s01]` and `[d001]` write the year, the last two digits of the year, the month, the day, the hour, the minute, the second and the day of the year, each padded to the width the component gives, which is what CPython's `%Y`, `%y`, `%m`, `%d`, `%H`, `%M`, `%S` and `%j` write for the same moment in UTC. In the text between components `[` and `]` are written `[[` and `]]`, `%` needs no escape, and a picture holding no component is returned as it is (measured). jsonata-python writes each of them the same way, so `tests/asl.py` keeps the function.
 - `$pad` fills on the right for a positive width and on the left for a negative one, repeating a fill of several characters and taking a width of 6.5 as 6 (measured).
 - `$distinct` keeps the first of each value in order, compares objects and arrays by value, and keeps `true` apart from `1`; `$zip` stops at the shortest array (measured).
 - `$hash` gives the lowercase hex digest of the UTF-8 text for `MD5`, `SHA-1`, `SHA-256`, `SHA-384` and `SHA-512`; `$partition` returns nothing for an empty array and for a size of 0, makes batches of one item for a size of 1.5, and fails below 0 (measured).
