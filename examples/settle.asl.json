@@ -1,0 +1,55 @@
+{
+  "Comment": "Load the charges of a day and total them per currency.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "charges",
+  "States": {
+    "charges": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "load-charges",
+        "Payload": {
+          "date": "{% $states.context.Execution.Input.date %}"
+        }
+      },
+      "Assign": {
+        "charges": "{% $states.result.Payload %}"
+      },
+      "Next": "if"
+    },
+    "if": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $count($charges) = 0 %}",
+          "Next": "return"
+        }
+      ],
+      "Default": "totals"
+    },
+    "return": {
+      "Type": "Succeed",
+      "Output": {
+        "date": "{% $states.context.Execution.Input.date %}",
+        "charges": 0,
+        "totals": {}
+      }
+    },
+    "totals": {
+      "Type": "Pass",
+      "Comment": "Totals per currency are a grouping, which is written out in JSONata.",
+      "Assign": {
+        "totals": "{% ($xs := $charges; $merge($map($distinct($xs.currency), function($c) { {$c: $sum($xs[currency = $c].amount)} }))) %}"
+      },
+      "Next": "return_2"
+    },
+    "return_2": {
+      "Type": "Succeed",
+      "Output": {
+        "date": "{% $states.context.Execution.Input.date %}",
+        "charges": "{% $count($charges) %}",
+        "totals": "{% $totals %}"
+      }
+    }
+  }
+}

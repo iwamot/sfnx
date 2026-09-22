@@ -89,10 +89,14 @@ def test_a_loop_reads_the_items_as_the_class_declares_them():
     }
 
 
-def test_an_assignment_and_a_payload_take_a_class():
+def test_an_assignment_a_payload_and_a_task_result_take_a_class():
     body = 'order: Order = input["order"]\nreturn order["items"][0]["quantity"] + 1'
     assert output(body, "input") == "{% $order.items[0].quantity + 1 %}"
     body = f'r: Item = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]\nreturn r["quantity"] + 1'
+    assert output(body) == "{% $r.quantity + 1 %}"
+    body = (
+        f'r: Item = task("{LAMBDA}", {{"FunctionName": "f"}})\nreturn r["quantity"] + 1'
+    )
     assert output(body) == "{% $r.quantity + 1 %}"
 
 

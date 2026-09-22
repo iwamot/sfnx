@@ -11,7 +11,7 @@ from sfnx.compiler import compile_file
 from tests import asl
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
-NAMES = ["orders", "poll", "approval", "fanout"]
+NAMES = ["orders", "poll", "approval", "fanout", "settle"]
 
 
 def definition(name: str) -> dict[str, object]:
@@ -184,7 +184,7 @@ RELEASE = {"version": "1.2.0"}
 
 def test_approval_deploys_an_approved_release():
     tasks = Tasks(
-        decision=constant({"Status": "Approved", "Comment": "ship it"}),
+        decision=constant({"approved": True, "comment": "ship it"}),
         invoke=constant({"Payload": None}),
     )
     assert asl.run(definition("approval"), RELEASE, tasks) == {
@@ -206,7 +206,7 @@ def test_approval_deploys_an_approved_release():
 
 def test_approval_fails_as_rejected_without_deploying():
     tasks = Tasks(
-        decision=constant({"Status": "Rejected", "Comment": "not yet"}),
+        decision=constant({"approved": False, "comment": "not yet"}),
         invoke=constant({"Payload": None}),
     )
     with pytest.raises(asl.Failure) as failure:
@@ -283,3 +283,31 @@ def test_fanout_of_an_empty_album_notifies_and_indexes_nothing():
     calls = dict(tasks.calls)
     assert calls["notify.return"]["Message"] == "0 photos of trip are ready"
     assert calls["index.return"]["Payload"] == {"album": "trip", "photos": []}
+
+
+CHARGES = [
+    {"currency": "USD", "amount": 5},
+    {"currency": "EUR", "amount": 2},
+    {"currency": "USD", "amount": 7},
+]
+
+
+def test_settle_totals_the_charges_per_currency():
+    tasks = Tasks(charges=constant({"Payload": CHARGES}))
+    assert asl.run(definition("settle"), {"date": "2026-09-22"}, tasks) == {
+        "date": "2026-09-22",
+        "charges": 3,
+        "totals": {"USD": 12, "EUR": 2},
+    }
+    assert tasks.calls == [
+        ("charges", {"FunctionName": "load-charges", "Payload": {"date": "2026-09-22"}})
+    ]
+
+
+def test_settle_of_a_day_without_charges_returns_no_totals():
+    tasks = Tasks(charges=constant({"Payload": []}))
+    assert asl.run(definition("settle"), {"date": "2026-09-22"}, tasks) == {
+        "date": "2026-09-22",
+        "charges": 0,
+        "totals": {},
+    }
