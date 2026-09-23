@@ -129,6 +129,28 @@ def test_branch_types_join_into_the_result():
     )
 
 
+BRANCHES = (
+    'def name():\n    return "x"\n\n'
+    "def numbers():\n    return [1, 2]\n\n"
+    f'def sent():\n    return task("{PUBLISH}", {{"Message": "m"}})\n\n'
+)
+
+
+def test_unpacking_keeps_the_type_of_each_branch():
+    body = BRANCHES + "a, b = parallel(name, numbers)\nreturn b + [3]"
+    assert run(body, {}) == [1, 2, 3]
+
+
+def test_a_position_written_as_a_number_keeps_the_type_of_its_branch():
+    body = BRANCHES + "r = parallel(name, numbers)\nreturn [r[0] + 'y', r[-1] + [3]]"
+    assert run(body, {}) == ["xy", [1, 2, 3]]
+
+
+def test_a_declaration_types_what_unpacking_assigns():
+    body = BRANCHES + "b: list\na, b = parallel(numbers, sent)\nreturn b + [3]"
+    assert run(body, {}, {"sent.return": lambda arguments: [4]}) == [4, 3]
+
+
 def test_nested_parallel_and_hidden_names_across_scopes():
     body = (
         'xs: list = input["xs"]\n'

@@ -59,7 +59,7 @@ One side is enough (`input["name"] + "!"` is a string join), a literal string ke
 
 Types come from:
 
-- **Annotations** on assignments and parameters: `float` / `int`, `str`, `bool`, `list` / `list[X]`, `dict` / `dict[str, X]`, `None`, unions such as `str | None`, and the TypedDict classes of the module. An annotated variable keeps its type when reassigned with a value of unknown type.
+- **Annotations** on assignments and parameters: `float` / `int`, `str`, `bool`, `list` / `list[X]`, `dict` / `dict[str, X]`, `None`, unions such as `str | None`, and the TypedDict classes of the module. An annotated variable keeps its type when reassigned with a value of unknown type. An annotation without a value, `images: list`, gives its type to each later assignment of the name, those of `a, b = ...` included, which takes no annotation of its own.
 - **Literals and results**: `-` gives a number, comparisons a boolean, `len` a number, `str()` a string, `x[0]` of a `list[float]` a number.
 - **AWS responses**: the botocore output shape of an SDK or optimized integration. What external code returns is unknown: a Lambda `Payload`, the `Output` of a `.sync:2` child execution, the result of an activity, the `ResponseBody` of an HTTP Task, and every result of `.sync` and `.waitForTaskToken`.
 
@@ -267,7 +267,7 @@ def audit():
 message, receipt = parallel(email, audit)
 ```
 
-**`parallel(f, g, retry=)`** compiles each function without parameters as a branch where it is called. A function defined in the machine reads the variables around it; one defined at module level reads none of them. The result is the list of branch results, and `a, b = ...` unpacks it. As in Python, a name the function assigns is its own from its first line, not the one around it. A function defined in a branch or a loop can be passed only where every path to that point defines the same one, and a loop cannot define again a function defined before it.
+**`parallel(f, g, retry=)`** compiles each function without parameters as a branch where it is called. A function defined in the machine reads the variables around it; one defined at module level reads none of them. The result is the list of branch results, and `a, b = ...` unpacks it; each name, and each position written as a number (`results[1]`), keeps the type its branch returns. As in Python, a name the function assigns is its own from its first line, not the one around it. A function defined in a branch or a loop can be passed only where every path to that point defines the same one, and a loop cannot define again a function defined before it.
 
 **`inline_map(f, items, max_concurrency=, retry=)`** calls `f(item)` or `f(item, index)` per item. The ItemSelector passes them by parameter name, and the function reads them from `$states.input`; when it calls `task()`, `parallel()` or a map, or assigns a parameter again, its first Pass binds them to variables, since those states replace `$states.input` and the paths that do not assign would read the item.
 
