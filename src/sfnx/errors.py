@@ -31,7 +31,9 @@ def error_name(node: ast.expr, context: Module) -> str:
     """The error name of an exception class. Exception stands for States.ALL.
 
     Nested classes spell dotted names: a class ServiceException inside a class
-    Lambda is Lambda.ServiceException, as a Lambda integration reports it.
+    Lambda is Lambda.ServiceException, as a Lambda integration reports it. A
+    class of this module that assigns error = "..." in its body has that
+    name instead, which a class name cannot spell, such as one with spaces.
     """
     chain = attributes(node)
     if chain and chain[0] in context.classes:
@@ -91,7 +93,39 @@ def nested(
         current = inner
         names.append(name)
     defined(current, context)
+    written = declared_name(current)
+    if written is not None:
+        return written
     return ".".join(segment(n) for n in names)
+
+
+def declared_name(node: ast.ClassDef) -> str | None:
+    """The name a class declares with error = "..." in its body, if any."""
+    for statement in node.body:
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            targets = [statement.target]
+        else:
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "error" for t in targets):
+            continue
+        value = statement.value
+        if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+            raise CompileError(
+                'error is the ASL error name, written as a string: error = "..."',
+                value,
+            )
+        if not value.value:
+            raise CompileError("an ASL error name has at least one character", value)
+        if value.value.startswith("States."):
+            raise CompileError(
+                "error names starting with States. are reserved for Step Functions; "
+                "name the errors sfnx exports, such as Timeout, instead",
+                value,
+            )
+        return value.value
+    return None
 
 
 def defined(node: ast.ClassDef, context: Module) -> str:
