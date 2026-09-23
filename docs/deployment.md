@@ -18,6 +18,25 @@ task("arn:aws:states:::aws-sdk:dynamodb:getItem", {"TableName": "${Table}", "Key
 
 A placeholder inside a string argument is an ordinary string to the compiler. A resource ARN may be a placeholder too (`task("${ApproveActivityArn}")`), and is then passed through unchecked.
 
+## Building the definitions to deploy
+
+`uvx sfnx` is for trying a file. A project that deploys the definitions compiles them from a locked environment, since the definition depends on the versions of sfnx, botocore and Python ([compatibility.md](compatibility.md#what-the-version-does-not-fix)). botocore comes in as a dependency of sfnx, so the lock file pins it along with sfnx:
+
+```bash
+uv add sfnx          # records sfnx and botocore in uv.lock
+uv python pin 3.13   # records the Python version in .python-version
+```
+
+Compile into an empty directory each time, and pass on what it holds only when the compiler exits 0:
+
+```bash
+set -euo pipefail
+rm -rf build/asl
+uv run --locked sfnx compile app.py -o build/asl/
+```
+
+`-o` leaves the files already in the directory, so a machine that was deleted or renamed would keep its old `.asl.json` there. A source that does not compile writes nothing, but a failure to write, such as a full disk, can leave some of the files written and the rest missing, which only the exit status shows.
+
 ## CDK
 
 ```python
@@ -58,11 +77,18 @@ Plain CloudFormation takes the same file through `AWS::StepFunctions::StateMachi
 
 ## Checking a definition before deploying it
 
-`ValidateStateMachineDefinition` checks a definition without creating anything. Run it on the definition after the placeholders are filled (as `envsubst` does below), since a resource that is still `${Name}` is not a valid ARN:
+`ValidateStateMachineDefinition` checks a definition without creating anything. Run it on the definition after the placeholders are filled (as `envsubst` does below), since a resource that is still `${Name}` is not a valid ARN, and with the type of the machine it will be (`STANDARD` or `EXPRESS`):
 
 ```bash
-aws stepfunctions validate-state-machine-definition --definition file://deploy.asl.json
+set -euo pipefail
+result=$(aws stepfunctions validate-state-machine-definition --type STANDARD \
+  --definition file://deploy.asl.json --query result --output text)
+test "$result" = OK
 ```
+
+The call succeeds for a definition that fails validation too: its `result` is `OK` or `FAIL`, and the `diagnostics` say why. Test the result rather than the call's exit status or the text of the diagnostics. A call that fails, such as one without credentials, stops the script as well.
+
+`OK` says Step Functions accepts the definition. It does not say an execution succeeds, that the role has the permissions the tasks need, or what the services answer.
 
 `TestState` runs one state with a given input and role, which is the quickest way to see a Task's real result or an expression's value.
 
