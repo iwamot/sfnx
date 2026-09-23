@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from sfnx import __version__
-from sfnx.compiler import compile_file
+from sfnx.compiler import definitions, read
 from sfnx.diagnostics import CompileError
 
 INSTRUCTIONS = """\
@@ -17,6 +17,8 @@ EPILOG = """\
 Examples:
   sfnx compile app.py            print the ASL of the only @state_machine
   sfnx compile app.py -o out/    write one <function>.asl.json per @state_machine
+  sfnx compile app.py --source-locations
+                                 end each state's Comment with the lines it comes from
 
 Exit codes:
   0  success
@@ -55,6 +57,11 @@ def parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="a .json file for a single machine, or a directory",
     )
+    compile_parser.add_argument(
+        "--source-locations",
+        action="store_true",
+        help="end each state's Comment with the lines of the source it comes from",
+    )
     return root
 
 
@@ -68,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         root.print_help(sys.stderr)
         return 2
     try:
-        return write(args.source, compile_file(args.source), args.output)
+        found = definitions(read(args.source), args.source, args.source_locations)
+        return write(args.source, found, args.output)
     except CompileError as exc:
         print(str(exc), file=sys.stderr)
         return 1

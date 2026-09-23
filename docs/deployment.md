@@ -37,6 +37,31 @@ uv run --locked sfnx compile app.py -o build/asl/
 
 `-o` leaves the files already in the directory, so a machine that was deleted or renamed would keep its old `.asl.json` there. A source that does not compile writes nothing, but a failure to write, such as a full disk, can leave some of the files written and the rest missing, which only the exit status shows.
 
+## Tracing a state back to the source
+
+`--source-locations` ends the `Comment` of every state, in Parallel branches and Map processors too, with a line that says where in the source the state comes from:
+
+```bash
+sfnx compile examples/orders.py --source-locations
+```
+
+```json
+    "raise": {
+      "Type": "Fail",
+      "Comment": "sfnx-source: {\"file\": \"examples/orders.py\", \"spans\": [{\"at\": \"31:13-31:73\"}]}",
+```
+
+After `sfnx-source: ` comes a JSON object:
+
+- **`file`** is the path as the command was given it, not made absolute.
+- **`spans`** lists the source of the state, each as `line:column-line:column`. Lines and columns count from 1, a column counts characters as the diagnostics do, and the end is the column after the last character.
+- A state made by a statement spans the statement. The Choice of an `if` spans the header of the `if` and of each `elif`, from the keyword through the colon, and the Choice of a `for` or a `while` spans its header. A Pass that several assignments share spans each of them.
+- A span with a **`role`** stands for what the source does not spell, and spans the header of the statement that makes it: `loop start` for what a `for` assigns before its first iteration, `loop step` for moving to the next item, `loop variables` for the loop variables a body assigns again, `parameters` for binding the parameters of a function a map runs, and `end of function` for the return where a body ends without one.
+
+The comment lines written above a statement stay above the location line. The state names, the transitions and what the definition computes are the same with the option and without it.
+
+The spans point into the source as it was when it was compiled. To read them, open that version of the file, such as the commit the definition was built from (`git show <commit>:app.py`), rather than the file as it is now. To have the locations in the definitions a project deploys, add the option to the command that builds them.
+
 ## CDK
 
 ```python
