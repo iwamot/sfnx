@@ -418,7 +418,7 @@ An argument written in the source that Python would refuse is rejected when the 
 | `s.replace(old, new)` | an `old` read at run time that is empty | `States.QueryEvaluationError` | `new` between every character and at both ends |
 | `s.replace(old, new, count)` | a `count` read at run time that is not a whole number of 0 or more | `States.QueryEvaluationError` below `0`, `2.5` taken as `2` | every occurrence replaced for a negative `count`, `TypeError` for `2.5` |
 | `s.ljust(n, fill)`, `s.rjust(n, fill)` | a `fill` of several characters read at run time | the fill repeated as far as it goes | `TypeError` |
-| `s.ljust(n)`, `s.rjust(n)` | an `n` read at run time that is not a whole number of 0 or more | filled on the other side below `0`, `6.5` taken as `6` | the text as it is for a negative `n`, `TypeError` for `6.5` |
+| `s.ljust(n)`, `s.rjust(n)` | an `n` read at run time that is not a whole number, such as `6.5` | taken as `6` | `TypeError` |
 | `list(itertools.batched(xs, n))` | an `n` read at run time that is not a whole number of 1 or more, such as `0` or `1.5` | `[]` for `0`, batches of one for `1.5`, `States.QueryEvaluationError` below `0` | `ValueError` or `TypeError` |
 | `f"{x:d}"`, `f"{x:05d}"` | an `x` that is not a whole number, such as `1.5` | the number rounded half to even (`2`, `00002`) | `ValueError`: `d` takes an integer |
 
