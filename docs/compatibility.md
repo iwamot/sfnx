@@ -34,5 +34,5 @@ State names are listed because a project may depend on them: execution histories
 
 The definition depends on more than the version of sfnx. The same source compiles to the same bytes with the same versions of sfnx, botocore and Python.
 
-- **botocore**: sfnx checks the arguments of an SDK integration against the service models of the botocore it runs with, and reads the type of a result from them. A botocore release that adds a service makes more sources compile, and one that changes a shape can change what compiles and the expressions written, whichever sfnx version reads it. Pin botocore where sfnx is pinned.
+- **botocore**: sfnx checks the arguments of an SDK integration against the service models of the botocore it runs with, and reads the type of a result from them. A botocore release that adds a service makes more sources compile, and one that changes a shape can change what compiles and the expressions written, whichever sfnx version reads it. Pin botocore where sfnx is pinned; [deployment.md](deployment.md#building-the-definitions-to-deploy) shows a lock file that pins both.
 - **Step Functions**: AWS evaluates the JSONata and runs the definition. [docs/verification.md](verification.md) describes the fixed corpus that measures a release against Step Functions; a change on the AWS side is outside what a version of sfnx can promise.
