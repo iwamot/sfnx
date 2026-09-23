@@ -108,6 +108,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$pad` fills on the right for a positive width and on the left for a negative one, repeating a fill of several characters and taking a width of 6.5 as 6. It counts the width in code points, as `$length` does, so text outside the Basic Multilingual Plane is filled to the width Python fills it to, and a fill that is such a character counts as one (measured).
 - `$distinct` keeps the first of each value in order, compares objects and arrays by value, and keeps `true` apart from `1`; `$zip` stops at the shortest array (measured).
 - `$hash` gives the lowercase hex digest of the UTF-8 text for `MD5`, `SHA-1`, `SHA-256`, `SHA-384` and `SHA-512`; `$partition` returns nothing for an empty array and for a size of 0, makes batches of one item for a size of 1.5, and fails below 0 (measured).
+- Given undefined, the added functions return nothing rather than fail: `$parse`, `$hash` with undefined text or no algorithm, `$partition` with undefined items, and `$range` with any argument undefined. `$partition` with an undefined size makes the whole array one batch (`[[]]` for an empty one). `$hash` fails on an undefined algorithm and on any spelling but those five (`sha-256`, `SHA256`), and `$parse(null)` fails (measured).
 - `$base64encode` and `$base64decode` read and write the text as UTF-8; `$base64decode` takes text missing its padding (`'YWJ'` is `"ab"`) and fails on a character outside the alphabet (measured).
 - `$decodeUrlComponent` reads `+` as a space, fails on a malformed escape such as `%zz` (`D3140`), and gives U+FFFD for a broken UTF-8 sequence such as `%E6` (measured). jsonata-python keeps the `+` and passes `%zz` through, so `sfnx.testing` replaces the function.
 - `$split` with a string separator splits at that exact text (`.` and `*` are not patterns), keeps empty parts, and splits into characters at `''` (measured).
@@ -152,9 +153,9 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 
 ### Errors
 
-- Error names starting with `States.` are reserved. `States.TaskFailed` matches every error except `States.Timeout`. `States.ALL` stands alone in the last retrier or catcher.
+- Error names starting with `States.` are reserved. `States.TaskFailed` matches every error except `States.Timeout` and `States.QueryEvaluationError`: the documentation names only `States.Timeout`, but a Retry or a Catch for `States.TaskFailed` let the `States.QueryEvaluationError` of a Task's `Arguments`, `Assign` or `Output` through (TestState; measured). `States.ALL` stands alone in the last retrier or catcher.
 - `States.Runtime` cannot be retried or caught.
-- A retrier's attempts add up over all the errors it matched in the state. Only the first retrier that matches an error counts it: once that one has no attempts left, the error is not retried even if a later retrier matches (TestState; measured). A failure in evaluating `Arguments` or `Output` is retried as a failure of the Task (TestState; measured).
+- A retrier's attempts add up over all the errors it matched in the state. Only the first retrier that matches an error counts it: once that one has no attempts left, the error is not retried even if a later retrier matches (TestState; measured). A failure in evaluating `Arguments`, `Assign` or `Output` is retried as a failure of the Task by a retrier for `States.QueryEvaluationError` or `States.ALL` (TestState; measured).
 - The documentation says `States.ALL` does not catch `States.DataLimitExceeded`, but one raised by an SDK integration result over the quota (`ec2:describeImages` with `Owners: ["amazon"]`) was caught by both `States.ALL` and `States.TaskFailed`, in TestState and in Standard and Express executions (measured). Other causes were not measured.
 - A Lambda function's error name is its exception type, and its `Cause` is JSON written by the runtime (measured).
 

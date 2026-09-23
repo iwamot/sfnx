@@ -81,6 +81,8 @@ def test_assign_and_output_read_the_variables_from_before_the_state():
         (["States.ALL"], "States.Timeout", True),
         (["States.ALL"], "States.DataLimitExceeded", True),
         (["States.TaskFailed"], "States.DataLimitExceeded", True),
+        (["States.TaskFailed"], "States.QueryEvaluationError", False),
+        (["States.ALL"], "States.QueryEvaluationError", True),
         (["States.DataLimitExceeded"], "States.DataLimitExceeded", True),
         (["States.ALL"], "States.Runtime", False),
         (["States.Runtime"], "States.Runtime", False),
@@ -567,6 +569,45 @@ def test_what_the_runner_does_not_interpret_is_rejected_before_it_runs(
 def test_text_that_is_not_json_fails_to_parse():
     parsed = machine({"Type": "Succeed", "Output": "{% $parse('{') %}"})
     assert testing.run(parsed, {}).error == "States.QueryEvaluationError"
+
+
+# What Step Functions gives for undefined or invalid arguments to the
+# functions it adds (measured with TestState).
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ("$exists($parse($nothing))", False),
+        ("$exists($parse($match('abc', /x/)[0].match))", False),
+        ("$exists($hash($nothing, 'SHA-256'))", False),
+        ("$exists($hash('a'))", False),
+        ("$hash('a', 'MD5')", "0cc175b9c0f1b6a831c399e269772661"),
+        ("$exists($partition($nothing, 2))", False),
+        ("$partition([1, 2, 3], $nothing)", [[1, 2, 3]]),
+        ("$partition([], $nothing)", [[]]),
+        ("$exists($range($nothing, 3, 1))", False),
+        ("$exists($range(0, $nothing, 1))", False),
+        ("$exists($range(0, 3, $nothing))", False),
+    ],
+)
+def test_added_functions_give_undefined_as_step_functions_does(code, expected):
+    output = machine({"Type": "Succeed", "Output": "{% " + code + " %}"})
+    assert testing.run(output, {}).output == expected
+
+
+@pytest.mark.parametrize(
+    "code, cause",
+    [
+        ("$parse(null)", 'Argument 1 of function "parse"'),
+        ("$hash('a', $nothing)", "Hash algorithm 'null' must be one of"),
+        ("$hash('a', 'sha-256')", "Hash algorithm 'sha-256' must be one of"),
+        ("$hash('a', 'SHA256')", "Hash algorithm 'SHA256' must be one of"),
+    ],
+)
+def test_added_functions_fail_on_invalid_arguments(code, cause):
+    output = machine({"Type": "Succeed", "Output": "{% " + code + " %}"})
+    execution = testing.run(output, {})
+    assert execution.error == "States.QueryEvaluationError"
+    assert cause in execution.cause
 
 
 def test_a_condition_that_is_not_a_boolean_fails():
