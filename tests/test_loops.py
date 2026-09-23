@@ -113,10 +113,17 @@ def test_while_leads_back_to_its_choice():
         "n": {"Type": "Pass", "Assign": {"n": f"{{% {INPUT}.n %}}"}, "Next": "while"},
         "while": {
             "Type": "Choice",
-            "Choices": [{"Condition": "{% $n > 0 %}", "Next": "n_2"}],
+            # The body is only the rule's Assign, so the rule leads back to
+            # its own Choice.
+            "Choices": [
+                {
+                    "Condition": "{% $n > 0 %}",
+                    "Assign": {"n": "{% $n - 1 %}"},
+                    "Next": "while",
+                }
+            ],
             "Default": "return",
         },
-        "n_2": {"Type": "Pass", "Assign": {"n": "{% $n - 1 %}"}, "Next": "while"},
         "return": {"Type": "Succeed", "Output": "{% $n %}"},
     }
 
@@ -290,7 +297,7 @@ def test_a_comprehension_variable_is_not_an_assignment_of_the_loop():
 def test_a_loop_after_other_states_is_tried_again_from_the_same_point():
     body = 'wait(1)\nxs: list[float] = input["xs"]\nacc = None\nfor x in xs:\n    if acc is None:\n        acc = x\n    else:\n        acc = acc + x\nreturn acc'
     compiled = states(body)
-    assert list(compiled) == ["wait", "for", "if", "acc", "acc_2", "x_index", "return"]
+    assert list(compiled) == ["wait", "for", "if", "x_index", "return"]
     # The Wait takes the assignments before the loop once, not once per attempt.
     assert list(compiled["wait"]["Assign"]) == ["xs", "acc", "x_index"]
     assert compiled["wait"]["Next"] == "for"

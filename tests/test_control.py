@@ -26,15 +26,20 @@ def test_choice_example():
         "QueryLanguage": "JSONata",
         "StartAt": "if",
         "States": {
+            # What a branch assigns first goes in its rule, and what else
+            # assigns in the Choice's own Assign, which the Default takes.
             "if": {
                 "Type": "Choice",
                 "Choices": [
-                    {"Condition": f"{{% {INPUT}.amount > 1000 %}}", "Next": "fee"}
+                    {
+                        "Condition": f"{{% {INPUT}.amount > 1000 %}}",
+                        "Assign": {"fee": 100},
+                        "Next": "return",
+                    }
                 ],
-                "Default": "fee_2",
+                "Assign": {"fee": 10},
+                "Default": "return",
             },
-            "fee": {"Type": "Pass", "Assign": {"fee": 100}, "Next": "return"},
-            "fee_2": {"Type": "Pass", "Assign": {"fee": 10}, "Next": "return"},
             "return": {"Type": "Succeed", "Output": "{% $fee %}"},
         },
     }
@@ -49,20 +54,28 @@ def test_elif_adds_rules_to_one_choice():
     assert states["if"] == {
         "Type": "Choice",
         "Choices": [
-            {"Condition": f"{{% {INPUT}.a > 2 %}}", "Next": "x"},
-            {"Condition": f"{{% {INPUT}.a > 1 %}}", "Next": "x_2"},
+            {
+                "Condition": f"{{% {INPUT}.a > 2 %}}",
+                "Assign": {"x": 2},
+                "Next": "return_2",
+            },
+            {
+                "Condition": f"{{% {INPUT}.a > 1 %}}",
+                "Assign": {"x": 1},
+                "Next": "return_2",
+            },
             {"Condition": f"{{% {truthy(f'{INPUT}.b')} %}}", "Next": "return"},
         ],
-        "Default": "x_3",
+        "Assign": {"x": 0},
+        "Default": "return_2",
     }
-    assert states["x"]["Next"] == states["x_3"]["Next"] == "return_2"
 
 
 def test_if_without_else_defaults_to_what_follows():
     body = 'x = 1\nif input["a"]:\n    x = 2\nreturn x'
     states = definition(body)["States"]
     assert states["if"]["Default"] == "return"
-    assert states["x_2"]["Next"] == "return"
+    assert states["if"]["Choices"][0]["Next"] == "return"
     assert states["x"]["Next"] == "if"
 
 
@@ -207,6 +220,53 @@ def test_what_a_wait_assigns(body, joined, passes):
     states = compiled["States"]
     assert states["wait"].get("Assign") == joined
     assert [n for n, s in states.items() if s["Type"] == "Pass"] == passes
+
+
+@pytest.mark.parametrize(
+    "body, rule, default, passes",
+    [
+        # Each branch's first assignments, and what else assigns.
+        (
+            'if input["a"]:\n    x = 1\n    y = 2\nelse:\n    x = 3',
+            {"x": 1, "y": 2},
+            {"x": 3},
+            [],
+        ),
+        # A value reading an assignment before it waits for a Pass of its own.
+        ('if input["a"]:\n    x = 1\n    y = x + 1', {"x": 1}, None, ["y"]),
+        # What follows an if without else is where the branches join.
+        ('if input["a"]:\n    x = 1\ny = 2', {"x": 1}, None, ["y"]),
+        # A value that differs when read in another state.
+        ('if input["a"]:\n    x = str(uuid.uuid4())', None, None, ["x"]),
+        ('if input["a"]:\n    x = context["State"]["Name"]', None, None, ["x"]),
+        (
+            'if input["a"]:\n    x = 1\nelse:\n    x = str(datetime.now())',
+            {"x": 1},
+            None,
+            ["x"],
+        ),
+    ],
+)
+def test_what_a_choice_assigns(body, rule, default, passes):
+    imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context\n"
+    (compiled,) = compile_source(imports + source(body + "\nreturn 1")).values()
+    states = compiled["States"]
+    assert states["if"]["Choices"][0].get("Assign") == rule
+    assert states["if"].get("Assign") == default
+    assert [n for n, s in states.items() if s["Type"] == "Pass"] == passes
+
+
+def test_a_choice_runs_the_assign_of_the_branch_taken():
+    body = 'if input["a"] > 1:\n    x = "big"\nelif input["a"] > 0:\n    x = "small"\nelse:\n    x = "none"\nreturn x'
+    compiled = definition(body)
+    assert [asl.run(compiled, {"a": a}) for a in (2, 1, 0)] == ["big", "small", "none"]
+
+
+def test_the_comments_of_a_branch_go_with_its_assignments():
+    body = '# sizes\nif input["a"]:\n    # big\n    x = 1\nelse:\n    # small\n    x = 2\nreturn x'
+    choice = definition(body)["States"]["if"]
+    assert choice["Comment"] == "sizes\nsmall"
+    assert choice["Choices"][0]["Comment"] == "big"
 
 
 @pytest.mark.parametrize(
