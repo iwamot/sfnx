@@ -51,6 +51,9 @@ MAX_WIDENING = 8
 MAX_WAIT = 99_999_999
 # RFC 3339 with an uppercase T and Z, as Wait requires.
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
+# Context a Wait and the state after it read alike. The State part, its name
+# and when it was entered, differs, and so does the whole object.
+SHARED_CONTEXT = re.compile(r"\$states\.context(?!\.(Execution|StateMachine|Map)\b)")
 
 
 def machine_options(decorator: ast.expr, context: Module) -> dict[str, object]:
@@ -148,6 +151,16 @@ class Loop:
 
 
 @dataclass
+class Carrier:
+    """A Wait that the assignments right after it can join: its state, where in
+    the source it comes from, and its own comment."""
+
+    state: dict[str, object]
+    origins: list[Origin]
+    remark: str | None
+
+
+@dataclass
 class Handler:
     """An except clause. Each Catch that leads to it adds the flow from the
     state that failed."""
@@ -173,6 +186,9 @@ class Checkpoint:
     pending_origins: list[Origin]
     pending_remarks: list[str]
     remark: str | None
+    # The Wait pending assignments can join, and its fields at the checkpoint.
+    carrier: Carrier | None
+    carried: dict[str, object]
     hidden: set[str]
     names: set[str]
     labels: set[str]
@@ -242,6 +258,9 @@ class Scope:
         # it adds.
         self.pending_remarks: list[str] = []
         self.remark: str | None = None
+        # The Wait just added, until another state or a flush follows it; while
+        # it lasts, control is right after the Wait.
+        self.carrier: Carrier | None = None
         self.loops: list[Loop] = []
         # Names in the source, and the variables loops and handlers added for
         # themselves, shared by every scope of the machine.
@@ -287,6 +306,7 @@ class Scope:
     def insert(
         self, base: str, state: dict[str, object], node: ast.AST, origins: list[Origin]
     ) -> str:
+        self.carrier = None
         if self.locations is not None:
             located = self.locations.line(origins)
             remark = state.get("Comment")
@@ -297,21 +317,56 @@ class Scope:
             raise CompileError(str(exc), node) from exc
 
     def flush(self) -> None:
+        carrier, self.carrier = self.carrier, None
         if not self.pending:
             return
         assert self.pending_node is not None
-        first = next(iter(self.pending))
-        assign = {self.spelling(k): value.template for k, value in self.pending.items()}
+        pending = self.pending
+        first = next(iter(pending))
+        assign = {self.spelling(k): value.template for k, value in pending.items()}
         node = self.pending_node
         origins = self.pending_origins
-        state: dict[str, object] = {"Type": "Pass", "Assign": assign}
-        if self.pending_remarks:
-            state = commented(state, "\n".join(self.pending_remarks))
+        remarks = self.pending_remarks
         self.pending = {}
         self.pending_node = None
         self.pending_origins = []
         self.pending_remarks = []
+        if carrier is not None and self.joins(carrier, list(pending.values())):
+            self.join_wait(carrier, assign, origins, remarks)
+            return
+        state: dict[str, object] = {"Type": "Pass", "Assign": assign}
+        if remarks:
+            state = commented(state, "\n".join(remarks))
         self.insert(first, state, node, origins)
+
+    def joins(self, carrier: Carrier, values: list[Expr]) -> bool:
+        """Whether assignments can be the Assign of the Wait before them. The
+        carrier lasts until a state or a flush, and every join, branch and loop
+        flushes first, so control reaches them only from the Wait. What is left
+        is that no value reads what could differ there, the time, a random
+        value or the State part of the context. A Wait has no Catch, so a value
+        that fails ends the execution either way."""
+        [(tail, key)] = self.graph.tails
+        assert tail is carrier.state and key == "Next"
+        return not any(
+            value.volatile or SHARED_CONTEXT.search(value.code) for value in values
+        )
+
+    def join_wait(
+        self,
+        carrier: Carrier,
+        assign: dict[str, object],
+        origins: list[Origin],
+        remarks: list[str],
+    ) -> None:
+        state = carrier.state
+        remark = "\n".join(r for r in (carrier.remark, *remarks) if r) or None
+        if self.locations is not None:
+            located = self.locations.line(carrier.origins + origins)
+            remark = f"{remark}\n{located}" if remark else located
+        if remark:
+            commented(state, remark)
+        state["Assign"] = assign
 
     def defer(self, name: str, value: Expr, node: ast.AST, origin: Origin) -> None:
         """A value for the Pass the pending assignments share, and where in the
@@ -1324,6 +1379,8 @@ class Scope:
             list(self.pending_origins),
             list(self.pending_remarks),
             self.remark,
+            self.carrier,
+            dict(self.carrier.state) if self.carrier else {},
             set(self.hidden),
             set(self.graph.names),
             set(self.labels),
@@ -1354,6 +1411,10 @@ class Scope:
         self.pending_origins = list(saved.pending_origins)
         self.pending_remarks = list(saved.pending_remarks)
         self.remark = saved.remark
+        self.carrier = saved.carrier
+        if saved.carrier is not None:
+            saved.carrier.state.clear()
+            saved.carrier.state.update(saved.carried)
         self.hidden.intersection_update(saved.hidden)
         # A failed attempt can leave loops and try statements open.
         del self.loops[saved.depth[0] :]
@@ -1889,7 +1950,10 @@ class Scope:
                 'wait(until=input["resumeAt"])',
                 node,
             )
-        self.add("wait", {"Type": "Wait", **field}, node)
+        state: dict[str, object] = {"Type": "Wait", **field}
+        remark = self.remark
+        self.add("wait", state, node)
+        self.carrier = Carrier(state, [self.here()], remark)
 
 
 # How a loop over two variables is written, by what gives them.
