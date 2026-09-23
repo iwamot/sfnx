@@ -306,10 +306,10 @@ Before 1.0, the definition compiled from the same source, and what the language 
 
 ## Testing the definition
 
-`sfnx.testing` runs a definition on your machine, with each Task answered by a function of your test, so a test checks where the workflow goes, which calls it makes and what it returns, without AWS. It runs definitions in JSONata mode, compiled by sfnx or written by hand:
+`sfnx.testing` runs a definition on your machine, with each Task answered by a function of your test, so a test checks where the workflow goes, which calls it makes and what it returns, without AWS. It runs definitions in JSONata mode, compiled by sfnx or written by hand. Add it with a test runner such as pytest:
 
 ```bash
-uv add --dev "sfnx[testing]"
+uv add --dev "sfnx[testing]" pytest
 ```
 
 [docs/testing.md](https://github.com/iwamot/sfnx/blob/main/docs/testing.md) has an example test, the API, and where a local run differs from Step Functions.

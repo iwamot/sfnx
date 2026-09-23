@@ -6,10 +6,10 @@ What happens inside a Task is up to the function you give; a run checks the defi
 
 ## Setup
 
-The runner evaluates JSONata with [jsonata-python](https://github.com/rayokota/jsonata-python), which the `testing` extra brings. Add it where the tests run, not to what you deploy:
+The runner evaluates JSONata with [jsonata-python](https://github.com/rayokota/jsonata-python), which the `testing` extra brings. Add it where the tests run, not to what you deploy, with a test runner such as pytest:
 
 ```bash
-uv add --dev "sfnx[testing]"
+uv add --dev "sfnx[testing]" pytest
 ```
 
 ## A test
@@ -51,6 +51,12 @@ def test_an_item_out_of_stock_fails_the_order_before_charging():
     execution = run(ORDERS, ORDER, stock("b"))
     assert (execution.error, execution.cause) == ("OutOfStock", "b is out of stock")
     assert INVOKE not in [call.resource for call in execution.calls]
+```
+
+With the workflow at `examples/orders.py` of the project, save the test as `tests/test_orders.py` and run it from the project's root:
+
+```bash
+uv run pytest
 ```
 
 Compiling in the test keeps it in step with the source. A definition from elsewhere is a dict too: `json.loads(Path("machine.asl.json").read_text())`.
