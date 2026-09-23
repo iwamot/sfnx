@@ -1,3 +1,4 @@
+import re
 import textwrap
 
 import pytest
@@ -179,11 +180,45 @@ def test_a_raise_that_nothing_catches_is_a_fail():
             "States.Http.StatusCode.416",
         ),
         ("import errors", "errors.Http.StatusCode._416", "Http.StatusCode.416"),
+        (
+            'class NotFound(Exception):\n    code = 404\n    error = "Not a Hello World Example"\n',
+            "NotFound",
+            "Not a Hello World Example",
+        ),
+        (
+            'class Lambda:\n    class Busy(Exception):\n        """Too many at once."""\n\n        error: str = "Lambda.TooManyRequestsException"\n',
+            "Lambda.Busy",
+            "Lambda.TooManyRequestsException",
+        ),
     ],
 )
 def test_dotted_error_names(preamble, error, name):
     body = f"try:\n    {NOTIFY}\nexcept {error}:\n    return 1\nreturn 0"
     assert states(body, preamble)["publish"]["Catch"][0]["ErrorEquals"] == [name]
+
+
+def test_a_declared_error_name_is_raised():
+    preamble = 'class NotFound(Exception):\n    error = "Not a Hello World Example"\n'
+    compiled = states('if input["x"]:\n    raise NotFound()\nreturn 0', preamble)
+    assert compiled["raise"] == {"Type": "Fail", "Error": "Not a Hello World Example"}
+
+
+@pytest.mark.parametrize(
+    "declared, message",
+    [
+        (
+            "error = 1",
+            'error is the ASL error name, written as a string: error = "..."',
+        ),
+        ('error = ""', "an ASL error name has at least one character"),
+        ('error = "States.Timeout"', "error names starting with States. are reserved"),
+    ],
+)
+def test_a_declared_error_name_is_a_string_of_its_own(declared, message):
+    preamble = f"class Oops(Exception):\n    {declared}\n"
+    body = f"try:\n    {NOTIFY}\nexcept Oops:\n    return 1\nreturn 0"
+    with pytest.raises(CompileError, match=re.escape(message)):
+        states(body, preamble)
 
 
 def test_retry():
