@@ -278,9 +278,16 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     return Utils.convert_nulls(result)
 
 
-def parse(text: str) -> object:
+def parse(text: object) -> object:
     """$parse as Python's json reads the text, which accepts NaN and rejects
-    single quotes where Step Functions does the opposite."""
+    single quotes where Step Functions does the opposite. Undefined gives
+    undefined and anything but a string fails (measured)."""
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        raise jsonata.JException(
+            'T0410: Argument 1 of function "parse" does not match function signature'
+        )
     try:
         return nulls(json.loads(text))
     except ValueError as exc:
@@ -359,20 +366,55 @@ def now(picture: str | None = None) -> str:
     return written
 
 
-def digest(text: str, algorithm: str) -> str:
-    """$hash: the hex digest of the UTF-8 text."""
-    name = algorithm.replace("-", "").lower()
+# jsonata-python passes an undefined argument as None and leaves an omitted
+# one to the default, so $hash tells them apart by this default.
+OMITTED = object()
+
+# The algorithms $hash takes, spelled only this way (measured).
+ALGORITHMS = {
+    "MD5": "md5",
+    "SHA-1": "sha1",
+    "SHA-256": "sha256",
+    "SHA-384": "sha384",
+    "SHA-512": "sha512",
+}
+
+
+def digest(text: str | None, algorithm: object = OMITTED) -> str | None:
+    """$hash: the hex digest of the UTF-8 text. Undefined text or an omitted
+    algorithm gives undefined, and an undefined or unknown algorithm fails
+    (measured)."""
+    if text is None or algorithm is OMITTED:
+        return None
+    name = ALGORITHMS.get(algorithm) if isinstance(algorithm, str) else None
+    if name is None:
+        shown = "null" if algorithm is None else algorithm
+        raise jsonata.JException(
+            f"D3137: Hash algorithm '{shown}' must be one of"
+            " SHA-1, SHA-384, SHA-256, SHA-512, MD5"
+        )
     return hashlib.new(name, text.encode()).hexdigest()
 
 
-def partition(items: list, size: int) -> list | None:
-    """$partition, which returns nothing for no items."""
+def partition(items: list | None, size: int | None) -> list | None:
+    """$partition, which returns nothing for no items or undefined items, and
+    the items as one batch for an undefined size, even when there are none
+    (measured)."""
+    if items is None:
+        return None
+    if size is None:
+        return [items]
     batches = [items[i : i + size] for i in range(0, len(items), size)]
     return batches or None
 
 
-def range_numbers(first: int, last: int, step: int) -> list[int]:
-    """$range: from first by step through last, included when reached."""
+def range_numbers(
+    first: int | None, last: int | None, step: int | None
+) -> list[int] | None:
+    """$range: from first by step through last, included when reached, and
+    undefined when any of them is (measured)."""
+    if first is None or last is None or step is None:
+        return None
     result = []
     value = first
     while (value <= last) if step > 0 else (value >= last):
@@ -407,13 +449,17 @@ def value(template: object, variables: Mapping[str, object], states: object) -> 
 
 def matches(errors: list[str], error: str) -> bool:
     """States.Runtime is caught by nothing. States.ALL matches every other
-    error and States.TaskFailed all but States.Timeout, States.DataLimitExceeded
-    from a result over the quota included."""
+    error. States.TaskFailed matches all but States.Timeout and
+    States.QueryEvaluationError, so States.DataLimitExceeded from a result
+    over the quota is matched."""
     if error == "States.Runtime":
         return False
     if error in errors or "States.ALL" in errors:
         return True
-    return "States.TaskFailed" in errors and error != "States.Timeout"
+    return "States.TaskFailed" in errors and error not in {
+        "States.Timeout",
+        "States.QueryEvaluationError",
+    }
 
 
 def execution_context(execution_input: object) -> dict[str, object]:
