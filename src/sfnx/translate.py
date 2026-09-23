@@ -1610,17 +1610,26 @@ class Translator:
         start = lower or Bound(literal(0), back=False)
         if upper is None:
             size = start.amount if start.back else length
-        elif start.back == upper.back:
-            # From the end, s[-a:-b] holds a - b characters.
+        elif not start.back:
             size = (
-                difference(start.amount, upper.amount)
-                if start.back
+                difference(length, sum_of(upper.amount, start.amount))
+                if upper.back
                 else difference(upper.amount, start.amount)
             )
-        elif upper.back:
-            size = difference(length, sum_of(upper.amount, start.amount))
         else:
-            size = difference(sum_of(upper.amount, start.amount), length)
+            # $substring starts a count back past the beginning at the
+            # beginning and still takes the whole size, where Python takes
+            # only the characters before the end: s[-a:-b] holds a - b
+            # characters, s[-a:b] those between a from the end and b, and
+            # either holds no more than the characters before its end.
+            size = (
+                difference(start.amount, upper.amount)
+                if upper.back
+                else difference(sum_of(upper.amount, start.amount), length)
+            )
+            before = difference(length, upper.amount) if upper.back else upper.amount
+            if not (type(size.template) is int and size.template <= 0):
+                size = call("min", [array([size, before])], of(NUMBER))
         return call("substring", [text, signed(start), size], of(STRING))
 
     def bound(self, node: ast.expr | None) -> Bound | None:

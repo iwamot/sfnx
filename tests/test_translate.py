@@ -1279,9 +1279,11 @@ SLICES = 's: str = input["s"]\nxs: list[float] = input["xs"]\ni: float = input["
         ("return s[2:]", "$substring($s, 2, $length($s))"),
         ("return s[-3:]", "$substring($s, -3, 3)"),
         ("return s[1:-1]", "$substring($s, 1, $length($s) - 2)"),
-        ("return s[-3:4]", "$substring($s, -3, 7 - $length($s))"),
+        ("return s[-3:4]", "$substring($s, -3, $min([7 - $length($s), 4]))"),
+        ("return s[-3:-1]", "$substring($s, -3, $min([2, $length($s) - 1]))"),
+        ("return s[-1:-3]", "$substring($s, -1, -2)"),
         ("return s[i:-1]", "$substring($s, $i, $length($s) - (1 + $i))"),
-        ("return s[-2:i]", "$substring($s, -2, $i + 2 - $length($s))"),
+        ("return s[-2:i]", "$substring($s, -2, $min([$i + 2 - $length($s), $i]))"),
         ("return s[-i:]", "$substring($s, -$i, $i)"),
         ("return s[:-i]", "$substring($s, 0, $length($s) - $i)"),
         (
@@ -1304,6 +1306,16 @@ SLICES = 's: str = input["s"]\nxs: list[float] = input["xs"]\ni: float = input["
 )
 def test_slices(body, code):
     assert output(SLICES + body) == "{% " + code + " %}"
+
+
+def test_a_start_back_past_the_beginning_takes_what_python_takes():
+    body = SLICES + "return [s[-10:-8], s[-10:2], s[-i:-1], s[-10:i], s[-3:-5]]"
+    compiled = definition(body)
+    for text in ["", "a", "héllo", "abcdefghi", "abcdefghij", "abcdefghijkl"]:
+        for i in [1, 4, 12]:
+            python = [text[-10:-8], text[-10:2], text[-i:-1], text[-10:i], text[-3:-5]]
+            values = {"s": text, "xs": [], "i": i}
+            assert asl.run(compiled, values) == python, (text, i)
 
 
 def test_slices_evaluate():
