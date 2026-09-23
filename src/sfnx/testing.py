@@ -410,9 +410,10 @@ def partition(items: list | None, size: int | None) -> list | None:
 
 def range_numbers(
     first: int | None, last: int | None, step: int | None
-) -> list[int] | None:
+) -> list[int] | int | None:
     """$range: from first by step through last, included when reached, and
-    undefined when any of them is (measured)."""
+    undefined when any of them is. The numbers are a sequence, as a path
+    gives: none is undefined and one is that number (measured)."""
     if first is None or last is None or step is None:
         return None
     result = []
@@ -420,6 +421,8 @@ def range_numbers(
     while (value <= last) if step > 0 else (value >= last):
         result.append(value)
         value += step
+    if len(result) < 2:
+        return result[0] if result else None
     return result
 
 
