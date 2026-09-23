@@ -297,7 +297,7 @@ The line and the column count from 1, and the column counts characters: a tab is
 
 The message text, including `; <what to write instead>`, is prose and may change between releases. So may state names when the source changes above them in the same scope (serial numbers such as `amount_2`).
 
-Before 1.0, the definition compiled from the same source, and what the language accepts, may change between releases; the release notes say so.
+Before 1.0, the definition compiled from the same source, and what the language accepts, may change between releases; the release notes say so. [docs/compatibility.md](https://github.com/iwamot/sfnx/blob/main/docs/compatibility.md) says what each release can change from 1.0.
 
 ## Deploying the definition
 

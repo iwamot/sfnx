@@ -30,6 +30,6 @@ A line the compiler does not accept raises `CompileError`, a `ValueError`. Its `
 
 ## What is public
 
-`CompileError`, `compile_file` and `compile_source` are the Python API, and `sfnx.compiler.__all__` lists them. The other names of `sfnx.compiler` and its neighbours are the compiler's own and change without notice.
+`CompileError`, `compile_file` and `compile_source` are the Python API, and `sfnx.compiler.__all__` lists them; [compatibility.md](compatibility.md) says what a release can change of them. The other names of `sfnx.compiler` and its neighbours are the compiler's own and change without notice.
 
 `sfnx.compiler` imports botocore for the service models it checks arguments against, so import it where the compiling happens. The names a workflow module imports from `sfnx` itself (`state_machine`, `task`, ...) stay light, and importing `sfnx` does not import the compiler.
