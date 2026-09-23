@@ -272,6 +272,8 @@ options:
 Examples:
   sfnx compile app.py            print the ASL of the only @state_machine
   sfnx compile app.py -o out/    write one <function>.asl.json per @state_machine
+  sfnx compile app.py --source-locations
+                                 end each state's Comment with the lines it comes from
 
 Exit codes:
   0  success
@@ -284,6 +286,7 @@ Exit codes:
 - The compiler is a Python function too: [docs/api.md](https://github.com/iwamot/sfnx/blob/main/docs/api.md) describes `compile_file` and `compile_source`.
 - `-o` ending in `.json` writes the only machine to that file; any other path is a directory that receives `<function>.asl.json` per machine. Missing directories are created.
 - The first error stops the compilation, so one run reports one line.
+- `--source-locations` ends each state's `Comment` with the lines of the source it comes from; [docs/deployment.md](https://github.com/iwamot/sfnx/blob/main/docs/deployment.md#tracing-a-state-back-to-the-source) describes the line.
 
 ## Output
 
@@ -294,6 +297,8 @@ Exit codes:
 | stderr (exit 2) | `<path>: <reason>`, or a message naming the path | the path |
 
 The line and the column count from 1, and the column counts characters: a tab is one column, and so is a character outside ASCII, whatever it takes on screen or in UTF-8 or UTF-16.
+
+With `--source-locations`, the last line of each state's `Comment` starts with `sfnx-source: `. The JSON after it is for people to read, and its layout may change between releases.
 
 The message text, including `; <what to write instead>`, is prose and may change between releases. So may state names when the source changes above them in the same scope (serial numbers such as `amount_2`).
 

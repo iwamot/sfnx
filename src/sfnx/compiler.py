@@ -39,6 +39,7 @@ from sfnx.jsontypes import (
     of,
     union,
 )
+from sfnx.locations import Locations, Origin
 from sfnx.module import Module, holds, module, qualified
 from sfnx.translate import StateCall, Translator, direct_call, text, unpacked
 
@@ -169,6 +170,7 @@ class Checkpoint:
     partial: set[str]
     pending: dict[str, Expr]
     pending_node: ast.AST | None
+    pending_origins: list[Origin]
     pending_remarks: list[str]
     remark: str | None
     hidden: set[str]
@@ -231,6 +233,7 @@ class Scope:
         # Independent assignments wait here to share one Pass.
         self.pending: dict[str, Expr] = {}
         self.pending_node: ast.AST | None = None
+        self.pending_origins: list[Origin] = []
         # The comments above the pending assignments, for the Pass they share,
         # and the comment of the statement being compiled, for the first state
         # it adds.
@@ -249,6 +252,10 @@ class Scope:
         # States added that can report errors to except, counted.
         self.catchable = 0
         self.handling: list[Handler] = []
+        # The statement being compiled, and, with --source-locations, the
+        # source each state's Comment points into.
+        self.current: ast.stmt | None = None
+        self.locations: Locations | None = None
 
     def spelling(self, name: str) -> str:
         return spelling(name, self.module.spellings)
@@ -256,13 +263,31 @@ class Scope:
     def variable(self, name: str, type: Type | None) -> Expr:
         return variable(name, self.module.spellings, type)
 
-    def add(self, base: str, state: dict[str, object], node: ast.AST) -> str:
+    def add(
+        self,
+        base: str,
+        state: dict[str, object],
+        node: ast.AST,
+        origins: list[Origin] | None = None,
+    ) -> str:
+        """A state of the statement being compiled, unless origins says where
+        else in the source it comes from."""
         if self.remark is not None:
             state = commented(state, self.remark)
             self.remark = None
-        return self.insert(base, state, node)
+        return self.insert(base, state, node, origins or [self.here()])
 
-    def insert(self, base: str, state: dict[str, object], node: ast.AST) -> str:
+    def here(self) -> Origin:
+        assert self.current is not None
+        return Origin(self.current)
+
+    def insert(
+        self, base: str, state: dict[str, object], node: ast.AST, origins: list[Origin]
+    ) -> str:
+        if self.locations is not None:
+            located = self.locations.line(origins)
+            remark = state.get("Comment")
+            state = commented(state, f"{remark}\n{located}" if remark else located)
         try:
             return self.graph.add(base, state)
         except ValueError as exc:
@@ -275,13 +300,22 @@ class Scope:
         first = next(iter(self.pending))
         assign = {self.spelling(k): value.template for k, value in self.pending.items()}
         node = self.pending_node
+        origins = self.pending_origins
         state: dict[str, object] = {"Type": "Pass", "Assign": assign}
         if self.pending_remarks:
             state = commented(state, "\n".join(self.pending_remarks))
         self.pending = {}
         self.pending_node = None
+        self.pending_origins = []
         self.pending_remarks = []
-        self.insert(first, state, node)
+        self.insert(first, state, node, origins)
+
+    def defer(self, name: str, value: Expr, node: ast.AST, origin: Origin) -> None:
+        """A value for the Pass the pending assignments share, and where in the
+        source it comes from."""
+        self.pending[name] = value
+        self.pending_node = self.pending_node or node
+        self.pending_origins.append(origin)
 
     def hold_remark(self) -> None:
         """The comment of an assignment waits for the Pass it will share."""
@@ -289,7 +323,9 @@ class Scope:
             self.pending_remarks.append(self.remark)
             self.remark = None
 
-    def materialize(self, statements: list[ast.stmt], node: ast.AST) -> None:
+    def materialize(
+        self, statements: list[ast.stmt], node: ast.stmt, role: str
+    ) -> None:
         """Assign to variables the names bound to expressions, such as a map's
         item or a list loop's variable, that the statements assign again. A path
         that does not assign them would read the expression after the others
@@ -302,8 +338,7 @@ class Scope:
             binding = self.bindings.get(name)
             if binding is None or binding == self.variable(name, binding.type):
                 continue
-            self.pending[name] = binding
-            self.pending_node = self.pending_node or node
+            self.defer(name, binding, node, Origin(node, role, header=True))
             self.bindings[name] = self.variable(name, binding.type)
 
     def block(self, statements: list[ast.stmt]) -> None:
@@ -320,10 +355,13 @@ class Scope:
         compound statement that adds none first leaves it to its body."""
         own = self.module.comments.get(node.lineno)
         self.remark = "\n".join(r for r in (self.remark, own) if r) or None
+        enclosing = self.current
+        self.current = node
         try:
             self.compile_statement(node)
         finally:
             self.remark = None
+            self.current = enclosing
 
     def compile_statement(self, node: ast.stmt) -> None:
         if isinstance(node, ast.Assign):
@@ -501,9 +539,7 @@ class Scope:
         # state, so one that reads a pending assignment needs a state of its own.
         if name in self.pending or value.variables & self.pending.keys():
             self.flush()
-        if not self.pending:
-            self.pending_node = target
-        self.pending[name] = value
+        self.defer(name, value, target, self.here())
         self.hold_remark()
         self.bindings[name] = self.variable(name, known)
         self.partial.discard(name)
@@ -539,8 +575,7 @@ class Scope:
                 if whole.variables & self.pending.keys():
                     self.flush()
                 copy = self.fresh(f"{self.spelling(names[0])}_items", target)
-                self.pending[copy] = whole
-                self.pending_node = self.pending_node or target
+                self.defer(copy, whole, target, self.here())
                 whole = self.variable(copy, whole.type)
             values = [element_at(whole, literal(i)) for i in range(len(names))]
         assign = {
@@ -554,19 +589,26 @@ class Scope:
             reads = frozenset().union(*(v.variables for v in values))
             if set(names) & self.pending.keys() or reads & self.pending.keys():
                 self.flush()
-            self.pending_node = self.pending_node or target
-            self.pending.update(zip(names, values, strict=True))
+            for name, value in zip(names, values, strict=True):
+                self.defer(name, value, target, self.here())
             self.hold_remark()
         for name, value in zip(names, values, strict=True):
             known = value.type or self.declared.get(name)
             self.bindings[name] = self.variable(name, known)
             self.partial.discard(name)
 
-    def finish(self, value: Expr, call: StateCall | None, node: ast.AST) -> None:
+    def finish(
+        self,
+        value: Expr,
+        call: StateCall | None,
+        node: ast.AST,
+        origins: list[Origin] | None = None,
+    ) -> None:
         self.flush()
         self.returns.append(value.type)
         if call is None:
-            self.add("return", {"Type": "Succeed", "Output": value.template}, node)
+            state = {"Type": "Succeed", "Output": value.template}
+            self.add("return", state, node, origins)
             return
         # A Task at the end ends the machine itself; its output is the result
         # unless the return makes something of it.
@@ -682,6 +724,7 @@ class Scope:
             self.outer | self.assigned | self.hidden,
         )
         scope.labels = self.labels
+        scope.locations = self.locations
         if local:
             scope.functions = dict(self.functions)
             scope.declared = {n: t for n, t in self.declared.items() if n not in own}
@@ -693,10 +736,10 @@ class Scope:
         self, scope: "Scope", function: ast.FunctionDef
     ) -> tuple[dict[str, object], list[Type | None]]:
         """The states of a function, and the types of what its returns give."""
-        scope.materialize(function.body, function)
+        scope.materialize(function.body, function, "parameters")
         scope.block(function.body)
         if scope.graph.reachable:
-            scope.finish(literal(None), None, function)
+            scope.finish(literal(None), None, function, [ended(function)])
         definition = scope.graph.definition()
         docstring = ast.get_docstring(function)
         if docstring:
@@ -819,6 +862,8 @@ class Scope:
                 self.check_variable(parameter.arg, parameter)
         scope.pending = pending
         scope.pending_node = function if pending else None
+        if pending:
+            scope.pending_origins = [Origin(function, "parameters", header=True)]
         # What the first state binds is the function's to assign.
         scope.assigned |= pending.keys()
         processor, returned = self.run_child(scope, function)
@@ -1138,9 +1183,11 @@ class Scope:
         else branch or for what follows the if."""
         self.flush()
         tests: list[tuple[ast.expr, list[ast.stmt]]] = []
+        headers: list[ast.If] = []
         current = node
         while True:
             tests.append((current.test, current.body))
+            headers.append(current)
             if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
                 current = current.orelse[0]
                 continue
@@ -1159,7 +1206,7 @@ class Scope:
             bodies.append((body, {**failed, **when}, rule))
             failed = {**failed, **unless}
         state: dict[str, object] = {"Type": "Choice", "Choices": rules}
-        self.add("if", state, node)
+        self.add("if", state, node, [Origin(h, header=True) for h in headers])
         start = self.save()
         ends = []
         for body, proven, rule in bodies:
@@ -1261,6 +1308,7 @@ class Scope:
             set(self.partial),
             dict(self.pending),
             self.pending_node,
+            list(self.pending_origins),
             list(self.pending_remarks),
             self.remark,
             set(self.hidden),
@@ -1290,6 +1338,7 @@ class Scope:
         self.partial.update(saved.partial)
         self.pending = dict(saved.pending)
         self.pending_node = saved.pending_node
+        self.pending_origins = list(saved.pending_origins)
         self.pending_remarks = list(saved.pending_remarks)
         self.remark = saved.remark
         self.hidden.intersection_update(saved.hidden)
@@ -1419,7 +1468,7 @@ class Scope:
                 when, unless = self.translator.narrowing(node.test)
                 rule: dict[str, object] = {"Condition": condition.template}
                 state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
-                head = self.add("while", state, node)
+                head = self.add("while", state, node, [Origin(node, header=True)])
                 self.follow(start, when, [(rule, "Next")], node.body)
                 exits = [self.narrow_flow(start, unless, [(state, "Default")])]
             self.loops.pop()
@@ -1569,8 +1618,7 @@ class Scope:
         if items.variables & self.pending.keys():
             self.flush()
         copy = self.fresh(f"{self.spelling(target)}_items", node)
-        self.pending[copy] = items
-        self.pending_node = self.pending_node or node
+        self.defer(copy, items, node, starting(node))
         return self.variable(copy, items.type)
 
     def listed(
@@ -1586,8 +1634,7 @@ class Scope:
         """The counter of a loop, assigned 0 before it. A pending value of the
         same name is written over: the loop assigns the counter first, and it
         ends with the loop."""
-        self.pending[counter] = literal(0)
-        self.pending_node = self.pending_node or node
+        self.defer(counter, literal(0), node, starting(node))
         return self.variable(counter, of(NUMBER))
 
     def unpacking_loop(self, node: ast.For) -> None:
@@ -1700,13 +1747,11 @@ class Scope:
                 if stop.variables & self.pending.keys():
                     self.flush()
                 copy = self.fresh(f"{self.spelling(target)}_stop", node)
-                self.pending[copy] = stop
-                self.pending_node = self.pending_node or node
+                self.defer(copy, stop, node, starting(node))
                 limit = self.variable(copy, of(NUMBER))
             if target in self.pending:
                 self.flush()
-            self.pending[target] = start
-            self.pending_node = self.pending_node or node
+            self.defer(target, start, node, starting(node))
             self.bindings[target] = self.variable(target, of(NUMBER))
             self.partial.discard(target)
             counter = self.variable(target, of(NUMBER))
@@ -1738,11 +1783,11 @@ class Scope:
         condition = binary(index, comparison, limit, COMPARE, of(BOOLEAN), True)
         rule: dict[str, object] = {"Condition": condition.template}
         state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
-        head = self.add("for", state, node)
+        head = self.add("for", state, node, [Origin(node, header=True)])
         self.restore(start)
         self.graph.tails = [(rule, "Next")]
         self.bindings.update(targets)
-        self.materialize(node.body, node)
+        self.materialize(node.body, node, "loop variables")
         self.block(node.body)
         self.loops.pop()
         increment = binary(index, "+", step, ADD, of(NUMBER))
@@ -1753,8 +1798,7 @@ class Scope:
         if self.graph.reachable:
             # Only the loop assigns its counter, so the increment joins
             # whatever the body left pending.
-            self.pending_node = self.pending_node or node
-            self.pending[counter] = increment
+            self.defer(counter, increment, node, Origin(node, "loop step", header=True))
             self.flush()
         body_end = self.save()
         for target in targets.keys() - {counter}:
@@ -2011,17 +2055,31 @@ def annotate(node: ast.expr | None, context: Module) -> Type | None:
         raise CompileError(str(exc), exc.node) from exc
 
 
+def starting(loop: ast.For) -> Origin:
+    """What a for loop assigns before its first iteration."""
+    return Origin(loop, "loop start", header=True)
+
+
+def ended(function: ast.FunctionDef) -> Origin:
+    """The return a function makes where its body ends."""
+    return Origin(function, "end of function", header=True)
+
+
 def commented(state: dict[str, object], comment: str) -> dict[str, object]:
     """The state with its Comment after its Type, where a person puts it. The
     dict itself changes, as the transitions still to be linked hold on to it."""
     fields = dict(state)
+    fields.pop("Comment", None)
     state.clear()
     state.update({"Type": fields.pop("Type"), "Comment": comment, **fields})
     return state
 
 
 def compile_machine(
-    function: ast.FunctionDef, options: dict[str, object], context: Module
+    function: ast.FunctionDef,
+    options: dict[str, object],
+    context: Module,
+    locations: Locations | None,
 ) -> dict[str, object]:
     arguments = function.args
     if (
@@ -2056,9 +2114,10 @@ def compile_machine(
         assigned_names(function.body),
         set(),
     )
+    scope.locations = locations
     scope.block(function.body)
     if graph.reachable:
-        scope.finish(literal(None), None, function)
+        scope.finish(literal(None), None, function, [ended(function)])
     docstring = ast.get_docstring(function)
     comment = {"Comment": docstring} if docstring else {}
     return {**comment, "QueryLanguage": "JSONata", **options, **graph.definition()}
@@ -2074,11 +2133,28 @@ def compile_source(
 ) -> dict[str, dict[str, object]]:
     """Every state machine in a module, keyed by function name. The source is
     parsed, never imported or run; filename names it in diagnostics."""
+    return definitions(source, filename, located=False)
+
+
+def compile_file(path: str | Path) -> dict[str, dict[str, object]]:
+    """A source file, decoded as Python decodes it: UTF-8 unless the file
+    declares its encoding. Python rejects a file it cannot decode as a syntax
+    error, and so does the compiler."""
+    return compile_source(read(path), str(path))
+
+
+def definitions(
+    source: str, filename: str, located: bool
+) -> dict[str, dict[str, object]]:
+    """The state machines of a module, each state's Comment ending with the
+    lines of the file it comes from when located is set, as the CLI's
+    --source-locations asks."""
+    locations = Locations(source, filename) if located else None
     try:
         tree = ast.parse(source, filename)
         context = module(tree, source)
         return {
-            function.name: compile_machine(function, options, context)
+            function.name: compile_machine(function, options, context, locations)
             for function, options in machines(tree, context)
         }
     except SyntaxError as exc:
@@ -2090,16 +2166,14 @@ def compile_source(
         raise exc.located(source, filename) from None
 
 
-def compile_file(path: str | Path) -> dict[str, dict[str, object]]:
-    """A source file, decoded as Python decodes it: UTF-8 unless the file
-    declares its encoding. Python rejects a file it cannot decode as a syntax
-    error, and so does the compiler."""
+def read(path: str | Path) -> str:
+    """A source file as text, or the error Python would give for its bytes."""
     data = Path(path).read_bytes()
     advice = (
         "save the file as UTF-8, or declare its encoding: # -*- coding: latin-1 -*-"
     )
     try:
-        source = decode_source(data)
+        return decode_source(data)
     except SyntaxError as exc:
         raise CompileError(f"{exc.msg}; {advice}", filename=str(path)) from None
     except UnicodeDecodeError as exc:
@@ -2108,4 +2182,3 @@ def compile_file(path: str | Path) -> dict[str, dict[str, object]]:
             line=data.count(b"\n", 0, exc.start) + 1,
             filename=str(path),
         ) from None
-    return compile_source(source, str(path))
