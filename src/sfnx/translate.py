@@ -2473,12 +2473,15 @@ class Translator:
         if name in {"ljust", "rjust"} and len(arguments) in {1, 2}:
             width = self.numeric(arguments[0], f"the width of {name}()")
             if not whole_number(width):
-                # $pad fills on the other side for a width below 0, where
-                # Python leaves the text as it is, and takes 6.5 as 6.
+                # $pad takes 6.5 as 6, where Python raises.
                 raise CompileError(
                     f"the width of {name}() is a whole number of 0 or more",
                     arguments[0],
                 )
+            if written_number(width) is None:
+                # $pad fills on the other side for a width below 0, where
+                # Python leaves the text as it is.
+                width = call("max", [array([width, literal(0)])], of(NUMBER))
             if name == "rjust":
                 # $pad fills on the left for a negative width.
                 number = width.template

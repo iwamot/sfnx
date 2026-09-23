@@ -1182,10 +1182,21 @@ def test_no_parts_stay_a_list_where_they_are_read():
     assert asl.run(compiled, {"s": "   ", "parts": []}) == [[], {"p": []}, 0]
 
 
-def test_a_width_and_a_fill_read_at_run_time_are_passed_through():
+def test_a_fill_read_at_run_time_is_passed_through():
     """Only what is written in the source is known when the file is compiled."""
     body = 'n: float = input["n"]\nf: str = input["f"]\nreturn s.ljust(n, f)'
-    assert output(STRINGS + body) == "{% $pad($s, $n, $f) %}"
+    assert output(STRINGS + body) == "{% $pad($s, $max([$n, 0]), $f) %}"
+
+
+@pytest.mark.parametrize("method", ["ljust", "rjust"])
+def test_a_width_below_zero_read_at_run_time_leaves_the_text(method):
+    body = f'n: float = input["n"]\nreturn [s.{method}(n), s.{method}(n, "0")]'
+    compiled = definition(STRINGS + body)
+    assert asl.run(compiled, {"s": "ab", "n": -3, "parts": []}) == ["ab", "ab"]
+    assert asl.run(compiled, {"s": "ab", "n": 4, "parts": []}) == [
+        getattr("ab", method)(4),
+        getattr("ab", method)(4, "0"),
+    ]
 
 
 def test_string_methods_evaluate():
@@ -1842,7 +1853,10 @@ def more_definition(body: str) -> dict:
     [
         ('return s.ljust(5, "0")', "$pad($s, 5, '0')"),
         ("return s.rjust(4)", "$pad($s, -4)"),
-        ('n: float = input["n"]\nreturn s.rjust(n, "0")', "$pad($s, -$n, '0')"),
+        (
+            'n: float = input["n"]\nreturn s.rjust(n, "0")',
+            "$pad($s, -$max([$n, 0]), '0')",
+        ),
         ("return list(set(xs))", "$distinct($xs)"),
         ("return sorted(set(xs))", "$sort($distinct($xs))"),
         ("return list(zip(xs, ys))", "$zip($xs, $ys)"),
