@@ -445,11 +445,13 @@ JSONata reads these where Python raises. The intent of the source is met, so not
 
 ### Written this way on purpose
 
-A minus sign written in the source counts from the end; a negative number that arrives in a variable does not, as the position would otherwise depend on a value the definition cannot see. A list comprehension is a `$filter` and then a `$map`, the two passes a hand-writer would put in an expression.
+A minus sign written in the source counts from the end; a negative number that arrives in a variable does not, as the position would otherwise depend on a value the definition cannot see. A minus written before a variable counts that many from the end, so `s[-n:]` is the last `n` characters and an `n` of 0 is none of them, where Python reads `-0` as the start. A list comprehension is a `$filter` and then a `$map`, the two passes a hand-writer would put in an expression.
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
 | `xs[a:b]`, or the end of `s[a:b]` | a negative number read from a variable with no minus sign written, such as `i` = -2 | not counted from the end: `xs[i:]` is the whole list, `s[:i]` is `""` | counted from the end |
+| `xs[-n:]`, `xs[:-n]`, `s[-n:]`, `s[:-n]` | an `n` of 0 read from a variable | the last 0 items or characters and all but those: `[]` or `""` from `[-n:]`, the whole value from `[:-n]` | `-0` is the start: the whole value from `[-n:]`, `[]` or `""` from `[:-n]` |
+| `xs[-n:]`, `xs[:-n]`, `s[-n:]`, `s[:-n]` | a negative number read from a variable with a minus sign written, such as `n` = -2 | `[]` or `""` from `[-n:]`, the whole value from `[:-n]` | counted from the start: `xs[2:]` and `xs[:2]` |
 | `[f(x) for x in xs if c]` | a `c` and an `f` that each give another value on every call, such as `random.random()` | `$filter` tests every item, then `$map` reads a result for each item it kept | the condition and the result of one item before the next item, so a dropped item takes no result |
 
 ### The ASL's own semantics
