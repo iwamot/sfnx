@@ -556,6 +556,15 @@ class Translator:
             and qualified(node, self.names) == "sfnx.context"
         ):
             return expression("$states.context", type=CONTEXT)
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "__name__"
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "type"
+            and "type" not in self.bindings
+        ):
+            return self.error_name(node.value)
         if isinstance(node, ast.Attribute) and self.timedelta_span(node.value):
             raise CompileError(
                 "a timedelta is seconds through total_seconds() here: "
@@ -1700,6 +1709,21 @@ class Translator:
             raise CompileError(
                 f"{ast.unparse(node)} is {article(value.type.describe())}; {rule}", node
             )
+
+    def error_name(self, node: ast.Call) -> Expr:
+        """type(e).__name__ of a caught error: the Error of its error output,
+        which is the name Python gives its class, or the name the class
+        declares with error = "..."."""
+        if len(node.args) != 1 or node.keywords:
+            raise CompileError("type() takes one argument: type(e).__name__", node)
+        caught = self.expr(node.args[0])
+        if caught.type != ERROR_OUTPUT:
+            raise CompileError(
+                "type(x).__name__ reads the name of a caught error here: "
+                "except Exception as e: ... type(e).__name__",
+                node.args[0],
+            )
+        return field(caught, "Error")
 
     def call(self, node: ast.Call) -> Expr:
         target = qualified(node.func, self.names) or ""

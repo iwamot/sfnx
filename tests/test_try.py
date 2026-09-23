@@ -221,6 +221,31 @@ def test_a_declared_error_name_is_a_string_of_its_own(declared, message):
         states(body, preamble)
 
 
+def test_type_of_a_caught_error_names_it():
+    body = f"try:\n    r = {CHARGE}\nexcept Exception as e:\n    return [type(e).__name__, str(e)]\nreturn r"
+    assert states(body)["return"]["Output"] == ["{% $e.Error %}", "{% $e.Cause %}"]
+    tasks = {"r": fails("Declined", "card expired")}
+    assert run(body, {}, tasks) == ["Declined", "card expired"]
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            "return type(input).__name__",
+            "type(x).__name__ reads the name of a caught error",
+        ),
+        (
+            f"try:\n    {NOTIFY}\nexcept Exception as e:\n    return type(e, 1).__name__\nreturn 0",
+            "type() takes one argument",
+        ),
+    ],
+)
+def test_type_name_is_for_a_caught_error(body, message):
+    with pytest.raises(CompileError, match=re.escape(message)):
+        states(body)
+
+
 def test_retry():
     body = (
         f'r = task("{LAMBDA}", {{"FunctionName": "f"}}, retry=[\n'
