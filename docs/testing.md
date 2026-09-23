@@ -79,7 +79,14 @@ An `Execution` has:
 
 ## What runs
 
-Every state type, with the fields sfnx writes: `Arguments`, `Assign`, `Output`, `Retry` and `Catch` on a Task, a Parallel and a Map; `Items`, `ItemReader`, `ItemSelector`, `ItemBatcher`, `ResultWriter`, `Label` and the tolerated failures on a Map, inline or distributed; `Assign` on a Pass; `Choices` and `Default` on a Choice; `Seconds` and `Timestamp` on a Wait; `Output` on a Succeed; `Error` and `Cause` on a Fail; `Assign` on a catcher. `Comment`, `MaxConcurrency`, the timing fields of a retrier, and the timeouts of a Task are read and have nothing to do in a local run. A field outside these raises `Unsupported`.
+Every state type, with the fields it has in JSONata mode:
+
+- **`Assign` and `Output`** on every state that has them, on a Choice rule and on a catcher. Both read the variables from before the state, and a Choice rule that matches assigns and outputs by its own fields, the `Default` by the Choice's, as in Step Functions.
+- **`Arguments`** on a Task and a Parallel, whose branches each get it as their input, and **`Retry` and `Catch`** on a Task, a Parallel and a Map.
+- **On a Map, inline or distributed**: `Items`, `ItemReader`, `ItemSelector`, `ItemBatcher`, `ResultWriter`, `Label` and the tolerated failures.
+- **The rest**: `Choices` and `Default` on a Choice, `Seconds` and `Timestamp` on a Wait, `Error` and `Cause` on a Fail, and `Next` and `End`.
+
+`Comment`, `MaxConcurrency`, `Credentials`, the timing fields of a retrier, and the timeouts of a Task are read and have nothing to do in a local run. A field outside these raises `Unsupported`, the fields of JSONPath mode (`Parameters`, `ResultPath`, `InputPath`, ...) among them.
 
 The Context Object reads as in Step Functions, with fixed placeholder values: `Execution.Id`, `Execution.Name`, `Execution.StartTime`, `State.EnteredTime` and `Task.Token` are the same on every run, and `Execution.Input` is the input given.
 

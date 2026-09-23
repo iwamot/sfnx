@@ -474,8 +474,8 @@ def test_a_choice_without_a_match_or_a_default_fails():
         ),
         (machine({"Type": "Activity"}), "s: the state type Activity is not run"),
         (
-            machine({"Type": "Pass", "Output": {}, "End": True}),
-            "s: Output is not run",
+            machine({"Type": "Pass", "Result": {}, "End": True}),
+            "s: Result is not run",
         ),
         (
             machine({"Type": "Task", "Resource": LAMBDA, "Parameters": {}}),
@@ -490,20 +490,22 @@ def test_a_choice_without_a_match_or_a_default_fails():
                 {
                     "Type": "Task",
                     "Resource": LAMBDA,
-                    "Catch": [{"ErrorEquals": ["A"], "Next": "s", "Output": {}}],
+                    "Catch": [{"ErrorEquals": ["A"], "Next": "s", "ResultPath": "$"}],
                     "End": True,
                 }
             ),
-            "s.Catch: Output is not run",
+            "s.Catch: ResultPath is not run",
         ),
         (
             machine(
                 {
                     "Type": "Choice",
-                    "Choices": [{"Condition": "{% true %}", "Next": "s", "Assign": {}}],
+                    "Choices": [
+                        {"Variable": "$.a", "BooleanEquals": True, "Next": "s"}
+                    ],
                 }
             ),
-            "s.Choices: Assign is not run",
+            "s.Choices: Variable is not run",
         ),
         (
             machine(
@@ -512,13 +514,15 @@ def test_a_choice_without_a_match_or_a_default_fails():
                     "Branches": [
                         {
                             "StartAt": "t",
-                            "States": {"t": {"Type": "Pass", "End": True}},
+                            "States": {
+                                "t": {"Type": "Pass", "Parameters": {}, "End": True}
+                            },
                         }
                     ],
                     "End": True,
                 }
             ),
-            "t: End is not run",
+            "t: Parameters is not run",
         ),
         (
             machine(
@@ -596,3 +600,141 @@ def test_an_item_reader_is_a_call_and_iterations_are_entered_states():
         testing.Call("s", "arn:aws:states:::s3:getObject", {"Bucket": "b", "Key": "k"}),
     )
     assert execution.states == ("s", "c", "c")
+
+
+def chain(*states: dict) -> dict:
+    """A machine of the states given, each named by its position and going
+    to the next, the last ending unless it is a Succeed, all reading $v as 0
+    from a first Pass."""
+    named = {"v": {"Type": "Pass", "Assign": {"v": 0}, "Next": "0"}}
+    for position, state in enumerate(states):
+        if position < len(states) - 1:
+            named[str(position)] = {**state, "Next": str(position + 1)}
+        elif state["Type"] == "Succeed":
+            named[str(position)] = state
+        else:
+            named[str(position)] = {**state, "End": True}
+    return {"QueryLanguage": "JSONata", "StartAt": "v", "States": named}
+
+
+OLD_AND_INPUT = {"old": "{% $v %}", "in": "{% $states.input %}"}
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"Type": "Pass"},
+        {"Type": "Wait", "Seconds": 0},
+    ],
+)
+def test_a_pass_and_a_wait_assign_and_output_and_end(state):
+    """Assign and Output read the variables from before the state, and
+    without an Output the input goes on (measured)."""
+    assigned = {**state, "Assign": {"v": 5}, "Output": OLD_AND_INPUT}
+    assert testing.run(chain(assigned), 1).output == {"old": 0, "in": 1}
+    assert testing.run(chain(state, {"Type": "Succeed"}), 1).output == 1
+    read = {"Type": "Succeed", "Output": "{% $v %}"}
+    assert testing.run(chain(assigned, read), 1).output == 5
+
+
+def choice(test: str) -> dict:
+    """A Choice whose one rule and whose Default both assign and output, each
+    going to a Succeed that reads $v and the input."""
+    return {
+        "QueryLanguage": "JSONata",
+        "StartAt": "c",
+        "States": {
+            "c": {
+                "Type": "Choice",
+                "Choices": [
+                    {
+                        "Condition": test,
+                        "Next": "end",
+                        "Assign": {"v": "rule"},
+                        "Output": {"by": "rule", "in": "{% $states.input %}"},
+                    }
+                ],
+                "Default": "end",
+                "Assign": {"v": "state"},
+                "Output": {"by": "state"},
+            },
+            "end": {
+                "Type": "Succeed",
+                "Output": {"v": "{% $v %}", "out": "{% $states.input %}"},
+            },
+        },
+    }
+
+
+def test_a_choice_assigns_and_outputs_by_the_rule_it_takes_or_by_its_default():
+    """Measured: a rule that matches uses its own Assign and Output and not
+    the state's, and the Default uses the state's."""
+    assert testing.run(choice("{% true %}"), 1).output == {
+        "v": "rule",
+        "out": {"by": "rule", "in": 1},
+    }
+    assert testing.run(choice("{% false %}"), 1).output == {
+        "v": "state",
+        "out": {"by": "state"},
+    }
+    plain = machine(
+        {"Type": "Choice", "Choices": [{"Condition": "{% true %}", "Next": "e"}]}
+    )
+    plain["States"]["e"] = {"Type": "Succeed"}
+    assert testing.run(plain, 1).output == 1
+
+
+def test_a_catcher_outputs_from_the_error_the_input_and_the_old_variables():
+    task = {
+        "Type": "Task",
+        "Resource": LAMBDA,
+        "Catch": [
+            {
+                "ErrorEquals": ["States.ALL"],
+                "Next": "caught",
+                "Assign": {"v": 5},
+                "Output": {**OLD_AND_INPUT, "e": "{% $states.errorOutput.Error %}"},
+            }
+        ],
+    }
+    definition = chain(task, {"Type": "Succeed"})
+    definition["States"]["caught"] = {
+        "Type": "Succeed",
+        "Output": {"v": "{% $v %}", "out": "{% $states.input %}"},
+    }
+
+    def fail(call: testing.Call) -> object:
+        raise testing.Failure("Boom", "c")
+
+    assert testing.run(definition, 1, fail).output == {
+        "v": 5,
+        "out": {"old": 0, "in": 1, "e": "Boom"},
+    }
+
+
+def test_the_arguments_of_a_parallel_are_the_input_of_every_branch():
+    branch = {
+        "StartAt": "b",
+        "States": {"b": {"Type": "Succeed", "Output": "{% $states.input %}"}},
+    }
+    parallel = machine(
+        {
+            "Type": "Parallel",
+            "Arguments": {"a": "{% $states.input.x %}"},
+            "Branches": [branch, branch],
+            "End": True,
+        }
+    )
+    assert testing.run(parallel, {"x": 7}).output == [{"a": 7}, {"a": 7}]
+
+
+def test_the_credentials_of_a_task_are_accepted():
+    task = machine(
+        {
+            "Type": "Task",
+            "Resource": LAMBDA,
+            "Credentials": {"RoleArn": "arn:aws:iam::123456789012:role/r"},
+            "End": True,
+        }
+    )
+    assert testing.run(task, {}, lambda call: "ok").output == "ok"

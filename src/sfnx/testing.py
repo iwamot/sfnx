@@ -150,8 +150,9 @@ def run(
 COMMON = frozenset({"Type", "Comment", "QueryLanguage"})
 ACTION = frozenset({"Assign", "Output", "Retry", "Catch", "Next", "End"})
 FIELDS = {
-    "Task": ACTION | {"Resource", "Arguments", "TimeoutSeconds", "HeartbeatSeconds"},
-    "Parallel": ACTION | {"Branches"},
+    "Task": ACTION
+    | {"Resource", "Arguments", "Credentials", "TimeoutSeconds", "HeartbeatSeconds"},
+    "Parallel": ACTION | {"Branches", "Arguments"},
     "Map": ACTION
     | {
         "ItemProcessor",
@@ -165,9 +166,9 @@ FIELDS = {
         "ToleratedFailurePercentage",
         "Label",
     },
-    "Pass": frozenset({"Assign", "Next"}),
-    "Wait": frozenset({"Seconds", "Timestamp", "Next"}),
-    "Choice": frozenset({"Choices", "Default"}),
+    "Pass": frozenset({"Assign", "Output", "Next", "End"}),
+    "Wait": frozenset({"Seconds", "Timestamp", "Assign", "Output", "Next", "End"}),
+    "Choice": frozenset({"Choices", "Default", "Assign", "Output"}),
     "Succeed": frozenset({"Output"}),
     "Fail": frozenset({"Error", "Cause"}),
 }
@@ -176,8 +177,8 @@ MACHINE = frozenset(
 )
 BRANCH = frozenset({"StartAt", "States", "Comment"})
 PROCESSOR = BRANCH | {"ProcessorConfig"}
-RULE = frozenset({"Condition", "Next", "Comment"})
-CATCHER = frozenset({"ErrorEquals", "Next", "Assign", "Comment"})
+RULE = frozenset({"Condition", "Next", "Assign", "Output", "Comment"})
+CATCHER = frozenset({"ErrorEquals", "Next", "Assign", "Output", "Comment"})
 RETRIER = frozenset(
     {
         "ErrorEquals",
@@ -479,28 +480,20 @@ def scope(
                 str(value(state.get("Cause", ""), variables, frame)),
             )
         if kind == "Choice":
-            for rule in state["Choices"]:
-                test = value(rule["Condition"], variables, frame)
-                if not isinstance(test, bool):
-                    raise Failure(
-                        "States.QueryEvaluationError", f"{test!r} is not a boolean"
-                    )
-                if test:
-                    name = rule["Next"]
-                    break
-            else:
-                if "Default" not in state:
-                    raise Failure("States.NoChoiceMatched")
-                name = state["Default"]
+            rule = next(
+                (r for r in state["Choices"] if condition(r, variables, frame)),
+                None,
+            )
+            if rule is None and "Default" not in state:
+                raise Failure("States.NoChoiceMatched")
+            # A rule that matches assigns and outputs by its own fields, and
+            # the Default by the state's; the other's do not apply (measured).
+            taken = state if rule is None else rule
+            assigned, state_input = settled(taken, variables, frame, state_input)
+            variables.update(assigned)
+            name = state["Default"] if rule is None else rule["Next"]
             continue
-        if kind == "Wait":
-            if "Seconds" in state:
-                seconds = value(state["Seconds"], variables, frame)
-                assert isinstance(seconds, int) and 0 <= seconds <= 99_999_999
-            else:
-                timestamp = value(state["Timestamp"], variables, frame)
-                assert isinstance(timestamp, str) and timestamp.endswith("Z")
-        elif kind in {"Task", "Parallel", "Map"}:
+        if kind in {"Task", "Parallel", "Map"}:
             retries: list[int] = []
             try:
                 assigned, output = retried(
@@ -523,26 +516,59 @@ def scope(
                     "context": entered(context, name, state, sum(retries)),
                     "errorOutput": error_output,
                 }
-                assigned = {
-                    k: value(v, variables, frame)
-                    for k, v in catcher.get("Assign", {}).items()
-                }
+                assigned, state_input = settled(catcher, variables, frame, error_output)
                 variables.update(assigned)
-                state_input = error_output
                 name = catcher["Next"]
                 continue
-            variables.update(assigned)
-            if state.get("End"):
-                return output
-            state_input = output
         else:
-            assigned = {
-                k: value(v, variables, frame)
-                for k, v in state.get("Assign", {}).items()
-            }
-            variables.update(assigned)
+            if kind == "Wait":
+                waited(state, variables, frame)
+            assigned, output = settled(state, variables, frame, state_input)
+        variables.update(assigned)
+        if state.get("End"):
+            return output
+        state_input = output
         name = state["Next"]
     raise AssertionError("the definition did not end within 10,000 states")
+
+
+def condition(
+    rule: Mapping[str, object], variables: Mapping[str, object], frame: object
+) -> bool:
+    test = value(rule["Condition"], variables, frame)
+    if not isinstance(test, bool):
+        raise Failure("States.QueryEvaluationError", f"{test!r} is not a boolean")
+    return test
+
+
+def waited(
+    state: Mapping[str, object], variables: Mapping[str, object], frame: object
+) -> None:
+    """A Wait evaluates what it waits for, and returns at once."""
+    if "Seconds" in state:
+        seconds = value(state["Seconds"], variables, frame)
+        assert isinstance(seconds, int) and 0 <= seconds <= 99_999_999
+    else:
+        timestamp = value(state["Timestamp"], variables, frame)
+        assert isinstance(timestamp, str) and timestamp.endswith("Z")
+
+
+def settled(
+    fields: Mapping[str, object],
+    variables: Mapping[str, object],
+    frame: object,
+    default: object,
+) -> tuple[dict[str, object], object]:
+    """The Assign and the Output of a state, a Choice rule or a catcher. Both
+    read the variables from before it (measured), and without an Output the
+    output is the default given."""
+    assign = fields.get("Assign", {})
+    assert isinstance(assign, dict)
+    assigned = {k: value(v, variables, frame) for k, v in assign.items()}
+    output = (
+        value(fields["Output"], variables, frame) if "Output" in fields else default
+    )
+    return assigned, output
 
 
 def retried(
@@ -598,20 +624,21 @@ def attempt(
     elif kind == "Parallel":
         branches = state["Branches"]
         assert isinstance(branches, list)
+        # Arguments, when given, is the input of every branch (measured).
+        branch_input = (
+            value(state["Arguments"], variables, frame)
+            if "Arguments" in state
+            else frame["input"]
+        )
         result = [
-            scope(branch, dict(variables), frame["input"], context, record)
+            scope(branch, dict(variables), branch_input, context, record)
             for branch in branches
         ]
     else:
         result = run_map(state, name, variables, frame, context, record)
     # Assign and Output both read the variables from before the state, and
     # their errors are the state's to retry and catch.
-    frame = {**frame, "result": result}
-    assign = state.get("Assign", {})
-    assert isinstance(assign, dict)
-    assigned = {k: value(v, variables, frame) for k, v in assign.items()}
-    output = value(state["Output"], variables, frame) if "Output" in state else result
-    return assigned, output
+    return settled(state, variables, {**frame, "result": result}, result)
 
 
 def run_map(
