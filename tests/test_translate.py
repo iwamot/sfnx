@@ -217,6 +217,12 @@ def test_annotated_parameter():
     assert output('return "a" in input', "input: dict") == f"{{% $exists({INPUT}.a) %}}"
 
 
+def test_a_declaration_without_a_value_types_the_later_assignments():
+    body = 'x: list\nx = input["x"]\nreturn x + [1]'
+    (compiled,) = compile_source(source(body)).values()
+    assert asl.run(compiled, {"x": [0]}) == [0, 1]
+
+
 def test_declared_type_holds_for_untyped_reassignment():
     body = 'total: float = input["a"]\ntotal = input["b"]\nreturn total + input["c"]'
     assert output(body) == f"{{% $total + {INPUT}.c %}}"
@@ -564,10 +570,7 @@ def test_dividing_by_zero_fails_where_it_divides():
         ('x: Any = input["x"]', "annotate with float, str, bool"),
         ('x: dict[int, str] = input["x"]', "annotate with float, str, bool"),
         ('x: "float" = input["x"]', "annotate with float, str, bool"),
-        (
-            "x: float",
-            "an annotation declares the type of a value; assign it here: x: float = ...",
-        ),
+        ("input.x: float", "declare one variable: name: type"),
         ("input.x: float = 1", "assign one variable per statement"),
     ],
 )

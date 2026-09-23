@@ -420,6 +420,16 @@ def index(value: Expr, position: Expr) -> Expr:
     position right after another one is parenthesized: jsonata-python reads
     `$x[$i][0]` as one step and returns `$x[$i]`, while `($x[$i])[0]` indexes."""
     items = value.type.items if value.type else None
+    places = value.type.positions if value.type else None
+    place = position.template
+    if (
+        places is not None
+        and isinstance(place, int)
+        and not isinstance(place, bool)
+        and -len(places) <= place < len(places)
+    ):
+        # A position written as a number reads the type of that place.
+        items = places[place]
     base = value.code
     base = f"({base})" if base.endswith("]") else operand(value, ATOM)
     code = f"{base}[{position.code}]"

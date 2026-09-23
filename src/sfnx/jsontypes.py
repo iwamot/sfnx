@@ -23,13 +23,16 @@ class Type:
     of an array and the values of an object; None means nothing is declared.
     fields are the members of an object whose keys are known, as an AWS API
     response has them. empty says an array is known to have no items, such as
-    `[]`, so what it joins keeps the items of the other."""
+    `[]`, so what it joins keeps the items of the other. positions are the
+    types at each place of an array whose places are known, as parallel()
+    gives one per branch."""
 
     kinds: frozenset[str]
     items: "Type | None" = None
     values: "Type | None" = None
     fields: "tuple[tuple[str, Type | None], ...] | None" = None
     empty: bool = False
+    positions: "tuple[Type | None, ...] | None" = None
 
     def field(self, key: str) -> "Type | None":
         """The type of the value under a key."""
@@ -65,6 +68,11 @@ def union(first: Type | None, second: Type | None) -> Type | None:
         fields = first.fields
     elif OBJECT not in first.kinds:
         fields = second.fields
+    positions = first.positions if first.positions == second.positions else None
+    if ARRAY not in second.kinds:
+        positions = first.positions
+    elif ARRAY not in first.kinds:
+        positions = second.positions
     items = elements(first, second, ARRAY, first.items, second.items)
     if first.empty:
         items = second.items if ARRAY in second.kinds else None
@@ -76,6 +84,7 @@ def union(first: Type | None, second: Type | None) -> Type | None:
         elements(first, second, OBJECT, first.values, second.values),
         fields,
         first.empty and second.empty,
+        positions,
     )
 
 
@@ -138,7 +147,13 @@ def restrict(declared: Type | None, kinds: frozenset[str]) -> Type:
     kept = declared.kinds & kinds
     if not kept:
         return Type(kinds)
-    return Type(kept, declared.items, declared.values, declared.fields)
+    return Type(
+        kept,
+        declared.items,
+        declared.values,
+        declared.fields,
+        positions=declared.positions,
+    )
 
 
 def exclude(declared: Type, kinds: frozenset[str]) -> Type:
@@ -146,7 +161,13 @@ def exclude(declared: Type, kinds: frozenset[str]) -> Type:
     kept = declared.kinds - kinds
     if not kept:
         return declared
-    return Type(kept, declared.items, declared.values, declared.fields)
+    return Type(
+        kept,
+        declared.items,
+        declared.values,
+        declared.fields,
+        positions=declared.positions,
+    )
 
 
 # What except ... as e binds: the error output of a Catch.

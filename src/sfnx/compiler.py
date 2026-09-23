@@ -230,6 +230,9 @@ class Scope:
         # The type an annotation declared for a variable holds for its later
         # assignments too, unless their values have a type of their own.
         self.declared: dict[str, Type] = {}
+        # A declaration without a value, name: type, is the type of each later
+        # assignment of the name, as if written on it.
+        self.announced: dict[str, Type] = {}
         # Independent assignments wait here to share one Pass.
         self.pending: dict[str, Expr] = {}
         self.pending_node: ast.AST | None = None
@@ -372,12 +375,9 @@ class Scope:
             self.assign(node.targets[0], node.value, None)
         elif isinstance(node, ast.AnnAssign):
             if node.value is None:
-                raise CompileError(
-                    "an annotation declares the type of a value; assign it here: "
-                    f"{ast.unparse(node.target)}: {ast.unparse(node.annotation)} = ...",
-                    node,
-                )
-            self.assign(node.target, node.value, node.annotation)
+                self.declare(node)
+            else:
+                self.assign(node.target, node.value, node.annotation)
         elif isinstance(node, ast.AugAssign):
             self.augment(node)
         elif isinstance(node, ast.Return):
@@ -509,6 +509,16 @@ class Scope:
             )
         self.functions[node.name] = node
 
+    def declare(self, node: ast.AnnAssign) -> None:
+        """name: type without a value declares the type the name's later
+        assignments hold, as for a, b = ..., which takes no annotation."""
+        if not isinstance(node.target, ast.Name):
+            raise CompileError("declare one variable: name: type", node.target)
+        self.claim(node.target.id, node.target)
+        declared = annotate(node.annotation, self.module)
+        assert declared is not None
+        self.announced[node.target.id] = declared
+
     def assign(
         self, target: ast.expr, value_node: ast.expr, annotation_node: ast.expr | None
     ) -> None:
@@ -519,7 +529,7 @@ class Scope:
             raise CompileError("assign one variable per statement: x = ...", target)
         name = target.id
         self.claim(name, target)
-        declared = annotate(annotation_node, self.module)
+        declared = annotate(annotation_node, self.module) or self.announced.get(name)
         value, call = self.translator.statement_value(value_node)
         known = declared or value.type or self.declared.get(name)
         if call is not None:
@@ -577,7 +587,7 @@ class Scope:
                 copy = self.fresh(f"{self.spelling(names[0])}_items", target)
                 self.defer(copy, whole, target, self.here())
                 whole = self.variable(copy, whole.type)
-            values = [element_at(whole, literal(i)) for i in range(len(names))]
+            values = [index_expr(whole, literal(i)) for i in range(len(names))]
         assign = {
             self.spelling(name): value.template
             for name, value in zip(names, values, strict=True)
@@ -593,7 +603,7 @@ class Scope:
                 self.defer(name, value, target, self.here())
             self.hold_remark()
         for name, value in zip(names, values, strict=True):
-            known = value.type or self.declared.get(name)
+            known = self.announced.get(name) or value.type or self.declared.get(name)
             self.bindings[name] = self.variable(name, known)
             self.partial.discard(name)
 
@@ -758,6 +768,7 @@ class Scope:
                 raise CompileError("parallel takes only retry=", keyword)
         branches = []
         returns: list[Type | None] = []
+        places: list[Type | None] = []
         for argument in node.args:
             function, local = self.resolve(argument, "parallel")
             if function.args.args:
@@ -773,8 +784,10 @@ class Scope:
             branch, returned = self.run_child(scope, function)
             branches.append(branch)
             returns.extend(returned)
+            places.append(joined(returned))
         state = {"Type": "Parallel", "Branches": branches}
-        return state, of(ARRAY, items=joined(returns))
+        # The result holds each branch's result at its place.
+        return state, Type(frozenset({ARRAY}), joined(returns), positions=tuple(places))
 
     def options(self, node: ast.Call, allowed: set[str]) -> dict[str, ast.expr]:
         found = {}
@@ -1580,7 +1593,7 @@ class Scope:
             index = self.count_from_zero(counter, node)
             limit = call("count", [source], of(NUMBER))
             return self.counted(
-                node, {target: element(source, index)}, counter, index, limit
+                node, {target: index_expr(source, index)}, counter, index, limit
             )
 
         self.settle(attempt, node.body)
@@ -1700,14 +1713,17 @@ class Scope:
                 index = self.count_from_zero(first.id, node)
                 self.bindings[first.id] = index
                 self.partial.discard(first.id)
-                targets = {first.id: index, second.id: element(source, index)}
+                targets = {first.id: index, second.id: index_expr(source, index)}
                 limit = call("count", [source], of(NUMBER))
                 return self.counted(node, targets, first.id, index, limit)
             left = self.listed(*lists[0], first.id, assigned, node)
             right = self.listed(*lists[1], second.id, assigned, node)
             counter = self.fresh(f"{self.spelling(first.id)}_index", node)
             index = self.count_from_zero(counter, node)
-            targets = {first.id: element(left, index), second.id: element(right, index)}
+            targets = {
+                first.id: index_expr(left, index),
+                second.id: index_expr(right, index),
+            }
             counts = [
                 call("count", [left], of(NUMBER)),
                 call("count", [right], of(NUMBER)),
@@ -1726,7 +1742,7 @@ class Scope:
         keys = call("keys", [source], of(ARRAY, items=of(STRING)))
         counter = self.fresh(f"{self.spelling(key)}_index", node)
         index = self.count_from_zero(counter, node)
-        each = element(keys, index)
+        each = index_expr(keys, index)
         values = source.type.values if source.type else None
         targets = {key: each, value: call("lookup", [source, each], values)}
         limit = call("count", [keys], of(NUMBER))
@@ -2023,16 +2039,6 @@ def defined_functions(statements: list[ast.stmt]) -> set[str]:
             elif isinstance(child, ast.ExceptHandler):
                 names |= defined_functions(child.body)
     return names
-
-
-def element_at(source: Expr, position: Expr) -> Expr:
-    items = source.type.items if source.type else None
-    return replace(index_expr(source, position), type=items)
-
-
-def element(source: Expr, index: Expr) -> Expr:
-    items = source.type.items if source.type else None
-    return replace(index_expr(source, index), type=items)
 
 
 def reraises(statements: list[ast.stmt]) -> bool:
