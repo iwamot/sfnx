@@ -246,6 +246,17 @@ def test_columns_count_characters():
     assert spans == [{"at": "6:5-6:16"}, {"at": "6:18-6:23"}]
 
 
+def test_a_wait_spans_the_assignments_it_takes():
+    source = (
+        "from sfnx import state_machine, wait\n\n\n@state_machine\ndef pay(input):\n"
+        "    n = 0\n    wait(1)\n    n = n + 1\n    return n\n"
+    )
+    (definition,) = definitions(source, "app.py", located=True).values()
+    comment = definition["States"]["wait"]["Comment"]
+    spans = json.loads(comment.removeprefix(PREFIX))["spans"]
+    assert spans == [{"at": "7:5-7:12"}, {"at": "8:5-8:14"}]
+
+
 @pytest.mark.parametrize("filename", ['a "b".py', "a\nb.py", "dir/日本語.py"])
 def test_the_file_is_named_as_given_on_one_line(filename):
     source = "from sfnx import state_machine\n\n\n@state_machine\ndef pay(input):\n    return 1\n"

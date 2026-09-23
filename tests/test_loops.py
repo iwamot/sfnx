@@ -152,7 +152,8 @@ def test_continue_gets_the_increment_its_own_state():
 def test_range(loop, condition, increment):
     compiled = states(f"for i in {loop}:\n    wait(i)\nreturn 1")
     assert compiled["for"]["Choices"][0]["Condition"] == f"{{% {condition} %}}"
-    assert compiled["i_2"]["Assign"] == {"i": f"{{% {increment} %}}"}
+    # The increment after the Wait is its Assign.
+    assert compiled["wait"]["Assign"] == {"i": f"{{% {increment} %}}"}
 
 
 def test_dict_loops_over_keys():
@@ -289,17 +290,11 @@ def test_a_comprehension_variable_is_not_an_assignment_of_the_loop():
 def test_a_loop_after_other_states_is_tried_again_from_the_same_point():
     body = 'wait(1)\nxs: list[float] = input["xs"]\nacc = None\nfor x in xs:\n    if acc is None:\n        acc = x\n    else:\n        acc = acc + x\nreturn acc'
     compiled = states(body)
-    assert list(compiled) == [
-        "wait",
-        "xs",
-        "for",
-        "if",
-        "acc",
-        "acc_2",
-        "x_index",
-        "return",
-    ]
-    assert compiled["wait"]["Next"] == "xs"
+    assert list(compiled) == ["wait", "for", "if", "acc", "acc_2", "x_index", "return"]
+    # The Wait takes the assignments before the loop once, not once per attempt.
+    assert list(compiled["wait"]["Assign"]) == ["xs", "acc", "x_index"]
+    assert compiled["wait"]["Next"] == "for"
+    assert run(body, {"xs": [1, 2]}) == 3
 
 
 def test_while_narrows_after_the_loop():
@@ -329,9 +324,7 @@ def test_while_narrows_after_the_loop():
 def test_loop_initialization(body, first):
     compiled = states(body)
     initialization = next(
-        s["Assign"]
-        for s in compiled.values()
-        if s["Type"] == "Pass" and s.get("Next") == "for"
+        s["Assign"] for s in compiled.values() if s.get("Next") == "for"
     )
     assert initialization == first
 

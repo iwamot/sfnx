@@ -160,6 +160,55 @@ def test_wait_through_the_module():
     }
 
 
+def test_assignments_after_a_wait_are_its_assign():
+    body = "n = 0\nwait(1)\n# counted\nn = n + 1\nm = 2\nreturn n + m"
+    compiled = definition(body)
+    assert compiled["States"]["wait"] == {
+        "Type": "Wait",
+        "Comment": "counted",
+        "Seconds": 1,
+        "Assign": {"n": "{% $n + 1 %}", "m": 2},
+        "Next": "return",
+    }
+    assert asl.run(compiled, {}) == 3
+
+
+@pytest.mark.parametrize(
+    "body, joined, passes",
+    [
+        # The Execution part of the context is the same in both states.
+        (
+            'wait(1)\nx = context["Execution"]["Id"]',
+            {"x": "{% $states.context.Execution.Id %}"},
+            [],
+        ),
+        # A value reading an assignment before it waits for a Pass of its own.
+        ("wait(1)\nx = 1\ny = x + 1", {"x": 1}, ["y"]),
+        # Another path joins where the assignment is.
+        ('if input["wait"]:\n    wait(1)\nx = 1', None, ["x"]),
+        # A value that differs when read later, or in another state.
+        ("wait(1)\nx = str(uuid.uuid4())", None, ["x"]),
+        ("wait(1)\nx = str(datetime.now())", None, ["x"]),
+        ('wait(1)\nx = context["State"]["EnteredTime"]', None, ["x"]),
+        ('wait(1)\nx = context["State"]["Name"]', None, ["x"]),
+        ("wait(1)\nx = context", None, ["x"]),
+        # What comes before a loop joins the Wait; the body the loop leads back
+        # to keeps its own states.
+        (
+            "wait(1)\nx = 0\nwhile True:\n    x = x + 1\n    if x > 2:\n        break\n    wait(1)",
+            {"x": 0},
+            ["x"],
+        ),
+    ],
+)
+def test_what_a_wait_assigns(body, joined, passes):
+    imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context\n"
+    (compiled,) = compile_source(imports + source(body + "\nreturn 1")).values()
+    states = compiled["States"]
+    assert states["wait"].get("Assign") == joined
+    assert [n for n, s in states.items() if s["Type"] == "Pass"] == passes
+
+
 @pytest.mark.parametrize(
     "body, execution_input, expected",
     [
