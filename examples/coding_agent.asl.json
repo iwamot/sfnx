@@ -73,29 +73,21 @@
       "Choices": [
         {
           "Condition": "{% ($v := $direct.blocked; $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) %}",
-          "Next": "status"
+          "Assign": {
+            "status": "open"
+          },
+          "Next": "if_4"
         },
         {
           "Condition": "{% ($v := $direct.matched; $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) %}",
-          "Next": "status_2"
+          "Assign": {
+            "status": "autocoded",
+            "candidate": "{% $direct.candidate %}"
+          },
+          "Next": "if_4"
         }
       ],
       "Default": "request"
-    },
-    "status": {
-      "Type": "Pass",
-      "Assign": {
-        "status": "open"
-      },
-      "Next": "if_4"
-    },
-    "status_2": {
-      "Type": "Pass",
-      "Assign": {
-        "status": "autocoded",
-        "candidate": "{% $direct.candidate %}"
-      },
-      "Next": "if_4"
     },
     "request": {
       "Type": "Pass",
@@ -190,17 +182,13 @@
       "Choices": [
         {
           "Condition": "{% $not($type($score) = 'number') %}",
-          "Next": "score_2"
+          "Assign": {
+            "score": 0
+          },
+          "Next": "candidate"
         }
       ],
       "Default": "candidate"
-    },
-    "score_2": {
-      "Type": "Pass",
-      "Assign": {
-        "score": 0
-      },
-      "Next": "candidate"
     },
     "candidate": {
       "Type": "Pass",
@@ -214,35 +202,23 @@
       "Choices": [
         {
           "Condition": "{% $score >= 0.9 %}",
-          "Next": "status_3"
+          "Assign": {
+            "status": "autocoded"
+          },
+          "Next": "if_4"
         },
         {
           "Condition": "{% $score >= 0.7 %}",
-          "Next": "status_4"
+          "Assign": {
+            "status": "approval_required"
+          },
+          "Next": "if_4"
         }
       ],
-      "Default": "status_5"
-    },
-    "status_3": {
-      "Type": "Pass",
-      "Assign": {
-        "status": "autocoded"
-      },
-      "Next": "if_4"
-    },
-    "status_4": {
-      "Type": "Pass",
-      "Assign": {
-        "status": "approval_required"
-      },
-      "Next": "if_4"
-    },
-    "status_5": {
-      "Type": "Pass",
       "Assign": {
         "status": "open"
       },
-      "Next": "if_4"
+      "Default": "if_4"
     },
     "failure_reason": {
       "Type": "Pass",

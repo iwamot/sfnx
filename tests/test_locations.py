@@ -68,9 +68,13 @@ def fan(input):
 
 
 def states(definition: dict) -> Iterator[tuple[str, dict]]:
-    """Every state, in branches and Map processors too."""
+    """Every state, in branches and Map processors too, and each Choice rule
+    that holds assignments, as `if[0]`."""
     for name, state in definition["States"].items():
         yield name, state
+        for index, rule in enumerate(state.get("Choices", [])):
+            if "Assign" in rule:
+                yield f"{name}[{index}]", rule
         for branch in state.get("Branches", []):
             yield from states(branch)
         if "ItemProcessor" in state:
@@ -128,10 +132,10 @@ def test_each_state_names_the_source_it_comes_from():
                 ('elif order["amount"] < 0:', None),
             ],
         ),
-        "total_2": ([], [('total = total + order["amount"]', None)]),
+        "if[0]": ([], [('total = total + order["amount"]', None)]),
         "count": ([], [("count = count + 1", None), (header, "loop step")]),
         "while": ([], [("while total > 1000:", None)]),
-        "total_3": ([], [("total = total - 1000", None)]),
+        "while[0]": ([], [("total = total - 1000", None)]),
         "receipt": (
             [],
             [
@@ -223,7 +227,7 @@ def count(input):
                 )
             ],
         ),
-        "row_2": ([], [('row = row["next"]', None)]),
+        "if[0]": ([], [('row = row["next"]', None)]),
         "kept": ([], [("kept = kept + [row]", None), (header, "loop step")]),
         "i_stop": ([], [(counting, "loop start")]),
         "for_2": ([], [(counting, None)]),
@@ -255,6 +259,17 @@ def test_a_wait_spans_the_assignments_it_takes():
     comment = definition["States"]["wait"]["Comment"]
     spans = json.loads(comment.removeprefix(PREFIX))["spans"]
     assert spans == [{"at": "7:5-7:12"}, {"at": "8:5-8:14"}]
+
+
+def test_a_choice_spans_what_its_rules_and_default_assign():
+    source = (
+        "from sfnx import state_machine\n\n\n@state_machine\ndef pay(input):\n"
+        '    if input["a"]:\n        x = 1\n    else:\n        x = 2\n    return x\n'
+    )
+    (definition,) = definitions(source, "app.py", located=True).values()
+    found = located(source, definition)
+    assert found["if"] == ([], [('if input["a"]:', None), ("x = 2", None)])
+    assert found["if[0]"] == ([], [("x = 1", None)])
 
 
 @pytest.mark.parametrize("filename", ['a "b".py', "a\nb.py", "dir/日本語.py"])

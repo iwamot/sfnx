@@ -25,7 +25,7 @@ def pay(input):
 
 A state is named after what it does: the variable it assigns, `return`, `raise`, `if`, `for`, `while`, `wait`, `map`, `parallel`, or the action of a Task on its own line (`getItem`, `invoke`). Repeated names get serials (`amount`, `amount_2`). States inside a Parallel branch or a Map are prefixed with the function that holds them (`email.return`).
 
-States split only where ASL requires it: an assignment that reads another pending assignment, a Task, a Choice. Independent assignments share one Pass, or the `Assign` of a Wait right before them that is the only way to them; a Task's result goes in the Task's `Assign`, and a machine that returns a Task's result ends on that Task.
+States split only where ASL requires it: an assignment that reads another pending assignment, a Task, a Choice. Independent assignments share one Pass, or go in the `Assign` of what is the only way to them: a Wait right before them, or the Choice rule of the `if` branch or `while` body they start (the Choice's own `Assign` for `else`). A Task's result goes in the Task's `Assign`, and a machine that returns a Task's result ends on that Task.
 
 ## Comments
 
