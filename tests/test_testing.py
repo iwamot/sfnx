@@ -594,6 +594,22 @@ def test_added_functions_give_undefined_as_step_functions_does(code, expected):
     assert testing.run(output, {}).output == expected
 
 
+# $range gives a sequence, as measured on Step Functions.
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ("$range(1, 9, 9)", 1),
+        ("[$range(1, 9, 9)]", [1]),
+        ("$exists($range(3, 0, 1))", False),
+        ("[$range(3, 0, 1)]", []),
+        ("$range(0, 9, 3)", [0, 3, 6, 9]),
+    ],
+)
+def test_range_gives_a_sequence(code, expected):
+    output = machine({"Type": "Succeed", "Output": "{% " + code + " %}"})
+    assert testing.run(output, {}).output == expected
+
+
 @pytest.mark.parametrize(
     "code, cause",
     [
