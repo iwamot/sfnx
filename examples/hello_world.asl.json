@@ -1,0 +1,106 @@
+{
+  "Comment": "A Hello World example that demonstrates various state types.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "is_hello_world_example",
+  "States": {
+    "is_hello_world_example": {
+      "Type": "Pass",
+      "Assign": {
+        "is_hello_world_example": true,
+        "execution_wait_time_in_seconds": 3,
+        "checkpoint_count": 0
+      },
+      "Next": "if"
+    },
+    "if": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $not($is_hello_world_example) %}",
+          "Next": "raise"
+        }
+      ],
+      "Default": "wait"
+    },
+    "raise": {
+      "Type": "Fail",
+      "Error": "Not a Hello World Example"
+    },
+    "wait": {
+      "Type": "Wait",
+      "Seconds": "{% $execution_wait_time_in_seconds %}",
+      "Next": "checkpoint_count"
+    },
+    "checkpoint_count": {
+      "Type": "Pass",
+      "Assign": {
+        "checkpoint_count": "{% $checkpoint_count + 1 %}"
+      },
+      "Next": "start_date"
+    },
+    "start_date": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "format_execution_start_date.return",
+          "States": {
+            "format_execution_start_date.return": {
+              "Type": "Succeed",
+              "Output": "{% $fromMillis($toMillis($states.context.State.EnteredTime), '[M01]/[D01]') %}"
+            }
+          }
+        },
+        {
+          "StartAt": "snapshot_execution_elapsed_time.started",
+          "States": {
+            "snapshot_execution_elapsed_time.started": {
+              "Type": "Pass",
+              "Assign": {
+                "started": "{% $toMillis($states.context.Execution.StartTime) / 1000 %}"
+              },
+              "Next": "snapshot_execution_elapsed_time.return"
+            },
+            "snapshot_execution_elapsed_time.return": {
+              "Type": "Succeed",
+              "Output": "{% $millis() / 1000 - $started %}"
+            }
+          }
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.QueryEvaluationError"
+          ],
+          "Next": "start_date_2"
+        }
+      ],
+      "Assign": {
+        "start_date": "{% $states.result[0] %}",
+        "elapsed": "{% $states.result[1] %}"
+      },
+      "Next": "checkpoint_count_2"
+    },
+    "start_date_2": {
+      "Type": "Pass",
+      "Assign": {
+        "start_date": "Failed to format",
+        "elapsed": "Failed to calculate"
+      },
+      "Next": "checkpoint_count_2"
+    },
+    "checkpoint_count_2": {
+      "Type": "Pass",
+      "Assign": {
+        "checkpoint_count": "{% $checkpoint_count + 1 %}"
+      },
+      "Next": "return"
+    },
+    "return": {
+      "Type": "Succeed",
+      "Output": {
+        "Summary": "{% 'This Hello World execution began on ' & $start_date & '. The state machine ran for ' & $string($elapsed) & ' seconds before the snapshot was taken, passing through ' & $string($checkpoint_count) & ' checkpoints, and has successfully completed.' %}"
+      }
+    }
+  }
+}

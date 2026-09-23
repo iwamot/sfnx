@@ -1,0 +1,381 @@
+{
+  "Comment": "Code one clinical verbatim: direct lookup, then the agent, then write back.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "record_id",
+  "States": {
+    "record_id": {
+      "Type": "Pass",
+      "Assign": {
+        "record_id": "{% $states.context.Execution.Input.record_id %}",
+        "verbatim": "{% $states.context.Execution.Input.verbatim %}",
+        "dictionary": "{% $states.context.Execution.Input.encoding_dictionary %}",
+        "version": "{% $states.context.Execution.Input.encoding_dictionary_version %}",
+        "study": "{% $states.context.Execution.Input.source_study %}",
+        "derivation_only": "{% ($exists($states.context.Execution.Input.derivation_only) ? $states.context.Execution.Input.derivation_only : null) = true %}",
+        "failure_reason": null,
+        "agent_candidate": null,
+        "candidate": null
+      },
+      "Next": "direct"
+    },
+    "direct": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${CheckDirectFunctionArn}",
+        "Payload": {
+          "verbatim": "{% $verbatim %}",
+          "encoding_dictionary": "{% $dictionary %}",
+          "encoding_dictionary_version": "{% $version %}"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException",
+            "Lambda.ServiceException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Lambda.Unknown",
+            "States.Timeout",
+            "ThrottlingException",
+            "DatabaseResumingException",
+            "DatabaseUnavailableException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Assign": {
+            "e": "{% $states.errorOutput %}"
+          },
+          "Next": "failure_reason"
+        }
+      ],
+      "Assign": {
+        "direct": "{% $states.result.Payload %}"
+      },
+      "Next": "if"
+    },
+    "if": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% ($v := $direct.blocked; $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) %}",
+          "Next": "status"
+        },
+        {
+          "Condition": "{% ($v := $direct.matched; $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) %}",
+          "Next": "status_2"
+        }
+      ],
+      "Default": "request"
+    },
+    "status": {
+      "Type": "Pass",
+      "Assign": {
+        "status": "open"
+      },
+      "Next": "if_4"
+    },
+    "status_2": {
+      "Type": "Pass",
+      "Assign": {
+        "status": "autocoded",
+        "candidate": "{% $direct.candidate %}"
+      },
+      "Next": "if_4"
+    },
+    "request": {
+      "Type": "Pass",
+      "Assign": {
+        "request": {
+          "HarnessArn": "${CodingHarnessArn}",
+          "RuntimeSessionId": "{% $uuid() %}",
+          "Messages": [
+            {
+              "Role": "user",
+              "Content": [
+                {
+                  "Text": "{% 'Code this verbatim term: \"' & $verbatim & '\". Dictionary=' & $dictionary & ' version=' & $version & ' study=' & $study & '.' %}"
+                }
+              ]
+            }
+          ],
+          "Tools": [
+            {
+              "Type": "agentcore_gateway",
+              "Name": "gateway",
+              "Config": {
+                "AgentCoreGateway": {
+                  "GatewayArn": "${GatewayArn}"
+                }
+              }
+            }
+          ],
+          "AllowedTools": [
+            "@gateway/search-dictionary___search_dictionary",
+            "@gateway/study-info___get_study_info"
+          ],
+          "SystemPrompt": [
+            {
+              "Text": "You are a clinical medical-coding expert. Call search_dictionary with the verbatim term, and get_study_info when several candidates fit. Respond with only this JSON object: {\"dict_term\": ..., \"dict_term_code\": ..., \"derivation\": ..., \"hierarchy\": ..., \"score\": <your confidence from 0 to 1>, \"rationale\": \"<one sentence>\"}"
+            }
+          ]
+        }
+      },
+      "Next": "agent_candidate"
+    },
+    "agent_candidate": {
+      "Type": "Task",
+      "Comment": "The reply is parsed in the statement of the call, so the Task's\nCatch also takes a reply that holds no JSON object.",
+      "Resource": "arn:aws:states:::bedrockagentcore:invokeHarness",
+      "Arguments": "{% $request %}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "BedrockAgentCore.ThrottlingException",
+            "BedrockAgentCore.InternalServerException"
+          ],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "States.Timeout",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Assign": {
+            "e": "{% $states.errorOutput %}"
+          },
+          "Next": "failure_reason"
+        }
+      ],
+      "Assign": {
+        "agent_candidate": "{% $parse(($text := $states.result.Output.Message.Content[0].Text; $match($text, /\\{[\\s\\S]*\\}/)[0].match)) %}"
+      },
+      "Next": "score"
+    },
+    "score": {
+      "Type": "Pass",
+      "Assign": {
+        "score": "{% $exists($agent_candidate.score) ? $agent_candidate.score : null %}"
+      },
+      "Next": "if_2"
+    },
+    "if_2": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $not($type($score) = 'number') %}",
+          "Next": "score_2"
+        }
+      ],
+      "Default": "candidate"
+    },
+    "score_2": {
+      "Type": "Pass",
+      "Assign": {
+        "score": 0
+      },
+      "Next": "candidate"
+    },
+    "candidate": {
+      "Type": "Pass",
+      "Assign": {
+        "candidate": "{% $agent_candidate %}"
+      },
+      "Next": "if_3"
+    },
+    "if_3": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $score >= 0.9 %}",
+          "Next": "status_3"
+        },
+        {
+          "Condition": "{% $score >= 0.7 %}",
+          "Next": "status_4"
+        }
+      ],
+      "Default": "status_5"
+    },
+    "status_3": {
+      "Type": "Pass",
+      "Assign": {
+        "status": "autocoded"
+      },
+      "Next": "if_4"
+    },
+    "status_4": {
+      "Type": "Pass",
+      "Assign": {
+        "status": "approval_required"
+      },
+      "Next": "if_4"
+    },
+    "status_5": {
+      "Type": "Pass",
+      "Assign": {
+        "status": "open"
+      },
+      "Next": "if_4"
+    },
+    "failure_reason": {
+      "Type": "Pass",
+      "Assign": {
+        "failure_reason": "{% $e.Error %}",
+        "status": "open"
+      },
+      "Next": "if_4"
+    },
+    "if_4": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $status != 'open' %}",
+          "Next": "written"
+        }
+      ],
+      "Default": "rationale"
+    },
+    "written": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${WriteBackFunctionArn}",
+        "Payload": {
+          "record_id": "{% $record_id %}",
+          "target_status": "{% $status %}",
+          "candidate": "{% $candidate %}",
+          "derivation_only": "{% $derivation_only %}",
+          "encoding_dictionary": "{% $dictionary %}",
+          "encoding_dictionary_version": "{% $version %}"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException",
+            "Lambda.ServiceException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Lambda.Unknown",
+            "States.Timeout",
+            "ThrottlingException",
+            "DatabaseResumingException",
+            "DatabaseUnavailableException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Assign": {
+            "e": "{% $states.errorOutput %}"
+          },
+          "Next": "failure_reason_2"
+        }
+      ],
+      "Assign": {
+        "written": "{% $states.result %}"
+      },
+      "Next": "return"
+    },
+    "return": {
+      "Type": "Succeed",
+      "Output": "{% $written.Payload %}"
+    },
+    "failure_reason_2": {
+      "Type": "Pass",
+      "Assign": {
+        "failure_reason": "{% $e.Error %}"
+      },
+      "Next": "rationale"
+    },
+    "rationale": {
+      "Type": "Pass",
+      "Assign": {
+        "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
+      },
+      "Next": "opened"
+    },
+    "opened": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${WriteBackFunctionArn}",
+        "Payload": {
+          "record_id": "{% $record_id %}",
+          "target_status": "open",
+          "failure_reason": "{% $failure_reason %}",
+          "rationale": "{% $rationale %}"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException",
+            "Lambda.ServiceException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Lambda.Unknown",
+            "States.Timeout",
+            "ThrottlingException",
+            "DatabaseResumingException",
+            "DatabaseUnavailableException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Assign": {
+        "opened": "{% $states.result %}"
+      },
+      "Next": "return_2"
+    },
+    "return_2": {
+      "Type": "Succeed",
+      "Output": "{% $opened.Payload %}"
+    }
+  }
+}
