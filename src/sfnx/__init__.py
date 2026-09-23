@@ -6,7 +6,7 @@ any other Python.
 """
 
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import TypeVar, overload
 
@@ -55,7 +55,7 @@ def task(
     timeout: float | None = None,
     heartbeat: float | None = None,
     role: str | None = None,
-    retry: list[dict[str, object]] | None = None,
+    retry: Sequence[Mapping[str, object]] | None = None,
 ) -> R:
     """A Task state calling resource, an integration ARN, with arguments. The
     value is the task result, a JSON object; an annotation on the assignment
@@ -73,7 +73,7 @@ def jsonata(expression: str, /, **values: object) -> V:
 
 def parallel(
     *branches: Callable[[], object],
-    retry: list[dict[str, object]] | None = None,
+    retry: Sequence[Mapping[str, object]] | None = None,
 ) -> list:
     """A Parallel state whose branches are the functions given. The value is
     the list of what they return, in order. At run time they run one by one."""
@@ -86,7 +86,7 @@ def inline_map(
     /,
     *,
     max_concurrency: int | None = None,
-    retry: list[dict[str, object]] | None = None,
+    retry: Sequence[Mapping[str, object]] | None = None,
 ) -> list:
     """A Map state in Inline mode: function runs for each item, and receives
     its index too if it takes two parameters. At run time items run in turn."""
@@ -109,7 +109,7 @@ def distributed_map(
     tolerated_failure_percentage: float | None = None,
     label: str | None = None,
     execution_type: str | None = None,
-    retry: list[dict[str, object]] | None = None,
+    retry: Sequence[Mapping[str, object]] | None = None,
 ) -> list:
     """A Map state in Distributed mode: each item, or each batch, runs as a
     child execution of function with args. At run time function is called in
