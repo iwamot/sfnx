@@ -69,6 +69,7 @@ def test_a_doubled_evaluation_is_rejected():
     source reads it once gives 0.75 from the sequence 0.75, 0.25 and two
     calls, and the case that expects 0.25 from one call rejects it."""
     doubled = {
+        "QueryLanguage": "JSONata",
         "StartAt": "s",
         "States": {
             "s": {
@@ -102,6 +103,7 @@ def test_a_call_past_the_sequence_fails():
 
 def test_the_replacement_reaches_no_other_run():
     definition = {
+        "QueryLanguage": "JSONata",
         "StartAt": "s",
         "States": {"s": {"Type": "Succeed", "Output": "{% $random() %}"}},
     }

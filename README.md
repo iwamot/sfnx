@@ -192,7 +192,7 @@ ASL is a JSON document of states that name each other, with the logic in JSONata
 - **Mistakes surface at compile time.** Every rejected line comes with what to write instead. SDK integration ARNs and their argument names are checked against the botocore service models (whether Step Functions integrates the action is not checked).
 - **Python control flow with a few workflow primitives.** The names sfnx exports make states (`task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes, `jsonata` for an expression written out). Everything else is Python syntax, compiled to the JSONata you would write for it. [Where results differ from Python](https://github.com/iwamot/sfnx/blob/main/docs/language.md#where-results-differ-from-python) lists the values known to come out otherwise.
 
-sfnx compiles; it does not run workflows or mock tasks, and it does not deploy. The Python module stays importable, but the definition is the contract, not what CPython computes.
+sfnx compiles, and can run a JSONata-mode definition locally with mocked tasks to test it; it does not deploy, and it does not run workflows in AWS. The Python module stays importable, but the definition is the contract, not what CPython computes.
 
 ## Setup
 
@@ -304,6 +304,16 @@ The message text, including `; <what to write instead>`, is prose and may change
 
 Before 1.0, the definition compiled from the same source, and what the language accepts, may change between releases; the release notes say so. [docs/compatibility.md](https://github.com/iwamot/sfnx/blob/main/docs/compatibility.md) says what each release can change from 1.0.
 
+## Testing the definition
+
+`sfnx.testing` runs a definition on your machine, with each Task answered by a function of your test, so a test checks where the workflow goes, which calls it makes and what it returns, without AWS. It runs definitions in JSONata mode, compiled by sfnx or written by hand:
+
+```bash
+uv add --dev "sfnx[testing]"
+```
+
+[docs/testing.md](https://github.com/iwamot/sfnx/blob/main/docs/testing.md) has an example test, the API, and where a local run differs from Step Functions.
+
 ## Deploying the definition
 
 sfnx stops at the definition. Write `${Name}` where a value comes from the deployment, as a resource ARN or inside an argument string, and fill it with CDK `definition_substitutions`, SAM or CloudFormation `DefinitionSubstitutions`. [docs/deployment.md](https://github.com/iwamot/sfnx/blob/main/docs/deployment.md) has the snippets, how to check a definition before deploying it, and the IAM actions each kind of task needs.
@@ -314,7 +324,7 @@ sfnx stops at the definition. Write `${Name}` where a value comes from the deplo
 env -u VIRTUAL_ENV ./validate.sh
 ```
 
-`validate.sh` runs lint, formatting, type checking, the tests and a build. The tests evaluate the generated JSONata with jsonata-python and run whole definitions through a small interpreter, including random programs whose results must match CPython's. [docs/verification.md](https://github.com/iwamot/sfnx/blob/main/docs/verification.md) describes what those checks guarantee and how to run the fixed corpus in Step Functions itself.
+`validate.sh` runs lint, formatting, type checking, the tests and a build. The tests evaluate the generated JSONata with jsonata-python and run whole definitions through `sfnx.testing`, including random programs whose results must match CPython's. [docs/verification.md](https://github.com/iwamot/sfnx/blob/main/docs/verification.md) describes what those checks guarantee and how to run the fixed corpus in Step Functions itself.
 
 ## License
 

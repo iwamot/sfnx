@@ -9,6 +9,7 @@ Within 1.x, no release:
 - rejects a source an earlier 1.x release compiled, except as the table below allows;
 - changes what a definition computes, except as the table below allows. For every value, the result is the one [docs/language.md](language.md) gives: Python's, or the row that covers it in [Where results differ from Python](language.md#where-results-differ-from-python), the table of differences;
 - removes or renames a name a workflow module imports from `sfnx`, or an argument one takes, or changes what [docs/api.md](api.md) says of `CompileError`, `compile_file` and `compile_source`;
+- removes or renames a name of `sfnx.testing.__all__`, an argument of `run`, or a field of `Call` or `Execution`, or changes what [docs/testing.md](testing.md) says of them, apart from its list of where a local run differs;
 - removes a command or an option of the CLI, changes what an exit code means, or changes what the Stable column of [Output](../README.md#output) says.
 
 A change to any of these is a 2.0.
@@ -22,6 +23,8 @@ A change to any of these is a 2.0.
 | A row of the table of differences whose ASL result is an error gets Python's result | minor, listed in the release notes as changing results |
 | The names of states, or which states a source makes (split, merged, added or removed) | minor, listed in the release notes |
 | Support ends for a Python version past its end of life, or the lowest supported version of a dependency rises | minor |
+| `sfnx.testing` runs a state or a field it raised `Unsupported` for | minor |
+| `sfnx.testing` gives the result Step Functions gives where it gave another, measured | minor, listed in the release notes as changing results |
 | A source is rejected whose definition Step Functions refuses, or whose definition fails on every run that reaches what is now rejected | patch |
 | The compiler stops with an internal error (exit 3), or rejects what docs/language.md says it accepts | patch |
 | The expressions in a definition, the layout of its JSON, or the text of a message change, with the same results and the same states | any |

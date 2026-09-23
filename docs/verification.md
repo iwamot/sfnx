@@ -6,11 +6,11 @@ What the tests guarantee, and how to check the generated definitions against Ste
 
 | Check | What it compares | Runs |
 |---|---|---|
-| `tests/test_differential.py` | random programs in CPython and, compiled, in the interpreter of `tests/asl.py` | every `validate.sh` |
+| `tests/test_differential.py` | random programs in CPython and, compiled, in `sfnx.testing` | every `validate.sh` |
 | `tests/test_corpus.py` | the fixed cases of `tests/corpus.py` in the interpreter, with `$random` fixed and counted, and in CPython where the case claims agreement | every `validate.sh` |
 | `tests/aws_corpus.py` | the same fixed cases in Step Functions | on request, with AWS credentials |
 
-The first two need no credentials and pass or fail on their own. They show that the compiler and the interpreter agree with Python, not that Step Functions does: the interpreter is jsonata-python plus the behaviors `docs/design.md` records as measured. The third runs the definitions where they will run, and is the check to repeat when the translator changes what an expression means, or when a new Step Functions behavior is measured.
+The first two need no credentials and pass or fail on their own. They show that the compiler and the interpreter agree with Python, not that Step Functions does: the interpreter, `sfnx.testing`, is jsonata-python plus the behaviors `docs/design.md` records as measured. The third runs the definitions where they will run, and is the check to repeat when the translator changes what an expression means, or when a new Step Functions behavior is measured.
 
 ## The corpus
 
@@ -65,4 +65,4 @@ The results file is a JSON list with one record per case:
 | `actual`, `detail` | what came back, and what differed or failed |
 | `calls` | `unmeasured`: the number of evaluations is checked locally only |
 
-A `not-run` or an `api-error` is not a pass. A `mismatch` on AWS with a passing local run means the interpreter and Step Functions disagree: measure the behavior, record it in `docs/design.md`, and fix the compiler or the interpreter, rather than the expectation.
+A `not-run` or an `api-error` is not a pass. A `mismatch` on AWS with a passing local run means the interpreter and Step Functions disagree: measure the behavior, record it in `docs/design.md`, and fix the compiler or the interpreter, rather than the expectation. A difference the interpreter keeps is listed in [testing.md](testing.md#where-a-local-run-differs) too, since users run their own definitions through it.

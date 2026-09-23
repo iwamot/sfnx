@@ -1,0 +1,732 @@
+"""Run a definition in JSONata mode locally, with each Task answered by a
+function of the test's, so a test can follow where a workflow goes and what it
+returns without AWS. The JSONata is evaluated with jsonata-python, with the
+functions Step Functions adds and the behaviors docs/design.md records as
+measured; docs/testing.md lists where a local run can still differ."""
+
+import base64
+import binascii
+import decimal
+import hashlib
+import json
+import re
+import time
+import urllib.parse
+import uuid
+from collections.abc import Callable, Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+try:
+    import jsonata
+    from jsonata.functions import Functions
+    from jsonata.utils import Utils
+except ModuleNotFoundError as exc:
+    raise ModuleNotFoundError(
+        "sfnx.testing evaluates JSONata with jsonata-python; install sfnx[testing]",
+        name=exc.name,
+    ) from exc
+
+EXCEEDED = "The specified tolerated failure threshold was exceeded"
+MAP_RUN = "arn:aws:states:us-east-1:123456789012:mapRun:machine"
+
+
+class Failure(Exception):
+    """An error and its cause: what a tasks function raises to fail its Task,
+    and what reading the output of a failed execution raises."""
+
+    def __init__(self, error: str, cause: str = ""):
+        super().__init__(f"{error}: {cause}")
+        self.error = error
+        self.cause = cause
+
+
+class Unsupported(ValueError):
+    """A definition, or a field of one, that run() does not interpret. It is
+    raised before anything runs, so it does not depend on the path taken."""
+
+
+@dataclass(frozen=True)
+class Call:
+    """A Task called, or the ItemReader of a Map read: the state, its Resource
+    as written, and its Arguments evaluated."""
+
+    state: str
+    resource: str
+    arguments: object
+
+
+Tasks = Callable[[Call], object]
+
+
+class Execution:
+    """What a run did: the states entered and the calls made, in order, and
+    the output or the error."""
+
+    def __init__(
+        self,
+        states: tuple[str, ...],
+        calls: tuple[Call, ...],
+        output: object = None,
+        failure: Failure | None = None,
+    ):
+        self.states = states
+        self.calls = calls
+        self.error = None if failure is None else failure.error
+        self.cause = None if failure is None else failure.cause
+        self._output = output
+
+    @property
+    def output(self) -> object:
+        """The output of the execution, or the Failure it failed with raised,
+        so that a test expecting an output shows the error it got instead."""
+        if self.error is not None:
+            raise Failure(self.error, self.cause or "")
+        return self._output
+
+    def __repr__(self) -> str:
+        ending = (
+            f"output={self._output!r}"
+            if self.error is None
+            else f"error={self.error!r}, cause={self.cause!r}"
+        )
+        return f"Execution(states={self.states!r}, calls={self.calls!r}, {ending})"
+
+
+@dataclass
+class Record:
+    """The tasks function of a run, and what the run has entered and called."""
+
+    tasks: Tasks | None
+    states: list[str] = field(default_factory=list)
+    calls: list[Call] = field(default_factory=list)
+
+    def call(self, state: str, resource: object, arguments: object) -> object:
+        assert isinstance(resource, str)
+        made = Call(state, resource, arguments)
+        self.calls.append(made)
+        if self.tasks is None:
+            raise ValueError(f"{state} calls {resource}, and run() was given no tasks")
+        return self.tasks(made)
+
+
+REPLACED: ContextVar[Mapping[str, Callable[..., object]]] = ContextVar("replaced")
+
+
+def run(
+    definition: Mapping[str, object],
+    execution_input: object,
+    tasks: Tasks | None = None,
+    *,
+    functions: Mapping[str, Callable[..., object]] | None = None,
+) -> Execution:
+    """Run a definition with the execution input given. tasks is called with
+    each Task and each ItemReader, and returns the result or raises Failure.
+    functions replaces JSONata functions by name, such as now or uuid, for a
+    result that would otherwise change on every run."""
+    check(definition)
+    record = Record(tasks)
+    token = REPLACED.set(dict(functions or {}))
+    try:
+        output = scope(
+            definition,
+            {},
+            execution_input,
+            execution_context(execution_input),
+            record,
+        )
+    except Failure as failure:
+        return Execution(tuple(record.states), tuple(record.calls), failure=failure)
+    finally:
+        REPLACED.reset(token)
+    return Execution(tuple(record.states), tuple(record.calls), output)
+
+
+# The fields run() interprets, or can leave aside because time does not pass
+# in a local run: a Wait returns at once, a Retry does not wait between
+# attempts, and a timeout fires only when a tasks function raises
+# States.Timeout.
+COMMON = frozenset({"Type", "Comment", "QueryLanguage"})
+ACTION = frozenset({"Assign", "Output", "Retry", "Catch", "Next", "End"})
+FIELDS = {
+    "Task": ACTION | {"Resource", "Arguments", "TimeoutSeconds", "HeartbeatSeconds"},
+    "Parallel": ACTION | {"Branches"},
+    "Map": ACTION
+    | {
+        "ItemProcessor",
+        "Items",
+        "ItemReader",
+        "ItemSelector",
+        "ItemBatcher",
+        "ResultWriter",
+        "MaxConcurrency",
+        "ToleratedFailureCount",
+        "ToleratedFailurePercentage",
+        "Label",
+    },
+    "Pass": frozenset({"Assign", "Next"}),
+    "Wait": frozenset({"Seconds", "Timestamp", "Next"}),
+    "Choice": frozenset({"Choices", "Default"}),
+    "Succeed": frozenset({"Output"}),
+    "Fail": frozenset({"Error", "Cause"}),
+}
+MACHINE = frozenset(
+    {"StartAt", "States", "Comment", "QueryLanguage", "TimeoutSeconds", "Version"}
+)
+BRANCH = frozenset({"StartAt", "States", "Comment"})
+PROCESSOR = BRANCH | {"ProcessorConfig"}
+RULE = frozenset({"Condition", "Next", "Comment"})
+CATCHER = frozenset({"ErrorEquals", "Next", "Assign", "Comment"})
+RETRIER = frozenset(
+    {
+        "ErrorEquals",
+        "MaxAttempts",
+        "IntervalSeconds",
+        "BackoffRate",
+        "MaxDelaySeconds",
+        "JitterStrategy",
+        "Comment",
+    }
+)
+READER = frozenset({"Resource", "Arguments", "ReaderConfig"})
+WRITER = frozenset({"Resource", "Arguments", "WriterConfig"})
+BATCHER = frozenset({"MaxItemsPerBatch", "MaxInputBytesPerBatch", "BatchInput"})
+
+
+def check(definition: Mapping[str, object]) -> None:
+    """Raise Unsupported for a definition that is not in JSONata mode, or
+    that has a state or a field run() does not interpret."""
+    if definition.get("QueryLanguage") != "JSONata":
+        raise Unsupported(
+            "the definition does not set QueryLanguage to JSONata;"
+            " sfnx.testing runs JSONata definitions only"
+        )
+    check_fields("the definition", definition, MACHINE)
+    check_states(definition)
+
+
+def check_states(machine: Mapping[str, object]) -> None:
+    listed = machine["States"]
+    assert isinstance(listed, dict)
+    for name, state in listed.items():
+        assert isinstance(state, dict)
+        kind = state["Type"]
+        if kind not in FIELDS:
+            raise Unsupported(
+                f"{name}: the state type {kind} is not run by sfnx.testing"
+            )
+        if state.get("QueryLanguage", "JSONata") != "JSONata":
+            raise Unsupported(
+                f"{name}: QueryLanguage {state['QueryLanguage']} is not run by"
+                " sfnx.testing, which runs JSONata only"
+            )
+        check_fields(name, state, COMMON | FIELDS[kind])
+        for key, allowed in [("Retry", RETRIER), ("Catch", CATCHER), ("Choices", RULE)]:
+            for entry in state.get(key, []):
+                check_fields(f"{name}.{key}", entry, allowed)
+        for key, allowed in [
+            ("ItemReader", READER),
+            ("ResultWriter", WRITER),
+            ("ItemBatcher", BATCHER),
+        ]:
+            if isinstance(state.get(key), dict):
+                check_fields(f"{name}.{key}", state[key], allowed)
+        for branch in state.get("Branches", []):
+            check_fields(f"{name}.Branches", branch, BRANCH)
+            check_states(branch)
+        if "ItemProcessor" in state:
+            check_fields(f"{name}.ItemProcessor", state["ItemProcessor"], PROCESSOR)
+            check_states(state["ItemProcessor"])
+
+
+def check_fields(
+    where: str, found: Mapping[str, object], allowed: frozenset[str]
+) -> None:
+    for key in found:
+        if key not in allowed:
+            raise Unsupported(f"{where}: {key} is not run by sfnx.testing")
+
+
+def evaluate(code: str, variables: Mapping[str, object], states: object) -> object:
+    """jsonata-python reads a Python None as undefined, so JSON null goes in as
+    its null value, and an undefined result fails as it does in Step Functions."""
+    expression = jsonata.Jsonata(code)
+    expression.set_output_convert_nulls(False)
+    # The functions Step Functions adds to JSONata.
+    expression.register_lambda("parse", parse)
+    expression.register_lambda("uuid", lambda: str(uuid.uuid4()))
+    expression.register_lambda("range", range_numbers)
+    expression.register_lambda("now", now)
+    expression.register_lambda("millis", lambda: int(time.time() * 1000))
+    expression.register_lambda("hash", digest)
+    expression.register_lambda("partition", partition)
+    # The functions whose Step Functions behavior differs from jsonata-python's.
+    expression.register_lambda("decodeUrlComponent", decode_url_component)
+    expression.register_lambda("base64decode", base64_decode)
+    expression.register_lambda("formatNumber", format_number)
+    for name, function in REPLACED.get({}).items():
+        expression.register_lambda(name, function)
+    try:
+        bindings = {k: nulls(v) for k, v in {**variables, "states": states}.items()}
+        result = expression.evaluate(None, bindings)
+    except jsonata.JException as exc:
+        raise Failure("States.QueryEvaluationError", str(exc)) from exc
+    if result is None:
+        raise Failure("States.QueryEvaluationError", f"{code} is undefined")
+    return Utils.convert_nulls(result)
+
+
+def parse(text: str) -> object:
+    """$parse as Python's json reads the text, which accepts NaN and rejects
+    single quotes where Step Functions does the opposite."""
+    try:
+        return nulls(json.loads(text))
+    except ValueError as exc:
+        raise jsonata.JException(str(exc)) from exc
+
+
+def decode_url_component(text: str) -> str:
+    """$decodeUrlComponent as Step Functions evaluates it: + is a space, a
+    malformed escape such as %zz fails, and a broken UTF-8 sequence is U+FFFD
+    (measured)."""
+    if re.search(r"%(?![0-9A-Fa-f]{2})", text):
+        raise jsonata.JException(
+            f"Malformed URL passed to $decodeUrlComponent(): {text}"
+        )
+    return urllib.parse.unquote_plus(text)
+
+
+def base64_decode(text: str) -> str:
+    """$base64decode as Step Functions evaluates it: text missing its padding
+    is read, and a character outside the alphabet fails (measured)."""
+    padded = text + "=" * (-len(text) % 4)
+    try:
+        return base64.b64decode(padded, validate=True).decode()
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise jsonata.JException(str(exc)) from exc
+
+
+# The pictures the compiler writes for a format spec: whole numbers, grouped
+# or not, with the digits after the decimal point the spec asked for, and the
+# zeros a whole number is filled to, with the sign inside them.
+GENERATED_PICTURE = re.compile(
+    r"(?P<grouped>#,##)?0(?:\.(?P<decimals>0+))?|(?P<zeros>0+);-0+"
+)
+
+
+def format_number(
+    value: float, picture: str, options: Mapping[str, str] | None = None
+) -> str | None:
+    """$formatNumber as Step Functions evaluates it: the number is rounded
+    half to even on the decimal it is written as, so 0.125 to two places is
+    0.12 and 2.675 is 2.68 (measured). jsonata-python rounds the binary value
+    instead, giving 0.13 and 2.67, so the pictures the compiler writes are
+    evaluated here and any other is left to it."""
+    found = GENERATED_PICTURE.fullmatch(picture)
+    if found is None or options is not None:
+        return Functions.format_number(value, picture, options)
+    places = len(found["decimals"] or "")
+    with decimal.localcontext() as context:
+        # The widest decimal a double holds is 309 digits, and the picture
+        # asks for its own after the point.
+        context.prec = 309 + places + 1
+        written = decimal.Decimal(repr(value)).quantize(
+            decimal.Decimal(1).scaleb(-places), rounding=decimal.ROUND_HALF_EVEN
+        )
+    if not found["zeros"]:
+        return f"{written:,f}" if found["grouped"] else f"{written:f}"
+    # The sign is written before the zeros and counts inside the width.
+    width = len(found["zeros"])
+    digits = f"{abs(written):f}"
+    if written < 0:
+        return "-" + digits.rjust(width - 1, "0")
+    return digits.rjust(width, "0")
+
+
+def now(picture: str | None = None) -> str:
+    """$now(): the time in UTC to the millisecond, as Step Functions gives it,
+    or written with the picture string given, which jsonata-python formats the
+    way Step Functions does (measured)."""
+    moment = datetime.now(UTC)
+    if picture is None:
+        return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    written = Functions.datetime_from_millis(
+        int(moment.timestamp() * 1000), picture, None
+    )
+    assert written is not None
+    return written
+
+
+def digest(text: str, algorithm: str) -> str:
+    """$hash: the hex digest of the UTF-8 text."""
+    name = algorithm.replace("-", "").lower()
+    return hashlib.new(name, text.encode()).hexdigest()
+
+
+def partition(items: list, size: int) -> list | None:
+    """$partition, which returns nothing for no items."""
+    batches = [items[i : i + size] for i in range(0, len(items), size)]
+    return batches or None
+
+
+def range_numbers(first: int, last: int, step: int) -> list[int]:
+    """$range: from first by step through last, included when reached."""
+    result = []
+    value = first
+    while (value <= last) if step > 0 else (value >= last):
+        result.append(value)
+        value += step
+    return result
+
+
+def nulls(data: object) -> object:
+    if data is None:
+        return Utils.NULL_VALUE
+    if isinstance(data, dict):
+        return {k: nulls(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [nulls(v) for v in data]
+    return data
+
+
+def value(template: object, variables: Mapping[str, object], states: object) -> object:
+    if (
+        isinstance(template, str)
+        and template.startswith("{%")
+        and template.endswith("%}")
+    ):
+        return evaluate(template[2:-2], variables, states)
+    if isinstance(template, dict):
+        return {k: value(v, variables, states) for k, v in template.items()}
+    if isinstance(template, list):
+        return [value(v, variables, states) for v in template]
+    return template
+
+
+def matches(errors: list[str], error: str) -> bool:
+    """States.Runtime is caught by nothing. States.ALL matches every other
+    error and States.TaskFailed all but States.Timeout, States.DataLimitExceeded
+    from a result over the quota included."""
+    if error == "States.Runtime":
+        return False
+    if error in errors or "States.ALL" in errors:
+        return True
+    return "States.TaskFailed" in errors and error != "States.Timeout"
+
+
+def execution_context(execution_input: object) -> dict[str, object]:
+    """The Context Object of an execution, with placeholder values. RedriveTime
+    exists only in a redriven execution."""
+    return {
+        "Execution": {
+            "Id": "arn:aws:states:us-east-1:123456789012:execution:machine:execution",
+            "Input": execution_input,
+            "Name": "execution",
+            "RoleArn": "arn:aws:iam::123456789012:role/machine",
+            "StartTime": "2026-01-01T00:00:00Z",
+            "RedriveCount": 0,
+        },
+        "StateMachine": {
+            "Id": "arn:aws:states:us-east-1:123456789012:stateMachine:machine",
+            "Name": "machine",
+        },
+    }
+
+
+def entered(
+    context: Mapping[str, object],
+    name: str,
+    state: Mapping[str, object],
+    retries: int = 0,
+) -> dict[str, object]:
+    """The Context Object in a state. State.RetryCount exists only in the
+    states that retry (measured in a Task and a Map), and Task.Token only in a
+    .waitForTaskToken Task."""
+    about: dict[str, object] = {"EnteredTime": "2026-01-01T00:00:00Z", "Name": name}
+    if state["Type"] in {"Task", "Parallel", "Map"}:
+        about["RetryCount"] = retries
+    entered = {**context, "State": about}
+    resource = state.get("Resource")
+    if isinstance(resource, str) and resource.endswith(".waitForTaskToken"):
+        entered["Task"] = {"Token": "token"}
+    return entered
+
+
+def scope(
+    definition: Mapping[str, object],
+    variables: dict[str, object],
+    state_input: object,
+    context: Mapping[str, object],
+    record: Record,
+) -> object:
+    """The states of a machine or a Parallel branch. A branch gets a copy of
+    the variables, so it reads the outside and assigns its own."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    name = definition["StartAt"]
+    assert isinstance(name, str)
+    for _ in range(10_000):
+        state = states[name]
+        record.states.append(name)
+        frame = {"input": state_input, "context": entered(context, name, state)}
+        kind = state["Type"]
+        if kind == "Succeed":
+            return value(state.get("Output", state_input), variables, frame)
+        if kind == "Fail":
+            raise Failure(
+                str(value(state.get("Error", ""), variables, frame)),
+                str(value(state.get("Cause", ""), variables, frame)),
+            )
+        if kind == "Choice":
+            for rule in state["Choices"]:
+                test = value(rule["Condition"], variables, frame)
+                if not isinstance(test, bool):
+                    raise Failure(
+                        "States.QueryEvaluationError", f"{test!r} is not a boolean"
+                    )
+                if test:
+                    name = rule["Next"]
+                    break
+            else:
+                if "Default" not in state:
+                    raise Failure("States.NoChoiceMatched")
+                name = state["Default"]
+            continue
+        if kind == "Wait":
+            if "Seconds" in state:
+                seconds = value(state["Seconds"], variables, frame)
+                assert isinstance(seconds, int) and 0 <= seconds <= 99_999_999
+            else:
+                timestamp = value(state["Timestamp"], variables, frame)
+                assert isinstance(timestamp, str) and timestamp.endswith("Z")
+        elif kind in {"Task", "Parallel", "Map"}:
+            retries: list[int] = []
+            try:
+                assigned, output = retried(
+                    state, name, variables, state_input, context, record, retries
+                )
+            except Failure as failure:
+                catcher = next(
+                    (
+                        c
+                        for c in state.get("Catch", [])
+                        if matches(c["ErrorEquals"], failure.error)
+                    ),
+                    None,
+                )
+                if catcher is None:
+                    raise
+                error_output = {"Error": failure.error, "Cause": failure.cause}
+                frame = {
+                    "input": state_input,
+                    "context": entered(context, name, state, sum(retries)),
+                    "errorOutput": error_output,
+                }
+                assigned = {
+                    k: value(v, variables, frame)
+                    for k, v in catcher.get("Assign", {}).items()
+                }
+                variables.update(assigned)
+                state_input = error_output
+                name = catcher["Next"]
+                continue
+            variables.update(assigned)
+            if state.get("End"):
+                return output
+            state_input = output
+        else:
+            assigned = {
+                k: value(v, variables, frame)
+                for k, v in state.get("Assign", {}).items()
+            }
+            variables.update(assigned)
+        name = state["Next"]
+    raise AssertionError("the definition did not end within 10,000 states")
+
+
+def retried(
+    state: Mapping[str, object],
+    name: str,
+    variables: dict[str, object],
+    state_input: object,
+    context: Mapping[str, object],
+    record: Record,
+    retries: list[int],
+) -> tuple[dict[str, object], object]:
+    """A Task, Parallel or Map with its Retry, counting in retries the attempts
+    of each retrier, which a Catch reads as State.RetryCount. A failure in
+    Arguments, Assign or Output is retried too, and only the first retrier that
+    matches counts it: once that one has no attempts left, the state fails even
+    if a later one matches."""
+    retriers = state.get("Retry", [])
+    assert isinstance(retriers, list)
+    retries[:] = [0] * len(retriers)
+    while True:
+        frame = {
+            "input": state_input,
+            "context": entered(context, name, state, sum(retries)),
+        }
+        try:
+            return attempt(state, name, variables, frame, context, record)
+        except Failure as failure:
+            index = next(
+                (
+                    i
+                    for i, retrier in enumerate(retriers)
+                    if matches(retrier["ErrorEquals"], failure.error)
+                ),
+                None,
+            )
+            if index is None or retries[index] >= retriers[index].get("MaxAttempts", 3):
+                raise
+            retries[index] += 1
+
+
+def attempt(
+    state: Mapping[str, object],
+    name: str,
+    variables: dict[str, object],
+    frame: dict[str, object],
+    context: Mapping[str, object],
+    record: Record,
+) -> tuple[dict[str, object], object]:
+    kind = state["Type"]
+    if kind == "Task":
+        arguments = value(state.get("Arguments"), variables, frame)
+        result = record.call(name, state["Resource"], arguments)
+    elif kind == "Parallel":
+        branches = state["Branches"]
+        assert isinstance(branches, list)
+        result = [
+            scope(branch, dict(variables), frame["input"], context, record)
+            for branch in branches
+        ]
+    else:
+        result = run_map(state, name, variables, frame, context, record)
+    # Assign and Output both read the variables from before the state, and
+    # their errors are the state's to retry and catch.
+    frame = {**frame, "result": result}
+    assign = state.get("Assign", {})
+    assert isinstance(assign, dict)
+    assigned = {k: value(v, variables, frame) for k, v in assign.items()}
+    output = value(state["Output"], variables, frame) if "Output" in state else result
+    return assigned, output
+
+
+def run_map(
+    state: Mapping[str, object],
+    name: str,
+    variables: dict[str, object],
+    frame: Mapping[str, object],
+    context: Mapping[str, object],
+    record: Record,
+) -> object:
+    """A Map over Items or what its ItemReader reads. Inline iterations read the
+    variables around them; distributed ones are child executions whose input is
+    their only data. The iterations run one after another, in the order of the
+    items.
+
+    An object of items passes each entry as {"Key": ..., "Value": ...}, whose
+    fields Map.Item has too. A failed child execution takes its place in the
+    result with its error and counts each of its items as failed; unless the
+    thresholds tolerate them, the Map fails with
+    States.ExceedToleratedFailureThreshold. With a ResultWriter, the result is
+    where the results were written."""
+    processor = state["ItemProcessor"]
+    assert isinstance(processor, dict)
+    distributed = processor["ProcessorConfig"]["Mode"] == "DISTRIBUTED"
+    if "ItemReader" in state:
+        reader = value(state["ItemReader"], variables, frame)
+        assert isinstance(reader, dict)
+        items = record.call(name, reader["Resource"], reader.get("Arguments"))
+    else:
+        items = value(state["Items"], variables, frame)
+    if isinstance(items, dict):
+        assert distributed and "ItemBatcher" not in state
+        entries: list[dict[str, object]] = [
+            {"Key": k, "Value": v} for k, v in items.items()
+        ]
+    else:
+        assert isinstance(items, list)
+        entries = [{"Value": v} for v in items]
+    # Each child's input, with the number of items it takes.
+    inputs: list[tuple[object, int]] = []
+    if "ItemBatcher" in state:
+        batcher = value(state["ItemBatcher"], variables, frame)
+        assert isinstance(batcher, dict)
+        size = batcher.get("MaxItemsPerBatch", len(items) or 1)
+        for start in range(0, len(items), size):
+            batch = {"Items": items[start : start + size]}
+            if "BatchInput" in batcher:
+                batch["BatchInput"] = batcher["BatchInput"]
+            inputs.append((batch, len(batch["Items"])))
+    elif "ItemSelector" in state:
+        entered_context = frame["context"]
+        assert isinstance(entered_context, dict)
+        for position, entry in enumerate(entries):
+            item = {"Index": position, **entry}
+            selecting = {**entered_context, "Map": {"Item": item}}
+            selected = value(
+                state["ItemSelector"], variables, {**frame, "context": selecting}
+            )
+            inputs.append((selected, 1))
+    else:
+        objects = isinstance(items, dict)
+        inputs = [(entry if objects else entry["Value"], 1) for entry in entries]
+    results = []
+    failed = 0
+    for child_input, taken in inputs:
+        if distributed:
+            execution = context["Execution"]
+            assert isinstance(execution, dict)
+            child_context = {
+                **context,
+                "Execution": {**execution, "Input": child_input},
+            }
+            try:
+                results.append(scope(processor, {}, child_input, child_context, record))
+            except Failure as failure:
+                failed += taken
+                results.append(
+                    {"Status": "FAILED", "Error": failure.error, "Cause": failure.cause}
+                )
+        else:
+            results.append(
+                scope(processor, dict(variables), child_input, context, record)
+            )
+    if failed:
+        count = value(state.get("ToleratedFailureCount", 0), variables, frame)
+        percentage = value(state.get("ToleratedFailurePercentage", 0), variables, frame)
+        assert isinstance(count, int) and isinstance(percentage, int)
+        if exceeds(failed, len(entries), count, percentage):
+            raise Failure("States.ExceedToleratedFailureThreshold", EXCEEDED)
+    if "ResultWriter" in state:
+        writer = value(state["ResultWriter"], variables, frame)
+        assert isinstance(writer, dict)
+        arguments = writer["Arguments"]
+        return {
+            "MapRunArn": f"{MAP_RUN}/{state.get('Label', 'map')}:run",
+            "ResultWriterDetails": {
+                "Bucket": arguments["Bucket"],
+                "Key": f"{arguments['Prefix']}/run/manifest.json",
+            },
+        }
+    return results
+
+
+def exceeds(failed: int, total: int, count: int, percentage: int) -> bool:
+    """Whether failed items fail a distributed Map: with no threshold set, any
+    failure does, and otherwise exceeding one that is set does. A threshold of 0
+    is not set, though the documentation does not say so."""
+    if not count and not percentage:
+        return failed > 0
+    return (
+        bool(count)
+        and failed > count
+        or bool(percentage)
+        and failed * 100 > percentage * total
+    )
+
+
+__all__ = ["Call", "Execution", "Failure", "Tasks", "Unsupported", "run"]
