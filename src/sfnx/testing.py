@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import TypeGuard
 
 try:
     import jsonata
@@ -256,13 +257,15 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     expression.set_output_convert_nulls(False)
     # The functions Step Functions adds to JSONata.
     expression.register_lambda("parse", parse)
-    expression.register_lambda("uuid", lambda: str(uuid.uuid4()))
+    expression.register_lambda("uuid", new_uuid)
+    expression.register_lambda("random", random_number)
     expression.register_lambda("range", range_numbers)
     expression.register_lambda("now", now)
     expression.register_lambda("millis", lambda: int(time.time() * 1000))
     expression.register_lambda("hash", digest)
     expression.register_lambda("partition", partition)
     # The functions whose Step Functions behavior differs from jsonata-python's.
+    expression.register_lambda("fromMillis", from_millis)
     expression.register_lambda("decodeUrlComponent", decode_url_component)
     expression.register_lambda("base64decode", base64_decode)
     expression.register_lambda("formatNumber", format_number)
@@ -278,26 +281,83 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     return Utils.convert_nulls(result)
 
 
-def parse(text: object) -> object:
+# jsonata-python passes an undefined argument as None, JSON null as its null
+# value, and leaves an omitted one out, so the functions below take what they
+# are given and check it as Step Functions does: too many arguments or one of
+# the wrong type fail with T0410, and undefined gives undefined unless a
+# docstring says otherwise (measured).
+
+
+def mismatch(name: str, position: int) -> jsonata.JException:
+    return jsonata.JException(
+        f'T0410: Argument {position} of function "{name}" does not match'
+        " function signature"
+    )
+
+
+def at_most(name: str, args: tuple[object, ...], count: int) -> None:
+    if len(args) > count:
+        raise mismatch(name, count + 1)
+
+
+def is_number(value: object) -> TypeGuard[int | float]:
+    """A JSON number: an int or a float, not a boolean."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def parse(*args: object) -> object:
     """$parse as Python's json reads the text, which accepts NaN and rejects
-    single quotes where Step Functions does the opposite. Undefined gives
-    undefined and anything but a string fails (measured)."""
+    single quotes where Step Functions does the opposite. No text or undefined
+    gives undefined, and anything but a string fails (measured)."""
+    at_most("parse", args, 1)
+    text = args[0] if args else None
     if text is None:
         return None
     if not isinstance(text, str):
-        raise jsonata.JException(
-            'T0410: Argument 1 of function "parse" does not match function signature'
-        )
+        raise mismatch("parse", 1)
     try:
         return nulls(json.loads(text))
     except ValueError as exc:
         raise jsonata.JException(str(exc)) from exc
 
 
-def decode_url_component(text: str) -> str:
+def new_uuid(*args: object) -> str:
+    """$uuid, which takes no argument (measured)."""
+    at_most("uuid", args, 0)
+    return str(uuid.uuid4())
+
+
+def random_number(*args: object) -> float:
+    """$random, from 0 up to 1, and the same for the same seed. The number a
+    seed gives comes from its SHA-256, not the one Step Functions gives. A seed
+    that is not a number fails (measured)."""
+    at_most("random", args, 1)
+    seed = args[0] if args else None
+    if seed is None:
+        return Functions.random()
+    if not is_number(seed):
+        raise mismatch("random", 1)
+    bits = hashlib.sha256(repr(float(seed)).encode()).digest()[:7]
+    return int.from_bytes(bits) / 2**56
+
+
+def text_argument(name: str, args: tuple[object, ...]) -> str | None:
+    """The one text a function takes: None for undefined, and a failure for
+    anything but a string (measured)."""
+    at_most(name, args, 1)
+    text = args[0] if args else None
+    if text is not None and not isinstance(text, str):
+        raise mismatch(name, 1)
+    return text
+
+
+def decode_url_component(*args: object) -> str | None:
     """$decodeUrlComponent as Step Functions evaluates it: + is a space, a
     malformed escape such as %zz fails, and a broken UTF-8 sequence is U+FFFD
     (measured)."""
+    text = text_argument("decodeUrlComponent", args)
+    if text is None:
+        return None
     if re.search(r"%(?![0-9A-Fa-f]{2})", text):
         raise jsonata.JException(
             f"Malformed URL passed to $decodeUrlComponent(): {text}"
@@ -305,9 +365,12 @@ def decode_url_component(text: str) -> str:
     return urllib.parse.unquote_plus(text)
 
 
-def base64_decode(text: str) -> str:
+def base64_decode(*args: object) -> str | None:
     """$base64decode as Step Functions evaluates it: text missing its padding
     is read, and a character outside the alphabet fails (measured)."""
+    text = text_argument("base64decode", args)
+    if text is None:
+        return None
     padded = text + "=" * (-len(text) % 4)
     try:
         return base64.b64decode(padded, validate=True).decode()
@@ -323,14 +386,25 @@ GENERATED_PICTURE = re.compile(
 )
 
 
-def format_number(
-    value: float, picture: str, options: Mapping[str, str] | None = None
-) -> str | None:
+def format_number(*args: object) -> str | None:
     """$formatNumber as Step Functions evaluates it: the number is rounded
     half to even on the decimal it is written as, so 0.125 to two places is
     0.12 and 2.675 is 2.68 (measured). jsonata-python rounds the binary value
     instead, giving 0.13 and 2.67, so the pictures the compiler writes are
-    evaluated here and any other is left to it."""
+    evaluated here and any other is left to it. An undefined number gives
+    undefined (measured)."""
+    at_most("formatNumber", args, 3)
+    value = args[0] if args else None
+    picture = args[1] if len(args) > 1 else None
+    options = args[2] if len(args) > 2 else None
+    if value is None:
+        return None
+    if not is_number(value):
+        raise mismatch("formatNumber", 1)
+    if not isinstance(picture, str):
+        raise mismatch("formatNumber", 2)
+    if options is not None and not isinstance(options, dict):
+        raise mismatch("formatNumber", 3)
     found = GENERATED_PICTURE.fullmatch(picture)
     if found is None or options is not None:
         return Functions.format_number(value, picture, options)
@@ -352,23 +426,49 @@ def format_number(
     return digits.rjust(width, "0")
 
 
-def now(picture: str | None = None) -> str:
+# A timezone as JSONata writes one. Step Functions reads utc as UTC, where
+# jsonata-python fails on it (measured), and so does this for any other text.
+TIMEZONE = re.compile(r"[+-]\d{4}")
+
+
+def timezone_of(value: object) -> str | None:
+    return value if isinstance(value, str) and TIMEZONE.fullmatch(value) else None
+
+
+def now(*args: object) -> str:
     """$now(): the time in UTC to the millisecond, as Step Functions gives it,
-    or written with the picture string given, which jsonata-python formats the
-    way Step Functions does (measured)."""
+    or written with the picture string and timezone given, which jsonata-python
+    formats the way Step Functions does (measured)."""
+    at_most("now", args, 2)
+    picture = args[0] if args else None
+    if picture is not None and not isinstance(picture, str):
+        raise mismatch("now", 1)
     moment = datetime.now(UTC)
     if picture is None:
         return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     written = Functions.datetime_from_millis(
-        int(moment.timestamp() * 1000), picture, None
+        int(moment.timestamp() * 1000),
+        picture,
+        timezone_of(args[1] if len(args) > 1 else None),
     )
     assert written is not None
     return written
 
 
-# jsonata-python passes an undefined argument as None and leaves an omitted
-# one to the default, so $hash tells them apart by this default.
-OMITTED = object()
+def from_millis(*args: object) -> str | None:
+    """$fromMillis, with the timezone read as Step Functions reads it. Millis
+    that are not a number, text among them, give undefined (measured)."""
+    at_most("fromMillis", args, 3)
+    millis = args[0] if args else None
+    picture = args[1] if len(args) > 1 else None
+    if not is_number(millis):
+        return None
+    if picture is not None and not isinstance(picture, str):
+        raise mismatch("fromMillis", 2)
+    return Functions.datetime_from_millis(
+        millis, picture, timezone_of(args[2] if len(args) > 2 else None)
+    )
+
 
 # The algorithms $hash takes, spelled only this way (measured).
 ALGORITHMS = {
@@ -380,12 +480,21 @@ ALGORITHMS = {
 }
 
 
-def digest(text: str | None, algorithm: object = OMITTED) -> str | None:
-    """$hash: the hex digest of the UTF-8 text. Undefined text or an omitted
-    algorithm gives undefined, and an undefined or unknown algorithm fails
-    (measured)."""
-    if text is None or algorithm is OMITTED:
+def digest(*args: object) -> str | None:
+    """$hash: the hex digest of the UTF-8 text. Undefined text or no algorithm
+    gives undefined; no argument, text that is not a string, and an undefined
+    or unknown algorithm fail (measured)."""
+    at_most("hash", args, 2)
+    if not args:
+        raise mismatch("hash", 1)
+    text = args[0]
+    if text is None:
         return None
+    if not isinstance(text, str):
+        raise mismatch("hash", 1)
+    if len(args) == 1:
+        return None
+    algorithm = args[1]
     name = ALGORITHMS.get(algorithm) if isinstance(algorithm, str) else None
     if name is None:
         shown = "null" if algorithm is None else algorithm
@@ -396,25 +505,50 @@ def digest(text: str | None, algorithm: object = OMITTED) -> str | None:
     return hashlib.new(name, text.encode()).hexdigest()
 
 
-def partition(items: list | None, size: int | None) -> list | None:
-    """$partition, which returns nothing for no items or undefined items, and
-    the items as one batch for an undefined size, even when there are none
-    (measured)."""
+def partition(*args: object) -> list | None:
+    """$partition: batches of the size, a fraction cut to a whole number. No
+    items, undefined items or a size of 0 give undefined, and no size or an
+    undefined one makes the items one batch, even when there are none. Items
+    that are not an array, a size that is not a number, and a size below 0
+    fail (measured)."""
+    at_most("partition", args, 2)
+    items = args[0] if args else None
     if items is None:
         return None
+    if not isinstance(items, list):
+        raise jsonata.JException(
+            'T0412: Argument 1 of function "partition" must be an array of undefined'
+        )
+    size = args[1] if len(args) > 1 else None
     if size is None:
         return [items]
-    batches = [items[i : i + size] for i in range(0, len(items), size)]
+    if not is_number(size):
+        raise mismatch("partition", 2)
+    if size < 0:
+        raise jsonata.JException("D3137: Second argument must be zero or greater")
+    whole = int(size)
+    if whole == 0:
+        return None
+    batches = [items[i : i + whole] for i in range(0, len(items), whole)]
     return batches or None
 
 
-def range_numbers(
-    first: int | None, last: int | None, step: int | None
-) -> list[int] | int | None:
-    """$range: from first by step through last, included when reached, and
-    undefined when any of them is. The numbers are a sequence, as a path
-    gives: none is undefined and one is that number (measured)."""
-    if first is None or last is None or step is None:
+def range_numbers(*args: object) -> list[int] | int | None:
+    """$range: from first by step through last, included when reached, each
+    cut to a whole number. Fewer than three arguments, an undefined one or a
+    step of 0 give undefined, and one that is not a number fails. The numbers
+    are a sequence, as a path gives: none is undefined and one is that number
+    (measured)."""
+    at_most("range", args, 3)
+    if len(args) < 3 or any(value is None for value in args):
+        return None
+    bounds: list[int] = []
+    for position, value in enumerate(args, 1):
+        if not is_number(value):
+            raise mismatch("range", position)
+        bounds.append(int(value))
+    first, last, step = bounds
+    if step == 0:
         return None
     result = []
     value = first
@@ -597,12 +731,7 @@ def waited(
     read it (measured), and returns at once."""
     if "Seconds" in state:
         seconds = value(state["Seconds"], variables, frame)
-        if (
-            isinstance(seconds, bool)
-            or not isinstance(seconds, (int, float))
-            or not float(seconds).is_integer()
-            or seconds < 0
-        ):
+        if not is_number(seconds) or not float(seconds).is_integer() or seconds < 0:
             raise Failure(
                 "States.QueryEvaluationError",
                 f"Seconds is {json.dumps(seconds)}, not a whole number of 0 or more",

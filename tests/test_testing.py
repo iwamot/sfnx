@@ -571,12 +571,14 @@ def test_text_that_is_not_json_fails_to_parse():
     assert testing.run(parsed, {}).error == "States.QueryEvaluationError"
 
 
-# What Step Functions gives for undefined or invalid arguments to the
-# functions it adds (measured with TestState).
+# What Step Functions gives for the arguments of the functions it adds and of
+# those the runner replaces, measured with TestState or recorded on AWS by
+# tiny-asl-machine's conformance tests.
 @pytest.mark.parametrize(
     "code, expected",
     [
         ("$exists($parse($nothing))", False),
+        ("$exists($parse())", False),
         ("$exists($parse($match('abc', /x/)[0].match))", False),
         ("$exists($hash($nothing, 'SHA-256'))", False),
         ("$exists($hash('a'))", False),
@@ -587,9 +589,26 @@ def test_text_that_is_not_json_fails_to_parse():
         ("$exists($range($nothing, 3, 1))", False),
         ("$exists($range(0, $nothing, 1))", False),
         ("$exists($range(0, 3, $nothing))", False),
+        ("$exists($range(1, 5))", False),
+        ("$exists($range(1, 10, 0.49))", False),
+        ("$range(1.4, 5.6, 2.2)", [1, 3, 5]),
+        ("$range(-1.5, 2.5, 1)", [-1, 0, 1, 2]),
+        ("$partition([1, 2, 3, 4, 5], 2.6)", [[1, 2], [3, 4], [5]]),
+        ("$partition([1, 2, 3])", [[1, 2, 3]]),
+        ("$exists($partition([1, 2, 3], 0.5))", False),
+        ("$random(77) = $random(77)", True),
+        ("$random(1.5) < 1", True),
+        ("$fromMillis(0, '[H01]:[m01]', '+0900')", "09:00"),
+        ("$fromMillis(0, '[H01]', 'utc')", "00"),
+        ("$now('[Z]', 'utc') = $now('[Z]')", True),
+        ("$exists($formatNumber($nothing, '0'))", False),
+        ("$exists($base64decode($nothing))", False),
+        ("$exists($decodeUrlComponent($nothing))", False),
+        ("$exists($fromMillis($nothing))", False),
+        ("$exists($fromMillis('a'))", False),
     ],
 )
-def test_added_functions_give_undefined_as_step_functions_does(code, expected):
+def test_functions_give_what_step_functions_gives(code, expected):
     output = machine({"Type": "Succeed", "Output": "{% " + code + " %}"})
     assert testing.run(output, {}).output == expected
 
@@ -617,9 +636,35 @@ def test_range_gives_a_sequence(code, expected):
         ("$hash('a', $nothing)", "Hash algorithm 'null' must be one of"),
         ("$hash('a', 'sha-256')", "Hash algorithm 'sha-256' must be one of"),
         ("$hash('a', 'SHA256')", "Hash algorithm 'SHA256' must be one of"),
+        ("$hash(123, 'SHA-256')", 'Argument 1 of function "hash"'),
+        ("$hash()", 'Argument 1 of function "hash"'),
+        ("$hash('a', 'SHA-256', 'x')", 'Argument 3 of function "hash"'),
+        ("$parse(123)", 'Argument 1 of function "parse"'),
+        ("$parse('{}', 1)", 'Argument 2 of function "parse"'),
+        ("$uuid('x')", 'Argument 1 of function "uuid"'),
+        ("$uuid(1, 2)", 'Argument 1 of function "uuid"'),
+        ("$random('seed')", 'Argument 1 of function "random"'),
+        ("$random(null)", 'Argument 1 of function "random"'),
+        ("$random(77, 88)", 'Argument 2 of function "random"'),
+        ("$partition([1, 2, 3], -1)", "Second argument must be zero or greater"),
+        ("$partition([1, 2, 3], '2')", 'Argument 2 of function "partition"'),
+        ("$partition([1, 2, 3], null)", 'Argument 2 of function "partition"'),
+        ("$partition([1, 2, 3], true)", 'Argument 2 of function "partition"'),
+        ("$partition('not-array', 2)", 'Argument 1 of function "partition"'),
+        ("$partition([1, 2, 3], 2, 99)", 'Argument 3 of function "partition"'),
+        ("$range('a', 5, 1)", 'Argument 1 of function "range"'),
+        ("$range(1, 5, null)", 'Argument 3 of function "range"'),
+        ("$range(1, 5, 1, 99)", 'Argument 4 of function "range"'),
+        ("$formatNumber('a', '0')", 'function "formatNumber"'),
+        ("$formatNumber(1, 2)", 'Argument 2 of function "formatNumber"'),
+        ("$formatNumber(1, '0', 'x')", 'Argument 3 of function "formatNumber"'),
+        ("$now(1)", 'Argument 1 of function "now"'),
+        ("$fromMillis(0, 1)", 'Argument 2 of function "fromMillis"'),
+        ("$base64decode(123)", 'Argument 1 of function "base64decode"'),
+        ("$decodeUrlComponent(1)", 'Argument 1 of function "decodeUrlComponent"'),
     ],
 )
-def test_added_functions_fail_on_invalid_arguments(code, cause):
+def test_functions_fail_where_step_functions_fails(code, cause):
     output = machine({"Type": "Succeed", "Output": "{% " + code + " %}"})
     execution = testing.run(output, {})
     assert execution.error == "States.QueryEvaluationError"
