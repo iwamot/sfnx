@@ -590,13 +590,51 @@ def condition(
 def waited(
     state: Mapping[str, object], variables: Mapping[str, object], frame: object
 ) -> None:
-    """A Wait evaluates what it waits for, and returns at once."""
+    """A Wait evaluates what it waits for, fails where Step Functions cannot
+    read it (measured), and returns at once."""
     if "Seconds" in state:
         seconds = value(state["Seconds"], variables, frame)
-        assert isinstance(seconds, int) and 0 <= seconds <= 99_999_999
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not float(seconds).is_integer()
+            or seconds < 0
+        ):
+            raise Failure(
+                "States.QueryEvaluationError",
+                f"Seconds is {json.dumps(seconds)}, not a whole number of 0 or more",
+            )
     else:
         timestamp = value(state["Timestamp"], variables, frame)
-        assert isinstance(timestamp, str) and timestamp.endswith("Z")
+        if not isinstance(timestamp, str) or not offset_date_time(timestamp):
+            raise Failure(
+                "States.QueryEvaluationError",
+                f"Timestamp is {json.dumps(timestamp)}, not an ISO-8601 date and"
+                " time with an offset",
+            )
+
+
+# An ISO-8601 extended offset date-time, as a Wait reads its Timestamp: T or
+# t, seconds and up to nine digits of their fraction optional, and Z, z or an
+# offset (measured).
+OFFSET_DATE_TIME = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?"
+    r"(?:[Zz]|[+-]\d{2}:\d{2})"
+)
+
+
+def offset_date_time(text: str) -> bool:
+    """Whether the text is such a date-time, on a day and at a time that
+    exist."""
+    found = OFFSET_DATE_TIME.fullmatch(text)
+    if found is None:
+        return False
+    year, month, day, hour, minute, second = (int(v or 0) for v in found.groups())
+    try:
+        datetime(year, month, day, hour, minute, second, tzinfo=UTC)
+    except ValueError:
+        return False
+    return True
 
 
 def settled(
@@ -695,7 +733,8 @@ def run_map(
     context: Mapping[str, object],
     record: Record,
 ) -> object:
-    """A Map over Items or what its ItemReader reads. Inline iterations read the
+    """A Map over Items, what its ItemReader reads, or without either, its
+    input. Without a ProcessorConfig it is inline. Inline iterations read the
     variables around them; distributed ones are child executions whose input is
     their only data. The iterations run one after another, in the order of the
     items.
@@ -708,15 +747,30 @@ def run_map(
     where the results were written."""
     processor = state["ItemProcessor"]
     assert isinstance(processor, dict)
-    distributed = processor["ProcessorConfig"]["Mode"] == "DISTRIBUTED"
+    config = processor.get("ProcessorConfig", {})
+    assert isinstance(config, dict)
+    distributed = config.get("Mode", "INLINE") == "DISTRIBUTED"
     if "ItemReader" in state:
         reader = value(state["ItemReader"], variables, frame)
         assert isinstance(reader, dict)
         items = record.call(name, reader["Resource"], reader.get("Arguments"))
-    else:
+    elif "Items" in state:
         items = value(state["Items"], variables, frame)
+        if not isinstance(items, list) and not (
+            isinstance(items, dict) and distributed and "ItemBatcher" not in state
+        ):
+            raise Failure(
+                "States.QueryEvaluationError",
+                f"Items is {json.dumps(items, default=str)}, not an array",
+            )
+    else:
+        items = frame["input"]
+        if not isinstance(items, list):
+            raise Failure(
+                "States.QueryEvaluationError",
+                f"the input is {json.dumps(items)}, not an array",
+            )
     if isinstance(items, dict):
-        assert distributed and "ItemBatcher" not in state
         entries: list[dict[str, object]] = [
             {"Key": k, "Value": v} for k, v in items.items()
         ]

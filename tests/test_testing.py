@@ -610,6 +610,54 @@ def test_added_functions_fail_on_invalid_arguments(code, cause):
     assert cause in execution.cause
 
 
+# What a Wait reads at run time: Timestamp and Seconds measured with TestState.
+@pytest.mark.parametrize(
+    "field, given, fails",
+    [
+        ("Timestamp", "2016-12-05T21:29:29Z", False),
+        ("Timestamp", "2016-12-05T21:29:29.123456789Z", False),
+        ("Timestamp", "2016-12-05T21:29:29+09:00", False),
+        ("Timestamp", "2016-12-05T21:29Z", False),
+        ("Timestamp", "2016-12-05t21:29:29z", False),
+        ("Timestamp", "2016-12-05 21:29:29Z", True),
+        ("Timestamp", "2016-12-05T21:29:29", True),
+        ("Timestamp", "2016-02-30T21:29:29Z", True),
+        ("Timestamp", "2016-12-05T25:29:29Z", True),
+        ("Timestamp", 1480973369, True),
+        ("Seconds", 0, False),
+        ("Seconds", 0.0, False),
+        ("Seconds", 100_000_000, False),
+        ("Seconds", -1, True),
+        ("Seconds", 1.5, True),
+        ("Seconds", "3", True),
+        ("Seconds", None, True),
+        ("Seconds", True, True),
+    ],
+)
+def test_a_wait_fails_on_what_step_functions_cannot_read(field, given, fails):
+    wait = machine({"Type": "Wait", field: "{% $states.input.v %}", "End": True})
+    execution = testing.run(wait, {"v": given})
+    assert execution.error == ("States.QueryEvaluationError" if fails else None)
+
+
+def inline_map(**fields: object) -> dict:
+    processor = {"StartAt": "p", "States": {"p": {"Type": "Pass", "End": True}}}
+    return machine({"Type": "Map", "ItemProcessor": processor, "End": True, **fields})
+
+
+# The Map tests below follow results LocalStack's Step Functions tests
+# recorded on AWS.
+def test_a_map_without_items_or_processor_config_iterates_its_input_inline():
+    assert testing.run(inline_map(), [1, "two", True]).output == [1, "two", True]
+    assert testing.run(inline_map(), 1).error == "States.QueryEvaluationError"
+
+
+@pytest.mark.parametrize("items", ["1", "'string'", "true", "{'foo': 'bar'}", "null"])
+def test_an_inline_map_fails_on_items_that_are_not_an_array(items):
+    execution = testing.run(inline_map(Items="{% " + items + " %}"), {})
+    assert execution.error == "States.QueryEvaluationError"
+
+
 def test_a_condition_that_is_not_a_boolean_fails():
     choice = machine(
         {"Type": "Choice", "Choices": [{"Condition": "{% 1 %}", "Next": "s"}]}
