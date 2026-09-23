@@ -108,6 +108,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/sfnx/cli.py" = ["BLE001"]  # the CLI maps every failure to an exit code
+# In a workflow source, except Exception spells the States.ALL of ASL.
+"examples/**" = ["BLE001"]
 # The tests build workflow source as strings and run it with exec.
 "tests/**" = ["S102"]
 

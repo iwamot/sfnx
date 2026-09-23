@@ -1,6 +1,8 @@
 """The examples of examples/: each committed definition is what its source
 compiles to, and each machine does what its docstring says when run locally."""
 
+import json
+import re
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 
@@ -11,7 +13,15 @@ from sfnx.compiler import compile_file
 from tests import asl
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
-NAMES = ["orders", "poll", "approval", "fanout", "settle"]
+NAMES = [
+    "orders",
+    "poll",
+    "approval",
+    "fanout",
+    "settle",
+    "hello_world",
+    "coding_agent",
+]
 
 
 def definition(name: str) -> dict[str, object]:
@@ -311,3 +321,103 @@ def test_settle_of_a_day_without_charges_returns_no_totals():
         "charges": 0,
         "totals": {},
     }
+
+
+def test_hello_world_waits_runs_both_branches_and_counts_two_checkpoints():
+    summary = asl.run(definition("hello_world"), {})["Summary"]
+    assert re.fullmatch(
+        r"This Hello World execution began on \d\d/\d\d\. The state machine ran for"
+        r" \S+ seconds before the snapshot was taken, passing through 2"
+        r" checkpoints, and has successfully completed\.",
+        summary,
+    )
+
+
+def test_hello_world_fails_under_the_template_s_error_name():
+    states = definition("hello_world")["States"]
+    assert isinstance(states, dict)
+    assert states["raise"] == {"Type": "Fail", "Error": "Not a Hello World Example"}
+
+
+TERM = {
+    "record_id": "r1",
+    "verbatim": "migrane",
+    "encoding_dictionary": "MedDRA",
+    "encoding_dictionary_version": "v27.0",
+    "source_study": "ONCO-2024-01",
+}
+MIGRAINE = {"dict_term": "Migraine", "dict_term_code": "10027599"}
+
+
+def reply(text: str) -> Callable[[object], object]:
+    return constant({"Output": {"Message": {"Content": [{"Text": text}]}}})
+
+
+def written(arguments: object) -> object:
+    assert isinstance(arguments, dict)
+    return {"Payload": arguments["Payload"]}
+
+
+def coding(direct: object, agent: Callable[[object], object]) -> Tasks:
+    return Tasks(
+        direct=constant({"Payload": direct}),
+        agent_candidate=agent,
+        written=written,
+        opened=written,
+    )
+
+
+def test_coding_agent_writes_back_a_direct_match_without_the_agent():
+    tasks = coding(
+        {"blocked": False, "matched": True, "candidate": MIGRAINE}, reply("")
+    )
+    result = asl.run(definition("coding_agent"), TERM, tasks)
+    assert (result["target_status"], result["candidate"]) == ("autocoded", MIGRAINE)
+    assert [name for name, _ in tasks.calls] == ["direct", "written"]
+
+
+@pytest.mark.parametrize(
+    "score, status", [(0.95, "autocoded"), (0.8, "approval_required")]
+)
+def test_coding_agent_routes_the_agent_s_candidate_by_its_score(score, status):
+    answer = json.dumps({**MIGRAINE, "score": score, "rationale": "a misspelling"})
+    tasks = coding({"blocked": False, "matched": False}, reply(f"Found: {answer}"))
+    result = asl.run(definition("coding_agent"), TERM, tasks)
+    assert (result["target_status"], result["candidate"]["dict_term_code"]) == (
+        status,
+        "10027599",
+    )
+
+
+def test_coding_agent_leaves_a_low_score_open_with_the_rationale():
+    answer = json.dumps({**MIGRAINE, "score": 0.5, "rationale": "no good fit"})
+    tasks = coding({"blocked": False, "matched": False}, reply(answer))
+    assert asl.run(definition("coding_agent"), TERM, tasks) == {
+        "record_id": "r1",
+        "target_status": "open",
+        "failure_reason": None,
+        "rationale": "no good fit",
+    }
+
+
+def test_coding_agent_leaves_open_a_reply_without_a_rationale():
+    tasks = coding({"blocked": False, "matched": False}, reply('{"score": 0.5}'))
+    result = asl.run(definition("coding_agent"), TERM, tasks)
+    assert (result["target_status"], result["rationale"]) == ("open", None)
+
+
+@pytest.mark.parametrize("text", ["sorry, I cannot help", "{not json}"])
+def test_coding_agent_leaves_a_reply_without_json_open(text):
+    tasks = coding({"blocked": False, "matched": False}, reply(text))
+    result = asl.run(definition("coding_agent"), TERM, tasks)
+    assert (result["target_status"], result["failure_reason"]) == (
+        "open",
+        "States.QueryEvaluationError",
+    )
+
+
+def test_coding_agent_leaves_a_blocked_term_open_without_the_agent():
+    tasks = coding({"blocked": True, "matched": False}, reply(""))
+    result = asl.run(definition("coding_agent"), TERM, tasks)
+    assert (result["target_status"], result["failure_reason"]) == ("open", None)
+    assert [name for name, _ in tasks.calls] == ["direct", "opened"]
