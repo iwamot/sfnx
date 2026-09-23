@@ -449,7 +449,6 @@ A minus sign written in the source counts from the end; a negative number that a
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
-| `s[a:b]` | `a` written with a minus sign and past the start, such as `"hello"[-10:-8]` | counted from the start of `s` (`"he"`) | `""` |
 | `xs[a:b]`, or the end of `s[a:b]` | a negative number read from a variable with no minus sign written, such as `i` = -2 | not counted from the end: `xs[i:]` is the whole list, `s[:i]` is `""` | counted from the end |
 | `[f(x) for x in xs if c]` | a `c` and an `f` that each give another value on every call, such as `random.random()` | `$filter` tests every item, then `$map` reads a result for each item it kept | the condition and the result of one item before the next item, so a dropped item takes no result |
 
