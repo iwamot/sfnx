@@ -278,6 +278,14 @@ def test_an_expression_that_fails_in_a_task_is_caught():
     assert run(body, {}, {"x": lambda arguments: {}}) == "caught"
 
 
+def test_an_expression_that_fails_after_the_task_is_not_caught():
+    body = f'try:\n    x = {CHARGE}["Payload"]\n    y = x - 1\nexcept Exception:\n    return "caught"\nreturn y'
+    assert run(body, {}, {"x": lambda arguments: {"Payload": 2}}) == 1
+    with pytest.raises(asl.Failure) as failure:
+        run(body, {}, {"x": lambda arguments: {"Payload": "oops"}})
+    assert failure.value.error == "States.QueryEvaluationError"
+
+
 def test_evaluation_of_rethrow_and_loops():
     body = f'total = 0\nfor i in range(3):\n    try:\n        r = task("{LAMBDA}", {{"FunctionName": "f"}})\n        total = total + 1\n    except Declined:\n        continue\n    except Exception:\n        raise\nreturn total'
     assert run(body, {}, {"r": lambda arguments: {}}) == 3
