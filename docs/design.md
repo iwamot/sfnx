@@ -139,6 +139,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 
 ### States
 
+- A state is in its own `QueryLanguage`, or else in the definition's, which is JSONPath when the definition leaves it out. A state in a Parallel branch or a Map reads the definition's, not the Parallel's or the Map's: under a definition without it, a Map set to JSONata runs its processor's states in JSONPath unless each sets JSONata. A state cannot set JSONPath in a definition set to JSONata (ValidateStateMachineDefinition; measured).
 - State names must be unique across the whole definition, branches and Map processors included (`DUPLICATE_STATE_NAME`; measured). A distributed Map `Label` must be unique too (`DUPLICATE_LABEL_NAME`; measured).
 - Only Parallel and Map create scopes. An inner scope can read outer variables but cannot assign a name the outer scope assigns (`DUPLICATE_VARIABLE_NAME`; measured). A Catch's `Assign` writes to the outer scope. A distributed Map reads no outer variables.
 - Choice evaluates its rules in order and fails if none holds and there is no `Default`. A Choice has no `End`. A rule that matches assigns and outputs by its own `Assign` and `Output`, not by the state's, which run only when the `Default` is taken; without an `Output`, the input goes on (measured).

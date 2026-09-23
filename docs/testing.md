@@ -75,7 +75,7 @@ An `Execution` has:
 - **`states`**: the names of the states entered, in order, including those in branches and iterations.
 - **`calls`**: every `Call` made, in order, one per attempt when a Retry runs a Task again.
 
-`Unsupported`, a `ValueError`, is raised before anything runs when the definition is not in JSONata mode or has a state or a field the runner does not interpret. Its message names the state and the field. A definition in JSONPath mode, or with a state that sets `QueryLanguage` to JSONPath, is rejected this way.
+`Unsupported`, a `ValueError`, is raised before anything runs when a state is not in JSONata mode, or the definition has a state or a field the runner does not interpret. Its message names the state and the field. A state is in JSONata mode when it sets `QueryLanguage` to JSONata, or the definition does and the state does not set it; a definition that leaves `QueryLanguage` out is in JSONPath mode, so without it every state, those in branches and Maps included, needs its own. A state in JSONPath mode is rejected this way.
 
 ## What runs
 

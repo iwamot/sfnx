@@ -197,18 +197,19 @@ BATCHER = frozenset({"MaxItemsPerBatch", "MaxInputBytesPerBatch", "BatchInput"})
 
 
 def check(definition: Mapping[str, object]) -> None:
-    """Raise Unsupported for a definition that is not in JSONata mode, or
-    that has a state or a field run() does not interpret."""
-    if definition.get("QueryLanguage") != "JSONata":
-        raise Unsupported(
-            "the definition does not set QueryLanguage to JSONata;"
-            " sfnx.testing runs JSONata definitions only"
-        )
+    """Raise Unsupported for a definition with a state that is not in JSONata
+    mode, or with a state or a field run() does not interpret."""
     check_fields("the definition", definition, MACHINE)
-    check_states(definition)
+    language = definition.get("QueryLanguage", "JSONPath")
+    assert isinstance(language, str)
+    check_states(definition, language)
 
 
-def check_states(machine: Mapping[str, object]) -> None:
+def check_states(machine: Mapping[str, object], language: str) -> None:
+    """A state is in its own QueryLanguage, or else in the definition's, which
+    is JSONPath when the definition does not set one; a state in a branch or
+    a Map reads the definition's too, not the Parallel's or the Map's
+    (measured)."""
     listed = machine["States"]
     assert isinstance(listed, dict)
     for name, state in listed.items():
@@ -218,10 +219,16 @@ def check_states(machine: Mapping[str, object]) -> None:
             raise Unsupported(
                 f"{name}: the state type {kind} is not run by sfnx.testing"
             )
-        if state.get("QueryLanguage", "JSONata") != "JSONata":
+        if "QueryLanguage" in state and state["QueryLanguage"] != "JSONata":
             raise Unsupported(
                 f"{name}: QueryLanguage {state['QueryLanguage']} is not run by"
                 " sfnx.testing, which runs JSONata only"
+            )
+        if state.get("QueryLanguage", language) != "JSONata":
+            raise Unsupported(
+                f"{name}: the state is in {language}, as the definition does not"
+                " set QueryLanguage to JSONata; set it there or on the state, as"
+                " sfnx.testing runs JSONata only"
             )
         check_fields(name, state, COMMON | FIELDS[kind])
         for key, allowed in [("Retry", RETRIER), ("Catch", CATCHER), ("Choices", RULE)]:
@@ -236,10 +243,10 @@ def check_states(machine: Mapping[str, object]) -> None:
                 check_fields(f"{name}.{key}", state[key], allowed)
         for branch in state.get("Branches", []):
             check_fields(f"{name}.Branches", branch, BRANCH)
-            check_states(branch)
+            check_states(branch, language)
         if "ItemProcessor" in state:
             check_fields(f"{name}.ItemProcessor", state["ItemProcessor"], PROCESSOR)
-            check_states(state["ItemProcessor"])
+            check_states(state["ItemProcessor"], language)
 
 
 def check_fields(

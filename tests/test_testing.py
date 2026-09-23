@@ -468,7 +468,33 @@ def test_a_choice_without_a_match_or_a_default_fails():
     [
         (
             {"StartAt": "s", "States": {"s": {"Type": "Succeed"}}},
-            "the definition does not set QueryLanguage to JSONata",
+            "s: the state is in JSONPath, as the definition does not set QueryLanguage",
+        ),
+        (
+            {
+                "QueryLanguage": "JSONPath",
+                "StartAt": "s",
+                "States": {"s": {"Type": "Succeed"}},
+            },
+            "s: the state is in JSONPath",
+        ),
+        (
+            {
+                "StartAt": "m",
+                "States": {
+                    "m": {
+                        "Type": "Map",
+                        "QueryLanguage": "JSONata",
+                        "Items": [1],
+                        "ItemProcessor": {
+                            "StartAt": "p",
+                            "States": {"p": {"Type": "Pass", "End": True}},
+                        },
+                        "End": True,
+                    }
+                },
+            },
+            "p: the state is in JSONPath",
         ),
         (
             machine({"Type": "Succeed", "QueryLanguage": "JSONPath"}),
@@ -564,6 +590,34 @@ def test_what_the_runner_does_not_interpret_is_rejected_before_it_runs(
 ):
     with pytest.raises(testing.Unsupported, match=message):
         testing.run(definition, {})
+
+
+def test_a_definition_whose_every_state_sets_jsonata_runs():
+    jsonata = {"QueryLanguage": "JSONata"}
+    processor = {
+        "StartAt": "p",
+        "States": {
+            "p": {
+                **jsonata,
+                "Type": "Pass",
+                "Output": "{% $states.input * 2 %}",
+                "End": True,
+            }
+        },
+    }
+    definition = {
+        "StartAt": "m",
+        "States": {
+            "m": {
+                **jsonata,
+                "Type": "Map",
+                "Items": "{% [1, 2] %}",
+                "ItemProcessor": processor,
+                "End": True,
+            }
+        },
+    }
+    assert testing.run(definition, {}).output == [2, 4]
 
 
 def test_text_that_is_not_json_fails_to_parse():
