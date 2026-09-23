@@ -310,7 +310,7 @@ except Exception:
 - **sfnx exports** the Step Functions errors a Retry or Catch can name: `Timeout`, `TaskFailed`, `Permissions`, `HeartbeatTimeout`, `DataLimitExceeded`, `ExceedToleratedFailureThreshold`, `ItemReaderFailed`, `ResultWriterFailed`, `QueryEvaluationError`, `HttpSocket`. `except Exception` is `States.ALL`, which does not catch `States.Runtime` and, according to the Step Functions documentation, `States.DataLimitExceeded`.
 - **`raise Declined("message")`** is a Fail with that `Error` and `Cause`. A message known not to be a string goes through `$string()`, or is written as its text where the value is known while the file compiles. Python's built-in exceptions and the Step Functions errors cannot be raised, and `from ...` is left out, as a Fail has no chained cause.
 - **`try` / `except`** puts a Catch on each Task, Parallel and Map in the body, innermost clauses first. A clause runs with the variables bound before the state that failed. `as e` assigns the error output, `str(e)` and `f"{e}"` read its `Cause`, and a bare `raise` fails again with the caught `Error` and `Cause`. `else:` runs after the body without the Catch.
-- Pass, Choice and Wait states cannot catch, so a `try` whose body has no Task, Parallel or Map is rejected, and so is a `raise` in the body that its own `except` would catch, or a bare `raise` in a clause that an `except` around it would catch: a Fail ends the execution. `finally` and a bare `except:` are rejected.
+- Pass, Choice and Wait states cannot catch. An expression that fails in a statement of the body without a `task()`, `parallel()` or map call is not caught ([The ASL's own semantics](#the-asls-own-semantics)). A `try` whose body has no Task, Parallel or Map is rejected, and so is a `raise` in the body that its own `except` would catch, or a bare `raise` in a clause that an `except` around it would catch: a Fail ends the execution. `finally` and a bare `except:` are rejected.
 - **`retry=`** takes retriers as dicts: `ErrorEquals` (a list of classes), `IntervalSeconds`, `MaxAttempts`, `BackoffRate`, `MaxDelaySeconds`, `JitterStrategy`, each checked against its range. A retrier for `Exception` comes last.
 
 ## JSONata expressions
@@ -456,10 +456,11 @@ A minus sign written in the source counts from the end; a negative number that a
 
 ### The ASL's own semantics
 
-A Map Run reports what it tolerated instead of raising what its children raised.
+A Map Run reports what it tolerated instead of raising what its children raised, and only a Task, a Parallel or a Map can catch a failure.
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
+| a statement in a `try` body without a `task()`, `parallel()` or map call, such as `data = json.loads(text)` after `text = task(...)["Body"]` | an expression in it that fails, such as `text` that is not JSON | `States.QueryEvaluationError` ends the execution: the statement is a Pass or a Choice, which cannot catch. Written in the statement of the `task()` call, as `data = json.loads(task(...)["Body"])`, the expression is evaluated by the Task, and its Catch runs the `except`; a `retry=` for `Exception` or `QueryEvaluationError` on that `task()` then calls it again first | the `except` for the error runs |
 | `distributed_map(f, ...)` | `f` raises | within `tolerated_failure_count=` or `tolerated_failure_percentage=`, `{"Status": "FAILED", "Error": ..., "Cause": ...}` in the item's place in the list; otherwise `States.ExceedToleratedFailureThreshold`, which an `except` of the raised class does not catch | the exception `f` raised |
 
 ## At run time
