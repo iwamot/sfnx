@@ -77,7 +77,7 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 ## What the compiler relies on
 
-From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14, 2026-09-18 and 2026-09-22).
+From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14, 2026-09-18, 2026-09-22 and 2026-09-23).
 
 ### JSONata in Step Functions
 
@@ -137,7 +137,8 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 
 - State names must be unique across the whole definition, branches and Map processors included (`DUPLICATE_STATE_NAME`; measured). A distributed Map `Label` must be unique too (`DUPLICATE_LABEL_NAME`; measured).
 - Only Parallel and Map create scopes. An inner scope can read outer variables but cannot assign a name the outer scope assigns (`DUPLICATE_VARIABLE_NAME`; measured). A Catch's `Assign` writes to the outer scope. A distributed Map reads no outer variables.
-- Choice evaluates its rules in order and fails if none holds and there is no `Default`. A Choice has no `End`, and its state-level `Assign` runs only when no rule matched.
+- Choice evaluates its rules in order and fails if none holds and there is no `Default`. A Choice has no `End`. A rule that matches assigns and outputs by its own `Assign` and `Output`, not by the state's, which run only when the `Default` is taken; without an `Output`, the input goes on (measured).
+- The `Assign` and `Output` of a Pass, a Wait, a Choice rule and a catcher read the variables from before the state, as a Task's do; a catcher's also read `$states.errorOutput` and `$states.input` (measured). A Parallel's `Arguments` is the input of every branch (measured).
 - Only Task, Parallel and Map have `Retry` and `Catch`. A Fail has `Error` and `Cause`, which may be expressions, and no `Assign`.
 - `Output` takes any JSON value, null included.
 - JSONata states have no `InputPath`, `Parameters`, `ResultSelector`, `ResultPath`, `OutputPath` or `*Path` fields (`SecondsPath`, `ItemsPath`), and no intrinsic functions; `Arguments`, `Output` and expressions take their place.
