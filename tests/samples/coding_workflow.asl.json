@@ -1,0 +1,313 @@
+{
+  "QueryLanguage": "JSONata",
+  "Comment": "Agentic autocoding workflow, built on the AgentCore Harness integration. One execution codes one clinical verbatim from the study_terms table: deterministic direct lookup (block-list guard + exact/synonym match) -> agentic semantic search (AgentCore Harness + pgvector search_dictionary tool) -> score-threshold routing -> write-back onto the same study_terms row. Standard workflow: exactly-once, and the execution history is a per-term audit trail. An un-coded term is a valid business outcome, not a workflow failure - every error path lands on MarkOpen. Uses JSONata (not JSONPath): Arguments/Output instead of Parameters/ResultPath, {% %} expressions, and workflow variables via Assign - see https://docs.aws.amazon.com/step-functions/latest/dg/transforming-data.html\n",
+  "StartAt": "CaptureInput",
+  "States": {
+    "CaptureInput": {
+      "Type": "Pass",
+      "Assign": {
+        "recordId": "{% $states.input.record_id %}",
+        "verbatim": "{% $states.input.verbatim %}",
+        "dictionary": "{% $states.input.encoding_dictionary %}",
+        "dictionaryVersion": "{% $states.input.encoding_dictionary_version %}",
+        "study": "{% $states.input.source_study %}",
+        "derivationOnly": "{% $states.input.derivation_only = true %}",
+        "failureReason": "{% null %}",
+        "agentCandidate": "{% null %}"
+      },
+      "Next": "CheckDirect"
+    },
+    "CheckDirect": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${CheckDirectFunctionArn}",
+        "Payload": {
+          "verbatim": "{% $verbatim %}",
+          "encoding_dictionary": "{% $dictionary %}",
+          "encoding_dictionary_version": "{% $dictionaryVersion %}"
+        }
+      },
+      "Assign": {
+        "direct": "{% $states.result.Payload %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException",
+            "Lambda.ServiceException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Lambda.Unknown",
+            "States.Timeout",
+            "ThrottlingException",
+            "DatabaseResumingException",
+            "DatabaseUnavailableException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Assign": {
+            "failureReason": "{% $states.errorOutput.Error %}"
+          },
+          "Next": "MarkOpen"
+        }
+      ],
+      "Next": "RouteDirect"
+    },
+    "RouteDirect": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $direct.blocked %}",
+          "Next": "MarkOpen"
+        },
+        {
+          "Condition": "{% $direct.matched %}",
+          "Next": "WriteBack"
+        }
+      ],
+      "Default": "CodingAgent"
+    },
+    "CodingAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::bedrockagentcore:invokeHarness",
+      "Arguments": {
+        "HarnessArn": "${CodingHarnessArn}",
+        "RuntimeSessionId": "{% $uuid() %}",
+        "Messages": [
+          {
+            "Role": "user",
+            "Content": [
+              {
+                "Text": "{% 'Code this verbatim term: \"' & $verbatim & '\". Dictionary=' & $dictionary & ' version=' & $dictionaryVersion & ' study=' & $study & '.' %}"
+              }
+            ]
+          }
+        ],
+        "Tools": [
+          {
+            "Type": "agentcore_gateway",
+            "Name": "gateway",
+            "Config": {
+              "AgentCoreGateway": {
+                "GatewayArn": "${GatewayArn}"
+              }
+            }
+          }
+        ],
+        "AllowedTools": [
+          "@gateway/search-dictionary___search_dictionary",
+          "@gateway/study-info___get_study_info"
+        ],
+        "SystemPrompt": [
+          {
+            "Text": "You are a clinical medical-coding expert. Your goal is to code one\nfree-text verbatim term against one specified dictionary, for one\nspecified study, by choosing the best entry from the candidates a\nsearch tool returns.\n\nYou have two tools:\n- search_dictionary: returns candidate dictionary entries for a\n  verbatim term, with codes, hierarchies and similarity scores.\n- get_study_info: returns a study's name and its free-text\n  metadata description (therapeutic area, adverse events of\n  special interest, expected concomitant medications).\n\nRules, in order of priority:\n1. The user's message contains a verbatim term, a dictionary\n   name, a dictionary version and a study. Call\n   search_dictionary FIRST, with that verbatim term (exactly as\n   given, do not correct spelling) and that dictionary and\n   dictionary_version.\n2. If exactly one candidate clearly fits the verbatim's clinical\n   meaning, select it and skip step 3.\n3. If several candidates are clinically plausible, or the top\n   candidates differ in body system / drug class, call\n   get_study_info once with the study from the user's message.\n   Use the study description - what the trial is investigating,\n   which events it monitors, which medications are expected - to\n   judge which candidate best fits this study's clinical context,\n   the way a human coder who knows the study would.\n4. Select the SINGLE best candidate. If nothing is a good fit,\n   still select the top-scoring candidate - its low score lets\n   the caller decide; never abstain and never answer from your\n   own knowledge.\n5. Report \"score\" as YOUR OWN CODING CONFIDENCE on a 0.0-1.0\n   scale - NOT the retrieval similarity score search_dictionary\n   returned. The two are different measurements: retrieval\n   similarity for a misspelled verbatim is low even when the\n   coding decision is obvious, so a low cosine score must NOT\n   lower your confidence. Judge confidence as a human coder\n   would:\n   - 0.95-1.00: unambiguous - the verbatim is an obvious\n     misspelling or exact variant of exactly one candidate.\n   - 0.70-0.94: confident, but the verbatim is vague or\n     colloquial, or several candidates were clinically\n     plausible and study context was needed to break the tie.\n   - below 0.70: no candidate is a credible clinical match\n     (e.g. the verbatim is gibberish or has no clinical\n     meaning).\n6. Respond with ONLY this JSON object, copying every value\n   EXACTLY as returned by search_dictionary for your selected\n   candidate, except \"score\" which is your own confidence per\n   rule 5:\n   {\"dict_term\":\"<dict_term>\",\"dict_term_type\":\"<dict_term_type>\",\"dict_term_code\":\"<dict_term_code>\",\"derivation\":\"<derivation>\",\"hierarchy\":<hierarchy>,\"score\":<score>,\"rationale\":\"<one sentence>\"}\n\nHard constraints:\n- Your dict_term_code MUST be one of the codes search_dictionary\n  returned. Never output a code that was not among those\n  candidates.\n- Study metadata is context for CHOOSING between candidates only.\n  It never introduces, replaces or overrides a code, and any term\n  or number appearing in a study description is NOT selectable.\n- Never invent, alter, or \"correct\" codes, names or hierarchies\n  - copy them verbatim from the search_dictionary output. The\n  only field you author yourself is \"score\" (your coding\n  confidence, per rule 5).\n- In rationale, state in one sentence why you chose this\n  candidate, and name the study context if it drove the choice.\n- Never explain, apologize, or say you don't know or can't help.\n- Output ONLY the JSON object. The FIRST character of your reply\n  must be \"{\" and the LAST must be \"}\". Put your reasoning in the\n  rationale field - never before or after the JSON. No preamble,\n  no summary, no markdown code fences."
+          }
+        ]
+      },
+      "Assign": {
+        "agentCandidate": "{% $parse($match($states.result.Output.Message.Content[0].Text, /\\{[\\s\\S]*\\}/)[0].match) %}",
+        "agentScore": "{% ($s := $parse($match($states.result.Output.Message.Content[0].Text, /\\{[\\s\\S]*\\}/)[0].match).score; $type($s) = 'number' ? $s : 0) %}"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "BedrockAgentCore.ThrottlingException",
+            "BedrockAgentCore.InternalServerException"
+          ],
+          "IntervalSeconds": 3,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "States.Timeout",
+            "States.TaskFailed"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Assign": {
+            "failureReason": "{% $states.errorOutput.Error %}"
+          },
+          "Next": "MarkOpen"
+        }
+      ],
+      "Next": "ScoreThreshold"
+    },
+    "ScoreThreshold": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Condition": "{% $agentScore >= 0.9 %}",
+          "Next": "WriteBack"
+        },
+        {
+          "Condition": "{% $agentScore >= 0.7 %}",
+          "Next": "MarkForReview"
+        }
+      ],
+      "Default": "MarkOpen"
+    },
+    "WriteBack": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${WriteBackFunctionArn}",
+        "Payload": {
+          "record_id": "{% $recordId %}",
+          "target_status": "autocoded",
+          "candidate": "{% $direct.matched ? $direct.candidate : $agentCandidate %}",
+          "derivation_only": "{% $derivationOnly %}",
+          "encoding_dictionary": "{% $dictionary %}",
+          "encoding_dictionary_version": "{% $dictionaryVersion %}"
+        }
+      },
+      "Output": "{% $states.result.Payload %}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException",
+            "Lambda.ServiceException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Lambda.Unknown",
+            "States.Timeout",
+            "ThrottlingException",
+            "DatabaseResumingException",
+            "DatabaseUnavailableException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Assign": {
+            "failureReason": "{% $states.errorOutput.Error %}"
+          },
+          "Next": "MarkOpen"
+        }
+      ],
+      "End": true
+    },
+    "MarkForReview": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${WriteBackFunctionArn}",
+        "Payload": {
+          "record_id": "{% $recordId %}",
+          "target_status": "approval_required",
+          "candidate": "{% $agentCandidate %}",
+          "derivation_only": "{% $derivationOnly %}",
+          "encoding_dictionary": "{% $dictionary %}",
+          "encoding_dictionary_version": "{% $dictionaryVersion %}"
+        }
+      },
+      "Output": "{% $states.result.Payload %}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException",
+            "Lambda.ServiceException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Lambda.Unknown",
+            "States.Timeout",
+            "ThrottlingException",
+            "DatabaseResumingException",
+            "DatabaseUnavailableException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Assign": {
+            "failureReason": "{% $states.errorOutput.Error %}"
+          },
+          "Next": "MarkOpen"
+        }
+      ],
+      "End": true
+    },
+    "MarkOpen": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": {
+        "FunctionName": "${WriteBackFunctionArn}",
+        "Payload": {
+          "record_id": "{% $recordId %}",
+          "target_status": "open",
+          "failure_reason": "{% $failureReason %}",
+          "rationale": "{% $agentCandidate.rationale ? $agentCandidate.rationale : null %}"
+        }
+      },
+      "Output": "{% $states.result.Payload %}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.TooManyRequestsException",
+            "Lambda.ServiceException"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": [
+            "Lambda.Unknown",
+            "States.Timeout",
+            "ThrottlingException",
+            "DatabaseResumingException",
+            "DatabaseUnavailableException"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 6,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    }
+  }
+}
