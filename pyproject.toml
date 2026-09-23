@@ -8,7 +8,7 @@ license = "MIT"
 authors = [{ name = "Takashi Iwamoto" }]
 keywords = ["aws", "step-functions", "states-language", "asl", "jsonata", "workflow"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
