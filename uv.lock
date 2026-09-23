@@ -359,6 +359,11 @@ dependencies = [
     { name = "botocore" },
 ]
 
+[package.optional-dependencies]
+testing = [
+    { name = "jsonata-python" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
@@ -369,7 +374,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "botocore", specifier = ">=1.31.0" }]
+requires-dist = [
+    { name = "botocore", specifier = ">=1.31.0" },
+    { name = "jsonata-python", marker = "extra == 'testing'", specifier = ">=0.7.0" },
+]
+provides-extras = ["testing"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -1,10 +1,16 @@
+import re
+from pathlib import Path
+
 import pytest
 
+from sfnx import testing
 from tests import asl
+
+LAMBDA = "arn:aws:states:::lambda:invoke"
 
 
 def machine(state: dict) -> dict:
-    return {"StartAt": "s", "States": {"s": state}}
+    return {"QueryLanguage": "JSONata", "StartAt": "s", "States": {"s": state}}
 
 
 def test_null_is_a_value_and_undefined_fails():
@@ -56,7 +62,13 @@ def test_a_malformed_text_fails(code):
 
 
 def test_assign_and_output_read_the_variables_from_before_the_state():
-    task = {"Type": "Task", "Assign": {"x": 1}, "Output": "{% $x %}", "End": True}
+    task = {
+        "Type": "Task",
+        "Resource": LAMBDA,
+        "Assign": {"x": 1},
+        "Output": "{% $x %}",
+        "End": True,
+    }
     with pytest.raises(asl.Failure, match="undefined"):
         asl.run(machine(task), {}, {"s": lambda arguments: 0})
 
@@ -75,7 +87,7 @@ def test_assign_and_output_read_the_variables_from_before_the_state():
     ],
 )
 def test_matches(errors, error, expected):
-    assert asl.matches(errors, error) is expected
+    assert testing.matches(errors, error) is expected
 
 
 def flaky(*outcomes: object):
@@ -94,7 +106,9 @@ def flaky(*outcomes: object):
 
 
 def retrying(retry: list, **fields) -> dict:
-    return machine({"Type": "Task", "Retry": retry, "End": True, **fields})
+    return machine(
+        {"Type": "Task", "Resource": LAMBDA, "Retry": retry, "End": True, **fields}
+    )
 
 
 def test_retry_calls_the_task_again_up_to_max_attempts():
@@ -154,6 +168,7 @@ def test_a_catch_reads_the_retries_made():
     caught = machine(
         {
             "Type": "Task",
+            "Resource": LAMBDA,
             "Arguments": "{% $states.context.State.RetryCount %}",
             "Retry": retry,
             "Catch": [
@@ -177,8 +192,18 @@ def test_a_catch_reads_the_retries_made():
 
 
 def test_retry_runs_a_parallel_again():
-    branch = {"StartAt": "t", "States": {"t": {"Type": "Task", "End": True}}}
-    parallel = retrying([{"ErrorEquals": ["Boom"]}], Type="Parallel", Branches=[branch])
+    branch = {
+        "StartAt": "t",
+        "States": {"t": {"Type": "Task", "Resource": LAMBDA, "End": True}},
+    }
+    parallel = machine(
+        {
+            "Type": "Parallel",
+            "Branches": [branch],
+            "Retry": [{"ErrorEquals": ["Boom"]}],
+            "End": True,
+        }
+    )
     task, calls = flaky(asl.Failure("Boom"), "ok")
     assert asl.run(parallel, {}, {"t": task}) == ["ok"]
     assert len(calls) == 2
@@ -236,7 +261,7 @@ def test_the_context_object():
 )
 def test_exceeds(failed, total, count, percentage, expected):
     """Each case was a distributed Map run in Step Functions."""
-    assert asl.exceeds(failed, total, count, percentage) is expected
+    assert testing.exceeds(failed, total, count, percentage) is expected
 
 
 def distributed(child: dict | None = None, **fields) -> dict:
@@ -331,7 +356,7 @@ def test_an_item_reader_and_a_result_writer():
         return [1, 2]
 
     assert asl.run(distributed(child, ItemReader=reader), {}, {"s": items}) == [1, 2]
-    assert read == [{**reader, "Arguments": {"Bucket": "b", "Key": "items.json"}}]
+    assert read == [{"Bucket": "b", "Key": "items.json"}]
     writer = {
         "Resource": "arn:aws:states:::s3:putObject",
         "Arguments": {"Bucket": "b", "Prefix": "p"},
@@ -341,3 +366,233 @@ def test_an_item_reader_and_a_result_writer():
         "MapRunArn": f"{asl.MAP_RUN}/l:run",
         "ResultWriterDetails": {"Bucket": "b", "Key": "p/run/manifest.json"},
     }
+
+
+ROOT = Path(__file__).parent.parent
+
+
+def test_the_guide_runs(monkeypatch):
+    """The test docs/testing.md shows passes as written."""
+    monkeypatch.chdir(ROOT)
+    guide = (ROOT / "docs" / "testing.md").read_text()
+    (code,) = re.findall(
+        r"^```python\n(from sfnx.*?)^```", guide, re.DOTALL | re.MULTILINE
+    )
+    namespace: dict[str, object] = {}
+    exec(code, namespace)
+    tests = [f for name, f in namespace.items() if name.startswith("test_")]
+    assert len(tests) == 2
+    for test in tests:
+        assert callable(test)
+        test()
+
+
+def test_an_execution_records_the_states_and_the_calls():
+    definition = {
+        "QueryLanguage": "JSONata",
+        "StartAt": "get",
+        "States": {
+            "get": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+                "Arguments": {"Key": "{% $states.input.key %}"},
+                "Retry": [{"ErrorEquals": ["Busy"]}],
+                "Next": "done",
+            },
+            "done": {"Type": "Succeed"},
+        },
+    }
+    answers = iter([testing.Failure("Busy"), {"Body": "b"}])
+
+    def tasks(call: testing.Call) -> object:
+        answer = next(answers)
+        if isinstance(answer, testing.Failure):
+            raise answer
+        return answer
+
+    execution = testing.run(definition, {"key": "k"}, tasks)
+    call = testing.Call("get", "arn:aws:states:::aws-sdk:s3:getObject", {"Key": "k"})
+    assert execution.output == {"Body": "b"}
+    assert (execution.error, execution.cause) == (None, None)
+    assert execution.states == ("get", "done")
+    assert execution.calls == (call, call)
+    assert repr(execution) == (
+        f"Execution(states=('get', 'done'), calls=({call!r}, {call!r}),"
+        " output={'Body': 'b'})"
+    )
+
+
+def test_a_failed_execution_raises_its_failure_when_the_output_is_read():
+    fail = machine({"Type": "Fail", "Error": "Boom", "Cause": "why"})
+    execution = testing.run(fail, {})
+    assert (execution.error, execution.cause) == ("Boom", "why")
+    assert execution.states == ("s",)
+    with pytest.raises(testing.Failure) as failure:
+        _ = execution.output
+    assert (failure.value.error, failure.value.cause) == ("Boom", "why")
+    assert repr(execution) == (
+        "Execution(states=('s',), calls=(), error='Boom', cause='why')"
+    )
+
+
+def test_an_exception_from_the_tasks_function_reaches_the_test():
+    task = machine({"Type": "Task", "Resource": LAMBDA, "End": True})
+
+    def tasks(call: testing.Call) -> object:
+        raise KeyError(call.state)
+
+    with pytest.raises(KeyError):
+        testing.run(task, {}, tasks)
+    with pytest.raises(ValueError, match="s calls .*lambda:invoke, and run"):
+        testing.run(task, {})
+
+
+def test_functions_are_replaced_for_the_run_only():
+    now = machine({"Type": "Succeed", "Output": "{% $now() %}"})
+    fixed = testing.run(now, {}, functions={"now": lambda: "then"})
+    assert fixed.output == "then"
+    assert testing.run(now, {}).output != "then"
+
+
+def test_a_choice_without_a_match_or_a_default_fails():
+    choice = machine(
+        {"Type": "Choice", "Choices": [{"Condition": "{% false %}", "Next": "s"}]}
+    )
+    assert testing.run(choice, {}).error == "States.NoChoiceMatched"
+
+
+@pytest.mark.parametrize(
+    "definition, message",
+    [
+        (
+            {"StartAt": "s", "States": {"s": {"Type": "Succeed"}}},
+            "the definition does not set QueryLanguage to JSONata",
+        ),
+        (
+            machine({"Type": "Succeed", "QueryLanguage": "JSONPath"}),
+            "s: QueryLanguage JSONPath is not run",
+        ),
+        (machine({"Type": "Activity"}), "s: the state type Activity is not run"),
+        (
+            machine({"Type": "Pass", "Output": {}, "End": True}),
+            "s: Output is not run",
+        ),
+        (
+            machine({"Type": "Task", "Resource": LAMBDA, "Parameters": {}}),
+            "s: Parameters is not run",
+        ),
+        (
+            {**machine({"Type": "Succeed"}), "Extra": 1},
+            "the definition: Extra is not run",
+        ),
+        (
+            machine(
+                {
+                    "Type": "Task",
+                    "Resource": LAMBDA,
+                    "Catch": [{"ErrorEquals": ["A"], "Next": "s", "Output": {}}],
+                    "End": True,
+                }
+            ),
+            "s.Catch: Output is not run",
+        ),
+        (
+            machine(
+                {
+                    "Type": "Choice",
+                    "Choices": [{"Condition": "{% true %}", "Next": "s", "Assign": {}}],
+                }
+            ),
+            "s.Choices: Assign is not run",
+        ),
+        (
+            machine(
+                {
+                    "Type": "Parallel",
+                    "Branches": [
+                        {
+                            "StartAt": "t",
+                            "States": {"t": {"Type": "Pass", "End": True}},
+                        }
+                    ],
+                    "End": True,
+                }
+            ),
+            "t: End is not run",
+        ),
+        (
+            machine(
+                {
+                    "Type": "Map",
+                    "Items": [],
+                    "ItemProcessor": {
+                        "StartAt": "t",
+                        "States": {"t": {"Type": "Succeed"}},
+                        "Extra": 1,
+                    },
+                    "End": True,
+                }
+            ),
+            "s.ItemProcessor: Extra is not run",
+        ),
+        (
+            machine(
+                {
+                    "Type": "Map",
+                    "Items": [],
+                    "ItemBatcher": {"MaxItemsPerBatch": 1, "Extra": 1},
+                    "ItemProcessor": {
+                        "ProcessorConfig": {"Mode": "DISTRIBUTED"},
+                        "StartAt": "t",
+                        "States": {"t": {"Type": "Succeed"}},
+                    },
+                    "End": True,
+                }
+            ),
+            "s.ItemBatcher: Extra is not run",
+        ),
+    ],
+)
+def test_what_the_runner_does_not_interpret_is_rejected_before_it_runs(
+    definition, message
+):
+    with pytest.raises(testing.Unsupported, match=message):
+        testing.run(definition, {})
+
+
+def test_text_that_is_not_json_fails_to_parse():
+    parsed = machine({"Type": "Succeed", "Output": "{% $parse('{') %}"})
+    assert testing.run(parsed, {}).error == "States.QueryEvaluationError"
+
+
+def test_a_condition_that_is_not_a_boolean_fails():
+    choice = machine(
+        {"Type": "Choice", "Choices": [{"Condition": "{% 1 %}", "Next": "s"}]}
+    )
+    execution = testing.run(choice, {})
+    assert (execution.error, execution.cause) == (
+        "States.QueryEvaluationError",
+        "1 is not a boolean",
+    )
+
+
+def test_a_definition_that_never_ends_stops():
+    with pytest.raises(AssertionError, match="did not end within 10,000 states"):
+        testing.run(machine({"Type": "Pass", "Next": "s"}), {})
+
+
+def test_an_item_reader_is_a_call_and_iterations_are_entered_states():
+    reader = {
+        "Resource": "arn:aws:states:::s3:getObject",
+        "ReaderConfig": {"InputType": "JSON"},
+        "Arguments": {"Bucket": "b", "Key": "k"},
+    }
+    child = {"StartAt": "c", "States": {"c": {"Type": "Succeed"}}}
+    execution = testing.run(
+        distributed(child, ItemReader=reader), {}, lambda call: [1, 2]
+    )
+    assert execution.output == [1, 2]
+    assert execution.calls == (
+        testing.Call("s", "arn:aws:states:::s3:getObject", {"Bucket": "b", "Key": "k"}),
+    )
+    assert execution.states == ("s", "c", "c")

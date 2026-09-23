@@ -1,6 +1,6 @@
 # Examples
 
-Each example is one machine in one file, with the definition it compiles to next to it. `tests/test_examples.py` checks that each definition is current and runs each machine through the tests' local interpreter with stand-in Tasks, so the control flow is verified; how the AWS services behave when the Tasks run is not.
+Each example is one machine in one file, with the definition it compiles to next to it. `tests/test_examples.py` checks that each definition is current and runs each machine through [`sfnx.testing`](../docs/testing.md) with stand-in Tasks, so the control flow is verified; how the AWS services behave when the Tasks run is not.
 
 | Example | Pattern | What it shows |
 |---|---|---|

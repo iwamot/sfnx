@@ -26,6 +26,12 @@ dependencies = [
     "botocore>=1.31.0",
 ]
 
+[project.optional-dependencies]
+# sfnx.testing, for the tests of a project rather than what it deploys.
+testing = [
+    "jsonata-python>=0.7.0",
+]
+
 [project.scripts]
 sfnx = "sfnx.cli:main"
 
