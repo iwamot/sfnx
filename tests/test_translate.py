@@ -1173,9 +1173,11 @@ def test_a_renamed_variable_takes_a_name_the_module_does_not_use():
         "return [count, count_val_2]"
     )
     compiled = definition(body)
-    assert compiled["States"]["count"]["Assign"] == {
-        "count_val_3": "{% $count($count_val) %}",
-        "count_val_2": "{% [$map($count_val, function($count_val_3) { $count_val_3 * 2 })] %}",
+    xs = "$states.context.Execution.Input.xs"
+    assert compiled["States"]["count_val"]["Assign"] == {
+        "count_val": f"{{% {xs} %}}",
+        "count_val_3": f"{{% $count({xs}) %}}",
+        "count_val_2": f"{{% [$map({xs}, function($count_val_3) {{ $count_val_3 * 2 }})] %}}",
     }
     assert asl.run(compiled, {"xs": [1, 2]}) == [2, [2, 4]]
 

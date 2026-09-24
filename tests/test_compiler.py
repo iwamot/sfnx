@@ -69,23 +69,39 @@ def test_independent_assignments_share_a_pass():
     }
 
 
-def test_a_read_of_a_pending_assignment_starts_a_new_state():
-    definition = compile_one(machine("a = 1\nb = [a]\nc = 2\nreturn b"))
+def test_a_read_of_a_pending_assignment_reads_its_expression():
+    """Assign reads the values from before the state, so b reads what a takes
+    rather than $a, and the two share a Pass, as a hand-writer spells a path
+    out again."""
+    definition = compile_one(machine('a = input["n"]\nb = [a]\nc = 2\nreturn b'))
+    n = "{% $states.context.Execution.Input.n %}"
     assert definition["States"] == {
-        "a": {"Type": "Pass", "Assign": {"a": 1}, "Next": "b"},
-        "b": {"Type": "Pass", "Assign": {"b": ["{% $a %}"], "c": 2}, "Next": "return"},
+        "a": {"Type": "Pass", "Assign": {"a": n, "b": [n], "c": 2}, "Next": "return"},
         "return": {"Type": "Succeed", "Output": "{% $b %}"},
     }
 
 
+def test_a_read_of_a_value_that_changes_starts_a_new_state():
+    """Reading its expression again would give another value."""
+    source = "import random\n" + machine("a = random.random()\nb = [a]\nreturn b")
+    definition = compile_one(source)
+    assert definition["States"]["a"] == {
+        "Type": "Pass",
+        "Assign": {"a": "{% $random() %}"},
+        "Next": "b",
+    }
+    assert definition["States"]["b"]["Assign"] == {"b": ["{% $a %}"]}
+
+
 def test_reassignment_starts_a_new_state_with_a_serial_name():
+    """The first value is still evaluated, as Python evaluates it."""
     definition = compile_one(machine("x = 1\nx = 2\nreturn x"))
     assert list(definition["States"]) == ["x", "x_2", "return"]
     assert definition["States"]["x"]["Next"] == "x_2"
 
 
 def test_serial_names_skip_names_in_use():
-    definition = compile_one(machine("x = 1\nx = 2\nx_2 = x\nreturn x"))
+    definition = compile_one(machine("x = 1\nx = 2\nx_2 = x\nx_2 = 3\nreturn x"))
     assert list(definition["States"]) == ["x", "x_2", "x_2_2", "return"]
 
 
