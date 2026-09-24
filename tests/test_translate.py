@@ -408,6 +408,26 @@ def test_dividing_by_zero_fails_where_it_divides():
             'a = input["a"]\nreturn a + input["b"]',
             "annotate it where it is assigned: a: float = ...",
         ),
+        (
+            'return (input.get("x") or []) + (input.get("y") or [])',
+            "value: list = input.get('x') or []",
+        ),
+        (
+            'return input["a"] + (input.get("y") or [])',
+            "value: list = input['a']",
+        ),
+        (
+            "return (input['a'] if input['c'] else f\"{input['b']}\") + input['b']",
+            "value: str = ",
+        ),
+        (
+            'return (input.get("x") or "") + input["b"]',
+            "value: str = input.get('x') or ''",
+        ),
+        (
+            'return (input.get("x") or {}) + input["b"]',
+            "value: float = input.get('x') or {}",
+        ),
         ('return 1 + "a"', "+ cannot join number and string"),
         ("return True + 1", "+ cannot join boolean and number"),
         ("return None + None", "+ takes numbers, strings or lists, not a null"),

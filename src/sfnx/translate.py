@@ -1280,8 +1280,9 @@ class Translator:
                     raise CompileError(several(operand, value.type), operand)
                 kinds.add(value.type.kind)
         if not kinds:
+            hint = written_kind(node.left) or written_kind(node.right) or "float"
             raise CompileError(
-                unknown(node.left, "float", "+ adds numbers, joins strings or lists"),
+                unknown(node.left, hint, "+ adds numbers, joins strings or lists"),
                 node.left,
             )
         if len(kinds) > 1:
@@ -3023,6 +3024,26 @@ def unknown(node: ast.expr, hint: str, purpose: str, parameter: bool = False) ->
         f"{purpose}, so the type of {text} must be known; assign it to an "
         f"annotated variable first: value: {hint} = {text}"
     )
+
+
+def written_kind(node: ast.expr) -> str | None:
+    """The annotation a list or a string written in the source suggests for
+    an operand of + that may be it: list for x or [], str for x if c else "".
+    A number is not looked for, as float is the default."""
+    if isinstance(node, ast.BoolOp):
+        choices = node.values
+    elif isinstance(node, ast.IfExp):
+        choices = [node.body, node.orelse]
+    else:
+        return None
+    for choice in choices:
+        if isinstance(choice, (ast.List, ast.ListComp)):
+            return "list"
+        if isinstance(choice, ast.JoinedStr) or (
+            isinstance(choice, ast.Constant) and isinstance(choice.value, str)
+        ):
+            return "str"
+    return None
 
 
 def direct_call(name: str) -> str:
