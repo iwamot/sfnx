@@ -61,7 +61,7 @@ def test_for_over_a_list_is_a_counter_and_a_choice():
     }
 
 
-def test_what_follows_a_loop_goes_in_its_choice_unless_it_breaks():
+def test_what_follows_a_loop_goes_in_its_choice():
     """Only the Default leads out of a loop without break, and the Choice's
     own Assign applies only there."""
     body = 'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    n = n + 1\ndone = n * 2\nreturn done'
@@ -72,9 +72,10 @@ def test_what_follows_a_loop_goes_in_its_choice_unless_it_breaks():
         'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    if x > 1:\n        break\n'
         "    n = n + 1\ndone = n * 2\nreturn done"
     )
+    # A break joins the Default after the loop, so each takes it.
     compiled = states(body)
-    assert "Assign" not in compiled["for"]
-    assert compiled["done"]["Assign"] == {"done": "{% $n * 2 %}"}
+    assert compiled["for"]["Assign"] == {"done": "{% $n * 2 %}"}
+    assert compiled["if"]["Choices"][0]["Assign"] == {"done": "{% $n * 2 %}"}
     assert run(body, {"xs": [1, 2]}) == 2
 
 
@@ -159,16 +160,15 @@ def test_while_true_leads_back_to_its_first_state():
     assert compiled["if"]["Choices"][0]["Next"] == "return"
 
 
-def test_continue_gets_the_increment_its_own_state():
+def test_continue_and_the_body_each_take_the_increment():
+    """Where the two join, each path's last state or rule takes it."""
     body = 'items: list[float] = input["items"]\nfor item in items:\n    if item < 0:\n        continue\n    wait(item)\nreturn 1'
     compiled = states(body)
-    assert compiled["if"]["Choices"][0]["Next"] == "item_index"
-    assert compiled["wait"]["Next"] == "item_index"
-    assert compiled["item_index"] == {
-        "Type": "Pass",
-        "Assign": {"item_index": "{% $item_index + 1 %}"},
-        "Next": "for",
-    }
+    increment = {"item_index": "{% $item_index + 1 %}"}
+    rule = compiled["if"]["Choices"][0]
+    assert (rule["Assign"], rule["Next"]) == (increment, "for")
+    assert (compiled["wait"]["Assign"], compiled["wait"]["Next"]) == (increment, "for")
+    assert run(body, {"items": [-1, 0]}) == 1
 
 
 @pytest.mark.parametrize(
@@ -320,7 +320,7 @@ def test_a_comprehension_variable_is_not_an_assignment_of_the_loop():
 def test_a_loop_after_other_states_is_tried_again_from_the_same_point():
     body = 'wait(1)\nxs: list[float] = input["xs"]\nacc = None\nfor x in xs:\n    if acc is None:\n        acc = x\n    else:\n        acc = acc + x\nreturn acc'
     compiled = states(body)
-    assert list(compiled) == ["wait", "for", "if", "x_index", "return"]
+    assert list(compiled) == ["wait", "for", "if", "return"]
     # The Wait takes the assignments before the loop once, not once per attempt.
     assert list(compiled["wait"]["Assign"]) == ["xs", "acc", "x_index"]
     assert compiled["wait"]["Next"] == "for"

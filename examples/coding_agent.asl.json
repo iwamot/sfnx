@@ -183,19 +183,16 @@
         {
           "Condition": "{% $not($type($score) = 'number') %}",
           "Assign": {
-            "score": 0
+            "score": 0,
+            "candidate": "{% $agent_candidate %}"
           },
-          "Next": "candidate"
+          "Next": "if_3"
         }
       ],
-      "Default": "candidate"
-    },
-    "candidate": {
-      "Type": "Pass",
       "Assign": {
         "candidate": "{% $agent_candidate %}"
       },
-      "Next": "if_3"
+      "Default": "if_3"
     },
     "if_3": {
       "Type": "Choice",
@@ -236,7 +233,10 @@
           "Next": "written"
         }
       ],
-      "Default": "rationale"
+      "Assign": {
+        "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
+      },
+      "Default": "opened"
     },
     "written": {
       "Type": "Task",
@@ -298,13 +298,7 @@
     "failure_reason_2": {
       "Type": "Pass",
       "Assign": {
-        "failure_reason": "{% $e.Error %}"
-      },
-      "Next": "rationale"
-    },
-    "rationale": {
-      "Type": "Pass",
-      "Assign": {
+        "failure_reason": "{% $e.Error %}",
         "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
       },
       "Next": "opened"

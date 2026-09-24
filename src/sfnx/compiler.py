@@ -40,7 +40,7 @@ from sfnx.jsontypes import (
     of,
     union,
 )
-from sfnx.locations import Locations, Origin
+from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
 from sfnx.translate import StateCall, Translator, text, unpacked
 
@@ -393,10 +393,12 @@ class Scope:
         if (
             result is not None
             and folded.keys() == pending.keys()
-            and self.may_fold(result)
+            and self.may_fold(result.state)
             and self.holds_still(list(folded.values()))
         ):
             self.result = self.fold(result, folded, origins, remarks)
+            return
+        if len(self.graph.tails) > 1 and self.spread(pending, origins, remarks):
             return
         state: dict[str, object] = {"Type": "Pass", "Assign": assign}
         if remarks:
@@ -427,6 +429,66 @@ class Scope:
         if comment:
             commented(state, comment)
         return Result(state, {**result.values, **folded}, origins, remark)
+
+    def spread(
+        self, pending: dict[str, Expr], origins: list[Origin], remarks: list[str]
+    ) -> bool:
+        """Assignments where paths join, each in the Assign of the last state
+        or Choice rule on every path, instead of a Pass after them, as a
+        hand-writer copies an assignment into each branch. Only where each can
+        take them and they read there what they would read after it: none
+        reads or assigns a name that Assign assigns, and none changes on
+        evaluation."""
+        if not self.holds_still(list(pending.values())):
+            return False
+        names = {self.spelling(n) for n in pending}
+        reads = {
+            self.spelling(v) for value in pending.values() for v in value.variables
+        }
+        holders: dict[int, dict[str, object]] = {}
+        for container, key in self.graph.tails:
+            assign = container.get("Assign", {})
+            assert isinstance(assign, dict)
+            if not self.can_hold(container, key) or (names | reads) & assign.keys():
+                return False
+            holders[id(container)] = container
+        for holder in holders.values():
+            assign = holder.get("Assign", {})
+            assert isinstance(assign, dict)
+            for name, value in pending.items():
+                assign[self.spelling(name)] = value.template
+            holder["Assign"] = assign
+            self.describe(holder, origins, remarks)
+        return True
+
+    def can_hold(self, container: dict[str, object], key: str) -> bool:
+        """Whether the Assign of what a transition belongs to runs only on the
+        way along it: a Choice rule, a catcher, a Choice's own Assign for its
+        Default, and a Pass, a Wait or a state that may take what follows it."""
+        if "Type" not in container:
+            return True
+        kind = container["Type"]
+        if kind == "Choice":
+            return key == "Default"
+        if kind in {"Task", "Parallel", "Map"}:
+            return self.may_fold(container)
+        return kind in {"Pass", "Wait"}
+
+    def describe(
+        self, holder: dict[str, object], origins: list[Origin], remarks: list[str]
+    ) -> None:
+        """Add the comments and the source of assignments to what holds them."""
+        lines = (
+            str(holder.get("Comment", "")).split("\n") if "Comment" in holder else []
+        )
+        located = None
+        if self.locations is not None and lines and lines[-1].startswith(PREFIX):
+            located = lines.pop()
+        text = [*lines, *remarks]
+        if self.locations is not None:
+            text.append(self.locations.extended(located, origins))
+        if text:
+            commented(holder, "\n".join(text))
 
     def joins(self, carrier: Carrier, values: list[Expr]) -> bool:
         """Whether assignments can be the Assign of what holds them. The
@@ -1062,7 +1124,7 @@ class Scope:
         if self.pending:
             self.flush()
         result = self.following()
-        if result is None or not self.may_fold(result):
+        if result is None or not self.may_fold(result.state):
             return False
         value = self.read_result(result, value_node)
         if value is None or not self.holds_still([value]):
@@ -1095,13 +1157,12 @@ class Scope:
             return None
         return result
 
-    def may_fold(self, result: Result) -> bool:
+    def may_fold(self, state: dict[str, object]) -> bool:
         """Whether what follows a Task, a Parallel or a Map can go in its Assign
         or its Output. Not where one that fails would do otherwise than the
         state after it: a Catch would take the failure, and a retrier for
         States.ALL or States.QueryEvaluationError would run the state again
         (measured)."""
-        state = result.state
         retriers = state.get("Retry", [])
         assert isinstance(retriers, list)
         retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
