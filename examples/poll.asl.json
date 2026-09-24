@@ -77,19 +77,15 @@
           "Next": "raise"
         }
       ],
-      "Default": "polls"
+      "Assign": {
+        "polls": "{% $polls + 1 %}"
+      },
+      "Default": "while"
     },
     "raise": {
       "Type": "Fail",
       "Error": "TranscriptionFailed",
       "Cause": "{% $job.FailureReason %}"
-    },
-    "polls": {
-      "Type": "Pass",
-      "Assign": {
-        "polls": "{% $polls + 1 %}"
-      },
-      "Next": "while"
     },
     "raise_2": {
       "Type": "Fail",

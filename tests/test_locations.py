@@ -217,8 +217,11 @@ def count(input):
                 (header, "loop start"),
             ],
         ),
-        "for": ([], [(header, None)]),
-        "row": ([], [(header, "loop variables")]),
+        # The second loop starts in the first one's Choice, which only its
+        # Default leads on from, and each body's first assignments go in the
+        # rule that leads there.
+        "for": ([], [(header, None), (counting, "loop start")]),
+        "for[0]": ([], [(header, "loop variables")]),
         "if": (
             [],
             [
@@ -230,10 +233,9 @@ def count(input):
         ),
         "if[0]": ([], [('row = row["next"]', None)]),
         "kept": ([], [("kept = kept + [row]", None), (header, "loop step")]),
-        "i_stop": ([], [(counting, "loop start")]),
         "for_2": ([], [(counting, None)]),
-        "kept_2": ([], [("kept = kept + [i]", None), (counting, "loop step")]),
-        "kept_3": ([], [("kept = kept[:-1]", None)]),
+        "for_2[0]": ([], [("kept = kept + [i]", None), (counting, "loop step")]),
+        "kept_2": ([], [("kept = kept[:-1]", None)]),
         "if_2": ([], [("if len(kept) < 3:", None)]),
         "return": ([], [("return kept", None)]),
     }

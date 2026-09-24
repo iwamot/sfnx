@@ -83,7 +83,7 @@ def test_get_of_a_key_that_may_be_left_out_narrows():
 
 def test_a_loop_reads_the_items_as_the_class_declares_them():
     body = 'total = 0\nfor item in input["items"]:\n    total = total + item["quantity"]\nreturn total'
-    assert states(body)["total_2"]["Assign"] == {
+    assert states(body)["for"]["Choices"][0]["Assign"] == {
         "total": f"{{% $total + {INPUT}.items[$item_index].quantity %}}",
         "item_index": "{% $item_index + 1 %}",
     }

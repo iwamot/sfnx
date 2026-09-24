@@ -241,6 +241,15 @@ def test_what_a_wait_assigns(body, joined, passes):
         ),
         # What follows an if without else is where the branches join.
         ('if input["a"]:\n    x = 1\ny = 2', {"x": 1}, None, ["y"]),
+        # Unless every branch returns, when only the Default leads there.
+        ('if input["a"]:\n    return 0\ny = 2', None, {"y": 2}, []),
+        # An else that put its assignments in the Choice keeps them apart.
+        (
+            'if input["a"]:\n    return 0\nelse:\n    x = 1\ny = 2',
+            None,
+            {"x": 1},
+            ["y"],
+        ),
         # A value that differs when read in another state.
         ('if input["a"]:\n    x = str(uuid.uuid4())', None, None, ["x"]),
         ('if input["a"]:\n    x = context["State"]["Name"]', None, None, ["x"]),

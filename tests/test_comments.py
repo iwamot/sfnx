@@ -84,9 +84,7 @@ return total
         "receipt": "charge it",
         "item_index": None,
         "for": "each item",
-        "total_2": "add it",
         "if": "leave early",
-        "item_index_2": None,
         "status": "poll\nuntil done",
         "if_2": None,
         "invoke": "guarded",
@@ -94,7 +92,11 @@ return total
         "return": "done",
     }
     assert list(compiled["States"]["for"])[:2] == ["Type", "Comment"]
-    assert compiled["States"]["if"]["Default"] == "item_index_2"
+    # The body's first assignment goes in the rule, with its comment, and the
+    # increment in the Choice of the if, whose Default alone leads on.
+    assert compiled["States"]["for"]["Choices"][0]["Comment"] == "add it"
+    assert compiled["States"]["if"]["Default"] == "for"
+    assert compiled["States"]["if"]["Assign"] == {"item_index": "{% $item_index + 1 %}"}
 
 
 def test_docstrings_describe_branches_and_processors():
