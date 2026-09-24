@@ -1494,6 +1494,7 @@ class Scope:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
         fold_start(definition, scope.starting)
+        merge_choices(definition)
         share_ends(definition)
         docstring = ast.get_docstring(function)
         if docstring:
@@ -3000,6 +3001,63 @@ def may_fold(state: dict[str, object]) -> bool:
     return "Catch" not in state and not retried & RETRIED
 
 
+def merge_choices(definition: dict[str, object]) -> None:
+    """A Choice whose Default leads to a Choice that nothing else leads to, as
+    one Choice with the rules of both, the first's before the second's, as a
+    hand-writer lists the tests of `if a: ... ` and a following `if b: ...`.
+    The first's own Assign runs on its Default, so it goes in each rule of the
+    second too. Only where the second reads nothing the first's own Assign
+    assigns, which it would read before it is assigned."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    merged = True
+    while merged:
+        merged = False
+        leading: dict[str, list[str]] = {}
+        for name, state in states.items():
+            for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
+                for key in ("Next", "Default"):
+                    if key in holder:
+                        leading.setdefault(holder[key], []).append(name)
+        for name, first in states.items():
+            second = first.get("Default")
+            if (
+                first["Type"] != "Choice"
+                or states[second]["Type"] != "Choice"
+                or leading[second] != [name]
+            ):
+                continue
+            then = states[second]
+            own = first.get("Assign", {})
+            reads = {
+                read for code in expressions_in(then) for read in VARIABLE.findall(code)
+            }
+            if own.keys() & reads:
+                continue
+            for rule in then["Choices"] if own else []:
+                rule["Assign"] = {
+                    **{k: v for k, v in own.items() if k not in rule.get("Assign", {})},
+                    **rule.get("Assign", {}),
+                }
+                comment = joined_comments(first.get("Comment"), rule.get("Comment"))
+                if comment is not None:
+                    rule["Comment"] = comment
+            first["Choices"] = [*first["Choices"], *then["Choices"]]
+            first["Default"] = then["Default"]
+            assign = {
+                **{k: v for k, v in own.items() if k not in then.get("Assign", {})},
+                **then.get("Assign", {}),
+            }
+            if assign:
+                first["Assign"] = assign
+            comment = joined_comments(first.get("Comment"), then.get("Comment"))
+            if comment is not None:
+                first["Comment"] = comment
+            del states[second]
+            merged = True
+            break
+
+
 def written(template: object) -> bool:
     """Whether a template is a value written out, with no expression in it."""
     if isinstance(template, dict):
@@ -3316,6 +3374,7 @@ def compile_machine(
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
     fold_start(definition, scope.starting)
+    merge_choices(definition)
     share_ends(definition)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
