@@ -150,6 +150,28 @@ def test_map_names_retry_and_catch():
     assert state["Catch"][0]["ErrorEquals"] == ["Declined"]
 
 
+def test_a_map_function_assigns_names_of_its_own():
+    """Step Functions rejects a processor that assigns a variable of the
+    machine's, so a parameter the function binds takes a name of its own, and
+    so does a name a branch inside it assigns."""
+    body = (
+        f'order = 1\ndef f(order):\n    task("{LAMBDA}", {{"FunctionName": "f"}})\n'
+        '    return order\nr = inline_map(f, input["xs"])\nreturn [order, r]'
+    )
+    state = states(body)["r"]
+    assert state["ItemSelector"] == {"order_2": "{% $states.context.Map.Item.Value %}"}
+    assert list(state["ItemProcessor"]["States"]) == ["f.order_2", "f.invoke"]
+    assert run(body, {"xs": [5, 6]}, {"f.invoke": lambda arguments: {}}) == [
+        1,
+        [5, 6],
+    ]
+    body = (
+        "def f(x):\n    def g():\n        x = 2\n        return x\n"
+        "    parallel(g)\n    return x\nreturn inline_map(f, [1])"
+    )
+    assert run(body, {}) == [1]
+
+
 def test_result_types():
     body = 'def f(x):\n    return "a"\n\nnames = inline_map(f, input["xs"])\nreturn len(names)'
     assert states(body)["names"]["Output"] == "{% $count($states.result) %}"
@@ -279,10 +301,6 @@ def test_distributed_map_passes_what_step_functions_passes_in_python():
             "max_concurrency is a number, not a string",
         ),
         (
-            f'order = 1\ndef f(order):\n    task("{LAMBDA}", {{"FunctionName": "f"}})\n    return order\nreturn inline_map(f, input["xs"])',
-            "order is assigned outside this function too",
-        ),
-        (
             'def f(x):\n    return x\nr = inline_map(f, input["xs"]) if input["a"] else 0',
             "inline_map() here would run whether or not this part is taken",
         ),
@@ -360,10 +378,11 @@ def test_distributed_map_passes_what_step_functions_passes_in_python():
             'def f(x):\n    return x\na = distributed_map(f, input["xs"], label="same")\nreturn distributed_map(f, input["xs"], label="same")',
             "another distributed_map is labeled same; give each its own label",
         ),
-        # The parameter a function that makes states binds is its own to assign.
+        # A parameter of a distributed map is the name in args=, so it keeps
+        # its name, and assigning it again is the machine's variable.
         (
-            "def f(x):\n    def g():\n        x = 2\n        return x\n    parallel(g)\n    return x\nreturn inline_map(f, [1])",
-            "x is assigned outside this function too",
+            'rate = 1\ndef f(x, rate):\n    rate = rate + 1\n    return rate\nreturn distributed_map(f, input["xs"], args={"rate": rate})',
+            "rate is assigned outside this function too, and Step Functions keeps the variables of a branch apart from the machine's; use another name here and in args=",
         ),
         (
             'rate = 2\ndef f(x):\n    return x * rate\nreturn distributed_map(f, input["xs"])',

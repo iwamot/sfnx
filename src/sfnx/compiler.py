@@ -851,10 +851,12 @@ class Scope:
             )
         self.check_variable(name, node)
         if name in self.outer:
+            # Only a parameter of a distributed map keeps its name, as args=
+            # names it.
             raise CompileError(
                 f"{name} is assigned outside this function too, and Step Functions "
                 "keeps the variables of a branch apart from the machine's; use "
-                "another name here and return the value",
+                "another name here and in args=",
                 node,
             )
 
@@ -1145,6 +1147,35 @@ class Scope:
             )
         return function, local
 
+    def own_names(
+        self, function: ast.FunctionDef, kept: frozenset[str] = frozenset()
+    ) -> ast.FunctionDef:
+        """A function run by parallel() or a map, with each name local to it
+        that this scope or one around it assigns renamed, but those in kept.
+        Step Functions rejects a branch that assigns a variable of the
+        machine's, where Python keeps the two apart, so the branch takes a
+        name of its own, numbered as a loop's counter is."""
+        outside = self.outer | self.assigned | self.hidden
+        clashing = sorted((local_names(function) - kept) & outside)
+        if not clashing:
+            return function
+        used = (
+            outside
+            | self.taken
+            | {n.id for n in ast.walk(function) if isinstance(n, ast.Name)}
+            | set(self.module.spellings.values())
+        )
+        renaming = {}
+        for name in clashing:
+            given = name
+            serial = 1
+            while given in used:
+                serial += 1
+                given = f"{name}_{serial}"
+            used.add(given)
+            renaming[name] = given
+        return Renamer(renaming).visit(copy.deepcopy(function))
+
     def child(
         self,
         function: ast.FunctionDef,
@@ -1209,6 +1240,7 @@ class Scope:
         places: list[Type | None] = []
         for argument in node.args:
             function, local = self.resolve(argument, "parallel")
+            function = self.own_names(function)
             if function.args.args:
                 raise CompileError(
                     f"a branch takes no parameters; {function.name} reads the "
@@ -1271,6 +1303,7 @@ class Scope:
             )
         found = self.options(node, {"max_concurrency", "retry"})
         function, local = self.resolve(node.args[0], "inline_map")
+        function = self.own_names(function)
         parameters = function.args.args
         if not 1 <= len(parameters) <= 2:
             raise CompileError(
@@ -1364,6 +1397,10 @@ class Scope:
                 node,
             )
         function, _ = self.resolve(node.args[0], "distributed_map")
+        # The parameters are the names in args=.
+        function = self.own_names(
+            function, frozenset(a.arg for a in function.args.args)
+        )
         parameters = [a.arg for a in function.args.args]
         arguments = self.literal_dict(found.get("args"), "args", None, None)
         if not parameters or set(parameters[1:]) != set(arguments):
@@ -2438,26 +2475,31 @@ def makes_states(
     return False
 
 
+class Renamer(ast.NodeTransformer):
+    """Rename names where they are read, assigned, or bound by a parameter or
+    an except clause."""
+
+    def __init__(self, renaming: dict[str, str]):
+        self.renaming = renaming
+
+    def visit_Name(self, node: ast.Name) -> ast.Name:
+        node.id = self.renaming.get(node.id, node.id)
+        return node
+
+    def visit_arg(self, node: ast.arg) -> ast.arg:
+        node.arg = self.renaming.get(node.arg, node.arg)
+        return node
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> ast.ExceptHandler:
+        if node.name is not None:
+            node.name = self.renaming.get(node.name, node.name)
+        self.generic_visit(node)
+        return node
+
+
 def renamed(statements: list[ast.stmt], renaming: dict[str, str]) -> list[ast.stmt]:
-    """A copy of statements with each name renamed as renaming says, where it
-    is read, assigned or bound by a lambda or an except clause."""
-
-    class Renamer(ast.NodeTransformer):
-        def visit_Name(self, node: ast.Name) -> ast.Name:
-            node.id = renaming.get(node.id, node.id)
-            return node
-
-        def visit_arg(self, node: ast.arg) -> ast.arg:
-            node.arg = renaming.get(node.arg, node.arg)
-            return node
-
-        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> ast.ExceptHandler:
-            if node.name is not None:
-                node.name = renaming.get(node.name, node.name)
-            self.generic_visit(node)
-            return node
-
-    renamer = Renamer()
+    """A copy of statements with each name renamed as renaming says."""
+    renamer = Renamer(renaming)
     return [renamer.visit(statement) for statement in copy.deepcopy(statements)]
 
 
