@@ -2524,12 +2524,14 @@ class Translator:
         a block that binds each value to the variable of its name first, since
         a Python variable does not always keep its name in the definition."""
         usage = "jsonata(\"$pad($s, -5, '0')\", s=code)"
-        if len(node.args) != 1 or not (
-            isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-        ):
+        # A name assigned a string outside the machine holds the expression, so
+        # one written once can be used in several places.
+        held = self.holds(node.args[0]) if len(node.args) == 1 else None
+        if not (isinstance(held, ast.Constant) and isinstance(held.value, str)):
             raise CompileError(
-                f"jsonata() takes the expression as a literal string: {usage}", node
+                "jsonata() takes the expression as a string written in the "
+                f"source, or a name assigned one outside the machine: {usage}",
+                node,
             )
         bindings = []
         values = []
@@ -2561,7 +2563,7 @@ class Translator:
             code = value.code if value.precedence == ATOM else f"({value.code})"
             bindings.append(f"${name} := {code}; ")
             values.append(value)
-        written = node.args[0].value
+        written = held.value
         reads = self.variables(written, bound)
         # The text is not parsed, so what it calls is unknown: it may call
         # $random under that name, or under one it binds the function to.
