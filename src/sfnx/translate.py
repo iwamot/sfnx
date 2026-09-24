@@ -269,8 +269,21 @@ DATETIMES = (NOW, FROM_ISO, FROM_TIMESTAMP)
 # timedelta takes to the millisecond: microseconds is left out, as Step
 # Functions keeps time to the millisecond.
 TIMEDELTA = "datetime.timedelta"
-TIMEDELTA_UNITS = ("weeks", "days", "hours", "minutes", "seconds", "milliseconds")
+# The units of timedelta, and the milliseconds in one of each.
+TIMEDELTA_UNITS = {
+    "weeks": 604_800_000,
+    "days": 86_400_000,
+    "hours": 3_600_000,
+    "minutes": 60_000,
+    "seconds": 1000,
+    "milliseconds": 1,
+}
 TIMEDELTA_WRITTEN = "timedelta(hours=1)"
+# How far timedeltas move a datetime: the milliseconds written in the source,
+# and each unit given a value only known when it runs, with the signed
+# milliseconds in one of it.
+Span = tuple[int, tuple[tuple[ast.expr, int], ...]]
+NO_SPAN: Span = (0, ())
 
 # The strftime directives that have a picture component writing the same
 # value, measured against CPython on Step Functions. The rest are left out:
@@ -2130,9 +2143,9 @@ class Translator:
         made, shift = moment
         target = qualified(made.func, self.names) or ""
         written = [picture] if picture is not None else []
-        if not shift and target == NOW:
+        if shift == NO_SPAN and target == NOW:
             return call("now", written, of(STRING))
-        millis = shifted(self.millis(made, target), shift)
+        millis = self.shifted(self.millis(made, target), shift)
         return call("fromMillis", [millis, *written], of(STRING))
 
     def strftime(self, node: ast.Call, method: ast.Attribute) -> Expr:
@@ -2152,8 +2165,8 @@ class Translator:
             raise CompileError(f"strftime() is written {STRFTIME_WRITTEN}", node)
         return written
 
-    def datetime_moment(self, node: ast.expr) -> tuple[ast.Call, int] | None:
-        """The call a datetime expression is made by and the milliseconds the
+    def datetime_moment(self, node: ast.expr) -> tuple[ast.Call, Span] | None:
+        """The call a datetime expression is made by and the span the
         timedeltas around it move it, or None where the expression is not a
         datetime. Nothing is translated here, so the expression it recognizes
         is translated once, where it is read."""
@@ -2164,7 +2177,7 @@ class Translator:
             arity = STRINGIFIED[target][0]
             if len(node.args) != arity or node.keywords:
                 return None
-            return node, 0
+            return node, NO_SPAN
         if not isinstance(node, ast.BinOp) or not isinstance(
             node.op, (ast.Add, ast.Sub)
         ):
@@ -2180,7 +2193,7 @@ class Translator:
         if moment is None or span is None:
             return None
         made, shift = moment
-        return made, shift + (span if isinstance(node.op, ast.Add) else -span)
+        return made, joined(shift, span, 1 if isinstance(node.op, ast.Add) else -1)
 
     def datetime_millis(self, node: ast.expr) -> Expr | None:
         """A datetime expression as the milliseconds since the epoch, moved by
@@ -2190,12 +2203,28 @@ class Translator:
             return None
         made, shift = moment
         millis = self.millis(made, qualified(made.func, self.names) or "")
-        return shifted(millis, shift)
+        return self.shifted(millis, shift)
 
-    def timedelta_millis(self, node: ast.expr) -> int | None:
-        """The whole milliseconds a timedelta() call spans, or None where the
-        expression is not one. The units are written in the source and added
-        up here, so one number goes into the expression."""
+    def shifted(self, moment: Expr, span: Span) -> Expr:
+        """A moment moved by a span: each unit given a value that is only
+        known when it runs, times the milliseconds in the unit, and then the
+        milliseconds written in the source, added up while the file compiles."""
+        written, units = span
+        for node, millis in units:
+            value = self.numeric(node, "timedelta()")
+            if abs(millis) != 1:
+                value = binary(value, "*", literal(abs(millis)), MULTIPLY, of(NUMBER))
+            if millis > 0:
+                moment = sum_of(moment, value)
+            else:
+                moment = difference(moment, value)
+        return shifted(moment, written)
+
+    def timedelta_millis(self, node: ast.expr) -> Span | None:
+        """The span a timedelta() call names, or None where the expression is
+        not one. The units written in the source as numbers are added up here,
+        so one number goes into the expression; a unit given any other value is
+        kept to be multiplied when it runs."""
         if not isinstance(node, ast.Call):
             return None
         if (qualified(node.func, self.names) or "") != TIMEDELTA:
@@ -2215,6 +2244,7 @@ class Translator:
                 f"timedelta takes its units by name here: {TIMEDELTA_WRITTEN}", node
             )
         units: dict[str, int | float] = {}
+        given: list[tuple[ast.expr, int]] = []
         for keyword in node.keywords:
             if keyword.arg == "microseconds":
                 raise CompileError(
@@ -2228,7 +2258,11 @@ class Translator:
                     f"{TIMEDELTA_WRITTEN}",
                     keyword.value if keyword.arg else node,
                 )
-            units[keyword.arg] = written_unit(keyword)
+            written = written_unit(keyword.value)
+            if written is None:
+                given.append((keyword.value, TIMEDELTA_UNITS[keyword.arg]))
+            else:
+                units[keyword.arg] = written
         try:
             span = datetime.timedelta(**units)
         except OverflowError:
@@ -2242,18 +2276,23 @@ class Translator:
                 f"{ast.unparse(node)} is a fraction of one",
                 node,
             )
-        return microseconds // 1000
+        return microseconds // 1000, tuple(given)
 
     def total_seconds(self, node: ast.Call, method: ast.Attribute) -> Expr:
-        """A timedelta's .total_seconds(): the seconds a written timedelta
-        spans, or the milliseconds between two datetimes divided."""
+        """A timedelta's .total_seconds(): the seconds a timedelta() call
+        spans, a number where its units are written in the source, or the
+        milliseconds between two datetimes divided."""
         span = method.value
         if not node.args and not node.keywords:
-            written = self.timedelta_millis(span)
-            if written is not None:
+            named = self.timedelta_millis(span)
+            if named is not None and not named[1]:
+                written = named[0]
                 return literal(
                     written // 1000 if written % 1000 == 0 else written / 1000
                 )
+            if named is not None:
+                millis = self.shifted(literal(0), named)
+                return binary(millis, "/", literal(1000), MULTIPLY, of(NUMBER))
             if isinstance(span, ast.BinOp) and isinstance(span.op, ast.Sub):
                 later = self.datetime_millis(span.left)
                 earlier = self.datetime_millis(span.right)
@@ -3644,9 +3683,9 @@ def signed(bound: Bound) -> Expr:
     return literal(-number) if number is not None else negate(bound.amount)
 
 
-def written_unit(keyword: ast.keyword) -> int | float:
-    """The number a unit of timedelta is given, written in the source."""
-    node = keyword.value
+def written_unit(node: ast.expr) -> int | float | None:
+    """The number a unit of timedelta is given, where it is written in the
+    source, or None where it is any other value."""
     sign = 1
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         node, sign = node.operand, -1
@@ -3656,12 +3695,7 @@ def written_unit(keyword: ast.keyword) -> int | float:
         and not isinstance(node.value, bool)
     ):
         return sign * node.value
-    raise CompileError(
-        f"the units of timedelta are numbers written here: {TIMEDELTA_WRITTEN}; "
-        "for a span the input carries, write "
-        "datetime.fromtimestamp(dt.timestamp() + seconds)",
-        keyword.value,
-    )
+    return None
 
 
 def number_picture(found: re.Match[str]) -> str:
@@ -3735,6 +3769,13 @@ def parenthesized(node: ast.expr) -> str:
     return written if isinstance(node, ast.Call) else f"({written})"
 
 
+def joined(first: Span, second: Span, sign: int) -> Span:
+    """Two spans added, or the second taken from the first."""
+    written, units = second
+    moved = tuple((node, sign * millis) for node, millis in units)
+    return first[0] + sign * written, first[1] + moved
+
+
 def shifted(moment: Expr, millis: int) -> Expr:
     """A moment moved by whole milliseconds. A span that runs backwards is
     subtracted rather than added as a negative number, so the expression reads
@@ -3761,6 +3802,8 @@ def sum_of(left: Expr, right: Expr) -> Expr:
         return literal(first + second)
     if type(second) is int and second == 0:
         return left
+    if type(first) is int and first == 0:
+        return right
     return binary(left, "+", right, ADD, of(NUMBER))
 
 

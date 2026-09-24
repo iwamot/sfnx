@@ -707,6 +707,27 @@ def imported(body: str) -> dict:
             'return (datetime.fromtimestamp(input["t"]) - timedelta(days=1)).timestamp()',
             f"({INPUT}.t * 1000 - 86400000) / 1000",
         ),
+        # A unit given a value only known when it runs is multiplied then.
+        (
+            'return str(datetime.now() + timedelta(hours=input["h"], minutes=30))',
+            f"$fromMillis($millis() + {INPUT}.h * 3600000 + 1800000)",
+        ),
+        (
+            'return (datetime.now() - timedelta(milliseconds=input["ms"])).timestamp()',
+            f"($millis() - {INPUT}.ms) / 1000",
+        ),
+        (
+            'return (timedelta(seconds=2) + datetime.now() - timedelta(days=input["d"])).timestamp()',
+            f"($millis() - {INPUT}.d * 86400000 + 2000) / 1000",
+        ),
+        (
+            'return timedelta(days=input["d"]).total_seconds()',
+            f"{INPUT}.d * 86400000 / 1000",
+        ),
+        (
+            'return timedelta(days=-input["d"], seconds=1).total_seconds()',
+            f"(-{INPUT}.d * 86400000 + 1000) / 1000",
+        ),
         # Datetimes compare as the milliseconds since the epoch.
         (
             'return datetime.fromisoformat(input["at"]) < datetime.now() - timedelta(days=7)',
@@ -793,6 +814,22 @@ def test_datetimes_evaluate():
     assert seconds == datetime.fromisoformat(moment).timestamp()
     assert text == moment
     assert later is True
+
+
+def test_a_unit_known_when_it_runs_moves_a_datetime():
+    body = (
+        'at: str = input["at"]\n'
+        'return [str(datetime.fromisoformat(at) - timedelta(days=input["d"], hours=1)), '
+        'timedelta(minutes=input["m"]).total_seconds(), '
+        'datetime.fromisoformat(at) < datetime.now() - timedelta(days=int(input["n"]))]'
+    )
+    moment = "2026-09-15T13:43:06.735Z"
+    execution_input = {"at": moment, "d": 1.5, "m": 2, "n": "3"}
+    moved = datetime.fromisoformat(moment) - timedelta(days=1.5, hours=1)
+    written, seconds, older = asl.run(imported(body), execution_input)
+    assert written == moved.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    assert seconds == 120
+    assert older is True
 
 
 def test_datetimes_compare():
@@ -883,11 +920,10 @@ def test_strftime_of_the_moment_runs():
             ),
         ),
         (
-            'return str(datetime.now() + timedelta(hours=input["h"]))',
+            'return str(datetime.now() + timedelta(hours="1"))',
             (
-                "the units of timedelta are numbers written here: "
-                "timedelta(hours=1); for a span the input carries, write "
-                "datetime.fromtimestamp(dt.timestamp() + seconds)"
+                "'1' is a string, and timedelta() takes numbers; convert it with "
+                "float('1')"
             ),
         ),
         (
