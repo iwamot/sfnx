@@ -2,9 +2,10 @@
 
 import ast
 import copy
+import itertools
 import re
 import symtable
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from importlib.util import decode_source
 from pathlib import Path
@@ -1505,22 +1506,70 @@ class Scope:
         item_type = items.type.items if items.type else None
         sources = ["$states.context.Map.Item.Value", "$states.context.Map.Item.Index"]
         kinds = [item_type, of(NUMBER)]
-        selector: dict[str, object] = {}
-        bindings = dict(self.bindings) if local else {}
-        pending: dict[str, Expr] = {}
+        selector = {
+            parameter.arg: "{% " + source + " %}"
+            for parameter, source in zip(parameters, sources, strict=False)
+        }
+        declared = [
+            annotate(parameter.annotation, self.module) or kind
+            for parameter, kind in zip(parameters, kinds, strict=False)
+        ]
         binds = makes_states(
             function, self.module.names, {**self.module.functions, **self.functions}
         )
-        for parameter, source, kind in zip(parameters, sources, kinds, strict=False):
+        shared = (set(self.graph.names), set(self.labels), set(self.hidden))
+        mark = marking()
+        processor, returned = self.processor(
+            function, local, declared, mark if binds else None
+        )
+        if binds and reads_at_start(processor, mark):
+            processor = placed(processor, mark)
+        elif binds:
+            # A state after the first reads a parameter, where $states.input is
+            # no longer the item, so the first state binds them after all.
+            restored = (self.graph.names, self.labels, self.hidden)
+            for kept, now in zip(shared, restored, strict=True):
+                now.clear()
+                now.update(kept)
+            processor, returned = self.processor(function, local, declared, None)
+        state: dict[str, object] = {"Type": "Map", "Items": items.template}
+        state["ItemSelector"] = selector
+        if "max_concurrency" in found:
+            state["MaxConcurrency"] = self.count_option(
+                found["max_concurrency"], "max_concurrency"
+            )
+        state["ItemProcessor"] = {"ProcessorConfig": {"Mode": "INLINE"}, **processor}
+        return state, of(ARRAY, items=joined(returned))
+
+    def processor(
+        self,
+        function: ast.FunctionDef,
+        local: bool,
+        declared: list[Type | None],
+        mark: str | None,
+    ) -> tuple[dict[str, object], list[Type | None]]:
+        """The ItemProcessor of an inline map, which reads each parameter from
+        $states.input. A function that makes no states reads it there. One
+        that does reads it there too, marked with mark, when each read is in its
+        first state, whose input is still the item (measured), or in the first
+        state of a branch of a Parallel that is; otherwise its first state
+        binds the parameters to variables."""
+        parameters = function.args.args
+        bindings = dict(self.bindings) if local else {}
+        pending: dict[str, Expr] = {}
+        binds = mark is None and makes_states(
+            function, self.module.names, {**self.module.functions, **self.functions}
+        )
+        for parameter, kind in zip(parameters, declared, strict=True):
             name = parameter.arg
-            selector[name] = "{% " + source + " %}"
-            declared = annotate(parameter.annotation, self.module) or kind
             if binds:
-                bindings[name] = self.variable(name, declared)
+                bindings[name] = self.variable(name, kind)
                 pending[name] = step(expression("$states.input"), name)
+            elif mark is not None:
+                bindings[name] = replace(expression(f"${mark}{name}"), type=kind)
             else:
                 bindings[name] = replace(
-                    step(expression("$states.input"), name), type=declared
+                    step(expression("$states.input"), name), type=kind
                 )
         scope = self.child(
             function, local, bindings, self.parameters if local else set()
@@ -1536,15 +1585,7 @@ class Scope:
             scope.pending_origins = [Origin(function, "parameters", header=True)]
         # What the first state binds is the function's to assign.
         scope.assigned |= pending.keys()
-        processor, returned = self.run_child(scope, function)
-        state: dict[str, object] = {"Type": "Map", "Items": items.template}
-        state["ItemSelector"] = selector
-        if "max_concurrency" in found:
-            state["MaxConcurrency"] = self.count_option(
-                found["max_concurrency"], "max_concurrency"
-            )
-        state["ItemProcessor"] = {"ProcessorConfig": {"Mode": "INLINE"}, **processor}
-        return state, of(ARRAY, items=joined(returned))
+        return self.run_child(scope, function)
 
     def distributed_map_state(
         self, node: ast.Call
@@ -2846,6 +2887,79 @@ def annotate(node: ast.expr | None, context: Module) -> Type | None:
 def starting(loop: ast.For) -> Origin:
     """What a for loop assigns before its first iteration."""
     return Origin(loop, "loop start", header=True)
+
+
+# A parameter of an inline map's function, read where it may be read from
+# $states.input, until the processor shows whether each read is. Each map
+# marks its own, as a map inside it reads its parameters too.
+MARKS = itertools.count()
+
+
+def marking() -> str:
+    return f"__sfnx_item{next(MARKS)}_"
+
+
+# The fields of a first state that read $states.input as its input: measured
+# for a Task and its catchers, and documented for a Choice's rules and a
+# Map's Items. A branch's first state reads the Parallel's input.
+AT_START = frozenset({"Arguments", "Assign", "Output", "Catch", "Choices", "Items"})
+
+
+def reads_at_start(definition: dict[str, object], mark: str) -> bool:
+    """Whether every marked read is in a field of the first state that reads
+    the processor's input, or in the first state of a branch of a Parallel
+    that is first, whose input is the same."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    for name, state in states.items():
+        assert isinstance(state, dict)
+        if name != definition["StartAt"]:
+            elsewhere = [state]
+        else:
+            fields = AT_START | {"Branches"}
+            elsewhere = [v for k, v in state.items() if k not in fields]
+            if not all(reads_at_start(b, mark) for b in state.get("Branches", [])):
+                return False
+        if any(marked(part, mark) for part in elsewhere):
+            return False
+    return True
+
+
+def marked(value: object, mark: str) -> bool:
+    return any(f"${mark}" in text for text in strings(value))
+
+
+def placed(value: object, mark: str) -> dict[str, object]:
+    """The processor with each marked read of a parameter as $states.input
+    reads it."""
+    pattern = re.compile(rf"\${mark}(\w+)")
+
+    def read(match: re.Match[str]) -> str:
+        return step(expression("$states.input"), match.group(1)).code
+
+    def rewrite(item: object) -> object:
+        if isinstance(item, str):
+            return pattern.sub(read, item)
+        if isinstance(item, dict):
+            return {k: rewrite(v) for k, v in item.items()}
+        if isinstance(item, list):
+            return [rewrite(v) for v in item]
+        return item
+
+    result = rewrite(value)
+    assert isinstance(result, dict)
+    return result
+
+
+def strings(value: object) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
 
 
 def ended(function: ast.FunctionDef) -> Origin:

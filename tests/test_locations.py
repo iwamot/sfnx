@@ -188,7 +188,6 @@ def test_each_state_names_the_source_it_comes_from():
                 ("def fan(input):", "end of function"),
             ],
         ),
-        "ship.order": ([], [(ship, "parameters")]),
         "ship.invoke": (
             [],
             [
