@@ -620,6 +620,32 @@ def test_a_definition_whose_every_state_sets_jsonata_runs():
     assert testing.run(definition, {}).output == [2, 4]
 
 
+@pytest.mark.parametrize(
+    "code, cause",
+    [
+        ('$merge([{"a": 1}, [{"b": 2}]])', "T0412: Argument {{index}} of Object"),
+        ('1 < "a"', "T2009: The values {{value}}"),
+    ],
+)
+def test_an_error_whose_message_jsonata_python_cannot_write_fails(code, cause):
+    """jsonata-python raises an IndexError while it writes the message."""
+    failed = testing.run(
+        machine({"Type": "Succeed", "Output": "{% " + code + " %}"}), {}
+    )
+    assert failed.error == "States.QueryEvaluationError"
+    assert failed.cause.startswith(cause)
+
+
+def test_an_index_error_from_a_function_reaches_the_test():
+    now = machine({"Type": "Succeed", "Output": "{% $now() %}"})
+
+    def failing() -> str:
+        raise IndexError("now")
+
+    with pytest.raises(IndexError, match="now"):
+        testing.run(now, {}, functions={"now": failing})
+
+
 def test_text_that_is_not_json_fails_to_parse():
     parsed = machine({"Type": "Succeed", "Output": "{% $parse('{') %}"})
     assert testing.run(parsed, {}).error == "States.QueryEvaluationError"
