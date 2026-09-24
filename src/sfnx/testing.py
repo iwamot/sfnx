@@ -445,7 +445,23 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
         raise Failure("States.QueryEvaluationError", message) from exc
     if result is None:
         raise Failure("States.QueryEvaluationError", f"{code} is undefined")
-    return Utils.convert_nulls(result)
+    value = Utils.convert_nulls(result)
+    if not is_json(value):
+        # A function, anywhere in the result, fails the field (measured).
+        raise Failure(
+            "States.QueryEvaluationError",
+            f"{code} returned an unsupported result type",
+        )
+    return value
+
+
+def is_json(value: object) -> bool:
+    """Whether a value is JSON: what a field can hold."""
+    if isinstance(value, dict):
+        return all(is_json(v) for v in value.values())
+    if isinstance(value, list):
+        return all(is_json(v) for v in value)
+    return value is None or isinstance(value, (str, int, float, bool))
 
 
 def unwritten(exc: IndexError) -> str | None:

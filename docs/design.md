@@ -85,6 +85,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 
 - Step Functions implements JSONata 2.0.6 without `$eval`, and adds `$partition`, `$range`, `$hash`, `$random`, `$uuid` and `$parse`. An expression has a one-second limit and a memory limit; every failure is `States.QueryEvaluationError`.
 - An expression that returns undefined fails, in any field and inside objects, arrays and `Assign` (measured).
+- A function is not a value: an expression that returns one, alone or inside an object or an array, fails with `States.QueryEvaluationError` ("returned an unsupported result type") in `Assign`, `Output` and a Choice's `Condition` alike (TestState; measured). A JSONata function is used only inside the expression that defines it.
 - `Assign` evaluates all its expressions with the values from before the state, then assigns. `Assign` and `Output` of a state are evaluated in parallel.
 - Binding a variable hides the built-in function of the same name (`count` hides `$count`), and ValidateStateMachineDefinition does not report it: calling the function fails when it runs (`T1006: Attempted to invoke a non-function`; measured).
 - `and`, `or` and `$not` convert operands as `$boolean` does and return booleans. `$boolean` matches Python's `bool()` except on a non-empty array whose items are all falsy (`[0]`, `[[]]`), which is false (measured).
