@@ -283,18 +283,79 @@ def test_a_generator_is_the_list_comprehension_it_would_be(generator, comprehens
     )
 
 
-def test_a_second_for_is_pointed_at_its_variable():
-    body = 'xs: list = input["xs"]\nys: list = input["ys"]\nreturn [x for x in xs for y in ys]'
+@pytest.mark.parametrize(
+    "written", ["{str(x): 1 for x in xs for y in ys}", "any(x for x in xs for y in ys)"]
+)
+def test_a_second_for_is_pointed_at_its_variable(written):
+    """A dict comprehension and any() or all() take one for."""
+    body = f'xs: list = input["xs"]\nys: list = input["ys"]\nreturn {written}'
     with pytest.raises(CompileError) as raised:
         output(body)
-    assert (raised.value.line, raised.value.column) == (8, 31)
-    with pytest.raises(CompileError) as raised:
-        output(
-            body.replace(
-                "[x for x in xs for y in ys]", "sum(x for x in xs for y in ys)"
-            )
-        )
-    assert (raised.value.line, raised.value.column) == (8, 34)
+    column = len("    return ") + written.index(" y in") + 2
+    assert (raised.value.line, raised.value.column) == (8, column)
+
+
+def test_a_condition_that_may_keep_one_list_keeps_it_an_item():
+    """Step Functions gives the one list $filter keeps as that list, which
+    $reduce would iterate item by item, and [] keeps it one item (measured;
+    the local runner gives a one-item array either way)."""
+    body = 'xs: list[list[int]] = input["xs"]\nreturn [y for x in xs if x for y in x]'
+    assert "})[], function(" in output(body)
+
+
+@pytest.mark.parametrize(
+    "kind, written, items, expected",
+    [
+        # A list of lists flattened, as a path in JSONata flattens it.
+        (
+            "list[dict[str, list[dict[str, int]]]]",
+            '[r["id"] for lib in xs for r in lib["rows"]]',
+            [{"rows": [{"id": 1}, {"id": 2}]}, {"rows": []}, {"rows": [{"id": 3}]}],
+            [1, 2, 3],
+        ),
+        # Items that are lists stay as items, and so does a single one.
+        (
+            "list[list[list[int]]]",
+            "[y for x in xs for y in x]",
+            [[[1]], [[2], [3]]],
+            [[1], [2], [3]],
+        ),
+        ("list[list[list[int]]]", "[y for x in xs for y in x]", [[[1, 2]]], [[1, 2]]),
+        # The conditions of each for, and a second list that reads the first.
+        (
+            "list[int]",
+            "[x * y for x in xs if x > 1 for y in range(x) if y != 1]",
+            [1, 2, 3],
+            [0, 0, 6],
+        ),
+        ("list[int]", "[y for x in xs if x > 9 for y in xs]", [1, 2], []),
+        # A condition that keeps one list keeps it as one item.
+        (
+            "list[list[int]]",
+            "[y * 10 for x in xs if len(x) > 0 for y in x]",
+            [[1, 2], []],
+            [10, 20],
+        ),
+        # Three fors, and the keys of a dict.
+        (
+            "list[list[list[int]]]",
+            "[z for x in xs for y in x for z in y]",
+            [[[1, 2], [3]], [[4]]],
+            [1, 2, 3, 4],
+        ),
+        (
+            "dict[str, list[str]]",
+            "[k + v for k in xs for v in xs[k]]",
+            {"a": ["1", "2"], "b": []},
+            ["a1", "a2"],
+        ),
+    ],
+)
+def test_a_comprehension_with_several_fors(kind, written, items, expected):
+    """The for after the first runs for each item the first keeps, in order,
+    as $reduce appends what it gives."""
+    body = f'xs: {kind} = input["xs"]\nreturn {written}'
+    assert run(body, {"xs": items}) == expected
 
 
 def test_the_comprehension_variable_does_not_leak():
@@ -574,10 +635,6 @@ def test_evaluation(body, execution_input, expected):
     "body, message",
     [
         (
-            'xs: list = input["xs"]\nys: list = input["ys"]\nreturn [x for x in xs for y in ys]',
-            "a comprehension takes one for",
-        ),
-        (
             'xs: list = input["xs"]\nreturn [a for a, b in xs]',
             "a comprehension iterates one variable",
         ),
@@ -603,8 +660,13 @@ def test_evaluation(body, execution_input, expected):
             "JSON has lists only",
         ),
         (
-            'xs: list = input["xs"]\nys: list = input["ys"]\nreturn sum(x for x in xs for y in ys)',
+            'xs: list = input["xs"]\nys: list = input["ys"]\nreturn all(x for x in xs for y in ys)',
             "a comprehension takes one for",
+        ),
+        # What a later for iterates comes from the items of the first one's.
+        (
+            'xs: list = input["xs"]\nreturn [y for x in xs for y in x["ys"]]',
+            "declare the type of the items of xs where it is assigned",
         ),
         (
             'xs: list = input["xs"]\nreturn sum(a for a, b in xs)',
