@@ -10,7 +10,7 @@ Save this as `app.py` (it is also [examples/orders.py](https://github.com/iwamot
 ```python
 from typing import TypedDict
 
-from sfnx import Timeout, state_machine, task
+from sfnx import Timeout, aws, state_machine, task
 
 
 class Item(TypedDict):
@@ -25,11 +25,6 @@ class Order(TypedDict):
 
 class OutOfStock(Exception):
     pass
-
-
-class DynamoDb:
-    class ConditionalCheckFailedException(Exception):
-        pass
 
 
 @state_machine(timeout=300)
@@ -49,7 +44,7 @@ def fulfill(input: Order):
                 },
                 retry=[{"ErrorEquals": [Timeout], "MaxAttempts": 3}],
             )
-        except DynamoDb.ConditionalCheckFailedException:
+        except aws.sdk.dynamodb.errors.ConditionalCheckFailedException:
             raise OutOfStock(f"{item['sku']} is out of stock") from None
     receipt = task(
         "arn:aws:states:::lambda:invoke",
@@ -218,7 +213,7 @@ uv add sfnx
 - **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
 - **`wait(10)`** and **`wait(until=timestamp)`**, which also takes a datetime, are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
 - **`jsonata("$pad($s, -5, '0')", s=code)`** writes a JSONata expression out, for what has no Python spelling, with each value bound to the variable of its name.
-- **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), or the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...). A class that assigns `error = "..."` has that error name, for one a class name cannot spell. `except Exception` is `States.ALL`.
+- **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...), or the errors of SDK integrations (`aws.sdk.dynamodb.errors.ConditionalCheckFailedException`), which the compiler checks against botocore. A class that assigns `error = "..."` has that error name, for one a class name cannot spell. `except Exception` is `States.ALL`.
 - **Names assigned outside the machine** (`RETRIES = [{"ErrorEquals": [Timeout], "MaxAttempts": 3}]`) hold JSON data and exception classes, and are written into the definition where they are read, so what ASL repeats state by state is written once.
 - **Expressions** are Python operators, conditional expressions, list and dict comprehensions, f-strings (with a width, a number's digits or `d` as the format spec), slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
   - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed`, `range`, `any` and `all`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`, `sorted`, `max` and `min` take `key=lambda item: ...`, and `sum`, `max`, `min`, `sorted`, `list`, `any` and `all` take a generator expression: `any(r["failed"] for r in results)`, which `any` and `all` stop reading once the result is decided)

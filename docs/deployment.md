@@ -48,7 +48,7 @@ sfnx compile examples/orders.py --source-locations
 ```json
     "raise": {
       "Type": "Fail",
-      "Comment": "sfnx-source: {\"file\": \"examples/orders.py\", \"spans\": [{\"at\": \"43:13-43:73\"}]}",
+      "Comment": "sfnx-source: {\"file\": \"examples/orders.py\", \"spans\": [{\"at\": \"38:13-38:73\"}]}",
 ```
 
 After `sfnx-source: ` comes a JSON object:

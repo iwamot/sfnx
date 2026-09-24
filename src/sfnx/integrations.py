@@ -113,20 +113,7 @@ def integration(resource: str) -> Integration:
             raise ResourceError(
                 f"SDK integrations support only .waitForTaskToken, not {pattern}"
             )
-        if service in RENAMED:
-            raise ResourceError(
-                f"SDK integrations name the service {RENAMED[service]}, not "
-                f"{service}: arn:aws:states:::aws-sdk:{RENAMED[service]}:{action}"
-            )
-        model = service_model(service)
-        if model is None:
-            close = difflib.get_close_matches(service, sorted(services()), n=3)
-            hint = f"; did you mean {' or '.join(close)}?" if close else ""
-            raise ResourceError(
-                f"no AWS SDK service is named {service}{hint} (the name is "
-                "lowercase without hyphens, such as dynamodb; a service newer "
-                "than the installed botocore needs an update)"
-            )
+        model = sdk_service(service, f"arn:aws:states:::aws-sdk:{{}}:{action}")
         operation = find_operation(service, model, action)
         return Integration(
             "sdk",
@@ -172,6 +159,98 @@ def integration(resource: str) -> Integration:
         '"arn:aws:states:::aws-sdk:dynamodb:getItem" or '
         '"arn:aws:states:::lambda:invoke"'
     )
+
+
+def sdk_service(service: str, spelling: str) -> ServiceModel:
+    """The model of an SDK integration's service, named as its ARN names it.
+    spelling is how the name is written, with {} for the service."""
+    if service in RENAMED:
+        raise ResourceError(
+            f"SDK integrations name the service {RENAMED[service]}, not "
+            f"{service}: {spelling.format(RENAMED[service])}"
+        )
+    model = service_model(service)
+    if model is None:
+        close = difflib.get_close_matches(service, sorted(services()), n=3)
+        hint = f"; did you mean {' or '.join(close)}?" if close else ""
+        raise ResourceError(
+            f"no AWS SDK service is named {service}{hint} (the name is "
+            "lowercase without hyphens, such as dynamodb; a service newer "
+            "than the installed botocore needs an update)"
+        )
+    return model
+
+
+def sdk_error(service: str, name: str) -> str:
+    """The error name an SDK integration reports for an exception of its
+    service, such as DynamoDb.ConditionalCheckFailedException: the class the
+    AWS SDK for Java gives it, after the service's name in that SDK. An error
+    the model does not list is the service's own, DynamoDb.DynamoDbException."""
+    model = sdk_service(service, f"aws.sdk.{{}}.errors.{name}")
+    prefix = java_service_name(model.service_id)
+    renamed = JAVA_RENAMED_ERRORS.get(model.service_name, {})
+    names = {
+        java_exception_name(renamed.get(shape.name, shape.name), prefix)
+        for shape in model.error_shapes
+    } | {prefix + "Exception"}
+    if name not in names:
+        close = difflib.get_close_matches(name, sorted(names), n=3)
+        hint = f"; did you mean {' or '.join(close)}?" if close else ""
+        raise ResourceError(f"{service} has no error {name}{hint}")
+    return f"{prefix}.{name}"
+
+
+# Error shapes the AWS SDK for Java renames, by botocore's service name.
+JAVA_RENAMED_ERRORS = {
+    "elb": {
+        "AccessPointNotFoundException": "LoadBalancerNotFoundException",
+        "DuplicateAccessPointNameException": "DuplicateLoadBalancerNameException",
+        "InvalidEndPointException": "InvalidInstanceException",
+        "TooManyAccessPointsException": "TooManyLoadBalancersException",
+    },
+    "marketplacecommerceanalytics": {
+        "MarketplaceCommerceAnalyticsException": (
+            "MarketplaceCommerceAnalyticsServiceException"
+        ),
+    },
+}
+
+
+def java_words(name: str) -> list[str]:
+    """The words of a name as the AWS SDK for Java splits them to case it."""
+    name = re.sub(r"[^A-Za-z0-9]+", " ", name)
+    name = re.sub(r"([^a-z]{2,})v([0-9]+)", r"\1 v\2 ", name)
+    name = re.sub(r"([^A-Z]{2,})V([0-9]+)", r"\1 V\2 ", name)
+    name = " ".join(re.split(r"(?<=[a-z])(?=[A-Z](?:[a-zA-Z]|[0-9]))", name))
+    name = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", name)
+    name = re.sub(r"([0-9])([a-zA-Z])", r"\1 \2", name)
+    return name.split()
+
+
+def java_pascal(name: str) -> str:
+    """PascalCase as the AWS SDK for Java writes it: DynamoDB is DynamoDb."""
+    return "".join(word.lower().capitalize() for word in java_words(name))
+
+
+def java_service_name(service_id: str) -> str:
+    name = java_pascal(service_id)
+    for prefix in ("amazon", "aws"):
+        if name.lower().startswith(prefix):
+            name = name[len(prefix) :]
+    if name.lower().endswith("service"):
+        name = name[: -len("service")]
+    return name
+
+
+def java_exception_name(shape: str, service: str) -> str:
+    if shape.endswith("Fault"):
+        name = java_pascal(shape.removesuffix("Fault")) + "Exception"
+    elif shape.endswith("Exception"):
+        name = java_pascal(shape)
+    else:
+        name = java_pascal(shape) + "Exception"
+    # The service's own exception has this name.
+    return "Default" + name if name == service + "Exception" else name
 
 
 @cache
