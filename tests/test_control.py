@@ -197,8 +197,8 @@ def test_assignments_after_a_wait_are_its_assign():
         ),
         # A value reading an assignment before it reads its expression.
         ("wait(1)\nx = 1\ny = x + 1", {"x": 1, "y": "{% 1 + 1 %}"}, []),
-        # Another path joins where the assignment is.
-        ('if input["wait"]:\n    wait(1)\nx = 1', None, ["x"]),
+        # Where another path joins, each path's last state takes it.
+        ('if input["wait"]:\n    wait(1)\nx = 1', {"x": 1}, []),
         # A value that differs when read later, or in another state.
         ("wait(1)\nx = str(uuid.uuid4())", None, ["x"]),
         ("wait(1)\nx = str(datetime.now())", None, ["x"]),
@@ -239,8 +239,16 @@ def test_what_a_wait_assigns(body, joined, passes):
             None,
             [],
         ),
-        # What follows an if without else is where the branches join.
-        ('if input["a"]:\n    x = 1\ny = 2', {"x": 1}, None, ["y"]),
+        # What follows an if without else is where the branches join, and each
+        # takes it.
+        ('if input["a"]:\n    x = 1\ny = 2', {"x": 1, "y": 2}, {"y": 2}, []),
+        # A value that differs when read in another state keeps its Pass.
+        (
+            'if input["a"]:\n    x = 1\ny = str(uuid.uuid4())',
+            {"x": 1},
+            None,
+            ["y"],
+        ),
         # Unless every branch returns, when only the Default leads there.
         ('if input["a"]:\n    return 0\ny = 2', None, {"y": 2}, []),
         # An else that put its assignments in the Choice keeps them apart.

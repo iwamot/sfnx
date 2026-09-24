@@ -125,15 +125,24 @@ def test_each_state_names_the_source_it_comes_from():
             ],
         ),
         "for": ([], [(header, None)]),
+        # The two paths that go on join at count, so each takes it.
         "if": (
             [],
             [
                 ('if order["amount"] > 100:', None),
                 ('elif order["amount"] < 0:', None),
+                ("count = count + 1", None),
+                (header, "loop step"),
             ],
         ),
-        "if[0]": ([], [('total = total + order["amount"]', None)]),
-        "count": ([], [("count = count + 1", None), (header, "loop step")]),
+        "if[0]": (
+            [],
+            [
+                ('total = total + order["amount"]', None),
+                ("count = count + 1", None),
+                (header, "loop step"),
+            ],
+        ),
         "while": ([], [("while total > 1000:", None)]),
         "while[0]": ([], [("total = total - 1000", None)]),
         "receipt": (
@@ -262,6 +271,21 @@ def test_a_wait_spans_the_assignments_it_takes():
     comment = definition["States"]["wait"]["Comment"]
     spans = json.loads(comment.removeprefix(PREFIX))["spans"]
     assert spans == [{"at": "7:5-7:12"}, {"at": "8:5-8:14"}]
+
+
+def test_each_path_that_takes_an_assignment_spans_it():
+    """The rule holds nothing else and has no location yet; the Choice adds
+    the span to its own."""
+    source = (
+        "from sfnx import state_machine\n\n\n@state_machine\ndef pay(input):\n"
+        '    if input["a"]:\n        pass\n    x = 1\n    return x\n'
+    )
+    (definition,) = definitions(source, "app.py", located=True).values()
+    choice = definition["States"]["if"]
+    for holder in [choice["Choices"][0], choice]:
+        spans = json.loads(holder["Comment"].split("\n")[-1].removeprefix(PREFIX))
+        assert {"at": "8:5-8:10"} in spans["spans"]
+    assert choice["Assign"] == choice["Choices"][0]["Assign"] == {"x": 1}
 
 
 def test_a_choice_spans_what_its_rules_and_default_assign():

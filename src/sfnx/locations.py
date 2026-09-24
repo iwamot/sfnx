@@ -41,6 +41,15 @@ class Locations:
         found = {"file": self.filename, "spans": spans}
         return PREFIX + json.dumps(found, ensure_ascii=False)
 
+    def extended(self, line: str | None, origins: list[Origin]) -> str:
+        """A location line with the spans of origins added after its own."""
+        added = json.loads(self.line(origins).removeprefix(PREFIX))
+        if line is None:
+            return PREFIX + json.dumps(added, ensure_ascii=False)
+        found = json.loads(line.removeprefix(PREFIX))
+        found["spans"] += [s for s in added["spans"] if s not in found["spans"]]
+        return PREFIX + json.dumps(found, ensure_ascii=False)
+
     def span(self, origin: Origin) -> str:
         node = origin.node
         start = characters(self.lines[node.lineno - 1], node.col_offset + 1)
