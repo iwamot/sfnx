@@ -23,16 +23,8 @@
         "ProcessorConfig": {
           "Mode": "INLINE"
         },
-        "StartAt": "resize.photo",
+        "StartAt": "resize.return",
         "States": {
-          "resize.photo": {
-            "Type": "Pass",
-            "Assign": {
-              "photo": "{% $states.input.photo %}",
-              "index": "{% $states.input.index %}"
-            },
-            "Next": "resize.return"
-          },
           "resize.return": {
             "Type": "Task",
             "Comment": "The index names the output, so two photos never overwrite each other.",
@@ -40,8 +32,8 @@
             "Arguments": {
               "FunctionName": "resize",
               "Payload": {
-                "source": "{% $photo %}",
-                "target": "{% $album & '/' & $string($index) & '.jpg' %}"
+                "source": "{% $states.input.photo %}",
+                "target": "{% $album & '/' & $string($states.input.index) & '.jpg' %}"
               }
             },
             "Output": "{% $states.result.Payload %}",

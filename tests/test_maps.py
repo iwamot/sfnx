@@ -63,18 +63,16 @@ def test_inline_map_matches_the_handwritten_map():
     }
 
 
-def test_a_function_that_makes_states_binds_its_parameters_first():
+def test_a_function_that_makes_states_reads_its_parameters_in_its_first_state():
+    """The first state's input is the item, in its Arguments, Assign and
+    Output alike (measured), so a parameter read only there needs no Pass."""
     body = f'rate: float = input["rate"]\n\ndef charge(order):\n    receipt = task("{LAMBDA}", {{"FunctionName": "charge", "Payload": order}})\n    return receipt["Payload"]["amount"] * rate\n\ntotals = inline_map(charge, input["orders"])\nreturn totals'
     compiled = states(body)
     processor = compiled["totals"]["ItemProcessor"]
-    assert processor["StartAt"] == "charge.order"
-    assert processor["States"]["charge.order"] == {
-        "Type": "Pass",
-        "Assign": {"order": "{% $states.input.order %}"},
-        "Next": "charge.receipt",
-    }
+    assert list(processor["States"]) == ["charge.receipt"]
     assert (
-        processor["States"]["charge.receipt"]["Arguments"]["Payload"] == "{% $order %}"
+        processor["States"]["charge.receipt"]["Arguments"]["Payload"]
+        == "{% $states.input.order %}"
     )
     # The return right after the Map ends the machine with its result.
     assert "Assign" not in compiled["totals"]
@@ -88,6 +86,62 @@ def test_a_function_that_makes_states_binds_its_parameters_first():
         2,
         6,
     ]
+
+
+def test_a_function_that_reads_its_parameters_later_binds_them_first():
+    body = f'def charge(order):\n    task("{LAMBDA}", {{"FunctionName": "hold", "Payload": order}})\n    task("{LAMBDA}", {{"FunctionName": "charge", "Payload": order}})\n\ninline_map(charge, input["orders"])'
+    processor = states(body)["map"]["ItemProcessor"]
+    assert processor["StartAt"] == "charge.order"
+    assert processor["States"]["charge.order"] == {
+        "Type": "Pass",
+        "Assign": {"order": "{% $states.input.order %}"},
+        "Next": "charge.invoke",
+    }
+    assert processor["States"]["charge.invoke_2"]["Arguments"]["Payload"] == (
+        "{% $order %}"
+    )
+    calls = []
+    tasks = {
+        name: lambda arguments: calls.append(arguments["Payload"]) or {}
+        for name in ("charge.invoke", "charge.invoke_2")
+    }
+    run(body, {"orders": [7]}, tasks)
+    assert calls == [7, 7]
+
+
+INVOKE = f'task("{LAMBDA}", {{"FunctionName": "f", "Payload": order}})'
+
+
+@pytest.mark.parametrize(
+    "inner, binds",
+    [
+        # A branch of a Parallel that is first takes the item as its input.
+        (f"def left():\n        return {INVOKE}\n    parallel(left)", False),
+        # A nested map's processor takes items of its own.
+        (f"def each(x):\n        return {INVOKE}\n    inline_map(each, [1])", True),
+        # A state after the first reads it, in the function or in a branch.
+        (f"{INVOKE}\n    {INVOKE}", True),
+        (
+            (
+                f"def left():\n        {INVOKE}\n        return {INVOKE}\n"
+                "    parallel(left)"
+            ),
+            True,
+        ),
+        # A Map that is first reads its Items from the item.
+        (
+            (
+                "def each(x):\n        return x\n"
+                "    inline_map(each, order['xs'])\n    return 1"
+            ),
+            False,
+        ),
+    ],
+)
+def test_where_a_parameter_can_be_read_in_place(inner, binds):
+    body = f'def f(order):\n    {inner}\n\ninline_map(f, input["orders"])'
+    processor = states(body)["map"]["ItemProcessor"]
+    assert ("f.order" in processor["States"]) == binds
 
 
 def test_distributed_map_matches_the_handwritten_map():
@@ -160,7 +214,9 @@ def test_a_map_function_assigns_names_of_its_own():
     )
     state = states(body)["r"]
     assert state["ItemSelector"] == {"order_2": "{% $states.context.Map.Item.Value %}"}
-    assert list(state["ItemProcessor"]["States"]) == ["f.order_2", "f.invoke"]
+    # The return is the Task's Output, where $states.input is still the item.
+    (task,) = state["ItemProcessor"]["States"].values()
+    assert task["Output"] == "{% $states.input.order_2 %}"
     assert run(body, {"xs": [5, 6]}, {"f.invoke": lambda arguments: {}}) == [
         1,
         [5, 6],

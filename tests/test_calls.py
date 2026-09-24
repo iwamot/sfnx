@@ -226,8 +226,8 @@ def test_a_call_runs_in_a_branch_and_a_map():
     )
     compiled = states(body)
     processor = compiled["b"]["ItemProcessor"]["States"]
-    # The map's item is bound first, as the Task would replace $states.input.
-    assert processor["each.x"]["Assign"] == {"x": "{% $states.input.x %}"}
+    # The Task is the processor's first state, whose input is still the item.
+    assert processor["each.return"]["Arguments"]["Payload"] == ("{% $states.input.x %}")
     tasks = {
         "one.return": lambda arguments: {"Payload": arguments["Payload"]},
         "each.return": lambda arguments: {"Payload": arguments["Payload"] * 10},
