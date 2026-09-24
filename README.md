@@ -8,7 +8,19 @@ Write the intent of an AWS Step Functions workflow in Python, and sfnx compiles 
 Save this as `app.py` (it is also [examples/orders.py](https://github.com/iwamot/sfnx/blob/main/examples/orders.py)):
 
 ```python
+from typing import TypedDict
+
 from sfnx import Timeout, state_machine, task
+
+
+class Item(TypedDict):
+    sku: str
+    quantity: int
+
+
+class Order(TypedDict):
+    id: str
+    items: list[Item]
 
 
 class OutOfStock(Exception):
@@ -21,9 +33,9 @@ class DynamoDb:
 
 
 @state_machine(timeout=300)
-def fulfill(input):
+def fulfill(input: Order):
     """Reserve every item of an order, then charge for it."""
-    items: list = input["items"]
+    items = input["items"]
     for item in items:
         try:
             task(
@@ -148,7 +160,7 @@ The definition has the states a person would write by hand, named after what the
     "raise": {
       "Type": "Fail",
       "Error": "OutOfStock",
-      "Cause": "{% $string($items[$item_index].sku) & ' is out of stock' %}"
+      "Cause": "{% $items[$item_index].sku & ' is out of stock' %}"
     },
     "item_index": {
       "Type": "Pass",
