@@ -957,14 +957,27 @@ class Scope:
         if declared is not None:
             self.declared[name] = declared
         # Assign evaluates every expression with the values from before the
-        # state, so one that reads a pending assignment needs a state of its own.
-        if name in self.pending or value.variables & self.pending.keys():
+        # state, so one that reads a pending assignment reads its expression
+        # instead, as a hand-writer spells a path out again. One that changes on
+        # evaluation would give another value there, so it needs a state of its
+        # own, and so does a name assigned again, whose first value is still
+        # evaluated, as Python evaluates it.
+        if name in self.pending:
             self.flush()
+        reads = sorted(value.variables & self.pending.keys())
+        if reads and not any(self.pending[read].volatile for read in reads):
+            substituted = self.read_as(value_node, {r: self.pending[r] for r in reads})
+            # jsonata() reads a variable by its name, which no expression
+            # replaces.
+            if not substituted.variables & self.pending.keys():
+                value = substituted
+        if value.variables & self.pending.keys():
+            self.flush()
+            reads = []
         result = self.following()
-        if result is not None:
-            folded = self.read_result(result, value_node)
-            assert folded is not None
-            self.folded[name] = folded
+        if result is not None and all(read in self.folded for read in reads):
+            substituted = {**result.values, **{r: self.folded[r] for r in reads}}
+            self.folded[name] = self.read_as(value_node, substituted)
         self.defer(name, value, target, self.here())
         self.hold_remark()
         self.bindings[name] = self.variable(name, known)
@@ -1121,6 +1134,13 @@ class Scope:
             self.bindings.clear()
             self.bindings.update(before)
         return value if call is None else None
+
+    def read_as(self, value_node: ast.expr, values: dict[str, Expr]) -> Expr:
+        """A value that makes no state, with the variables in values read as
+        the expressions they take, each with the type it was bound with."""
+        read = self.read_result(Result({}, values, [], None), value_node)
+        assert read is not None
+        return read
 
     def finish(
         self,

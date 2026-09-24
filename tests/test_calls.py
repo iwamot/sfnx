@@ -141,7 +141,7 @@ def test_the_names_of_the_function_are_its_own():
     module = "\n\ndef bump(x: float):\n    ids = x + 1\n    return ids\n"
     body = 'ids = input["n"]\nr = bump(ids)\nreturn [ids, r]'
     compiled = states(body, module)
-    assert compiled["ids_2"]["Assign"] == {"ids_2": "{% $ids + 1 %}"}
+    assert compiled["ids_2"]["Assign"]["ids_2"] == "{% $ids + 1 %}"
     assert run(body, {"n": 1}, module=module) == [1, 2]
     # A name the machine does not use stays as written.
     assert "ids" in states('r = bump(input["n"])\nreturn r', module)

@@ -195,8 +195,8 @@ def test_assignments_after_a_wait_are_its_assign():
             {"x": "{% $states.context.Execution.Id %}"},
             [],
         ),
-        # A value reading an assignment before it waits for a Pass of its own.
-        ("wait(1)\nx = 1\ny = x + 1", {"x": 1}, ["y"]),
+        # A value reading an assignment before it reads its expression.
+        ("wait(1)\nx = 1\ny = x + 1", {"x": 1, "y": "{% 1 + 1 %}"}, []),
         # Another path joins where the assignment is.
         ('if input["wait"]:\n    wait(1)\nx = 1', None, ["x"]),
         # A value that differs when read later, or in another state.
@@ -232,8 +232,13 @@ def test_what_a_wait_assigns(body, joined, passes):
             {"x": 3},
             [],
         ),
-        # A value reading an assignment before it waits for a Pass of its own.
-        ('if input["a"]:\n    x = 1\n    y = x + 1', {"x": 1}, None, ["y"]),
+        # A value reading an assignment before it reads its expression.
+        (
+            'if input["a"]:\n    x = 1\n    y = x + 1',
+            {"x": 1, "y": "{% 1 + 1 %}"},
+            None,
+            [],
+        ),
         # What follows an if without else is where the branches join.
         ('if input["a"]:\n    x = 1\ny = 2', {"x": 1}, None, ["y"]),
         # A value that differs when read in another state.
