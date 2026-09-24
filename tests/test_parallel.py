@@ -117,6 +117,24 @@ def test_branch_returns_join_their_types():
         states(body)
 
 
+def test_a_branch_assigns_names_of_its_own():
+    """Step Functions rejects a branch that assigns a variable of the
+    machine's, where Python keeps the two apart, so the branch's name is
+    numbered."""
+    body = "total = 0\ndef f():\n    total = 1\n    return total\nr = parallel(f)\nreturn [total, r]"
+    assert states(body)["r"]["Branches"][0]["States"] == {
+        "f.total_2": {"Type": "Pass", "Assign": {"total_2": 1}, "Next": "f.return"},
+        "f.return": {"Type": "Succeed", "Output": "{% $total_2 %}"},
+    }
+    assert run(body, {}) == [0, [1]]
+    # The machine may assign the name after the branch too.
+    body = (
+        "def f():\n    for total in range(1):\n        pass\n    return 1\n"
+        "total = 0\nr = parallel(f)\nreturn [total, r]"
+    )
+    assert run(body, {}) == [0, [1]]
+
+
 def test_branch_types_join_into_the_result():
     body = 'def one():\n    return 1\n\ndef two():\n    return 2\n\na, b = parallel(one, two)\nreturn a + input["x"]'
     assert (
@@ -255,14 +273,6 @@ def test_a_failing_branch_is_caught_around_the_parallel():
         (
             "def f():\n    return 1\nif parallel(f):\n    pass",
             "parallel() makes a Parallel state; call it on its own line",
-        ),
-        (
-            "total = 0\ndef f():\n    total = 1\n    return total\nreturn parallel(f)",
-            "total is assigned outside this function too",
-        ),
-        (
-            "def f():\n    for total in range(1):\n        pass\n    return 1\ntotal = 0\nreturn parallel(f)",
-            "total is assigned outside this function too",
         ),
         ("def f():\n    return 1\na, b.c = parallel(f)", "unpack into variable names"),
         ("a, a = 1, 2", "unpack into different names"),

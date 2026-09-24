@@ -193,7 +193,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 
 Variable names become JSONata variable names, at most 80 characters long. A variable's name in the generated ASL is the name in the Python, so choose the Python name for what you want to read there. A few names are changed on the way, as Step Functions would not take them or they would hide something: a leading `_` is dropped (`_tmp` is `$tmp`, `_` is `$value`), and `states` and the name of a JSONata function the generated code calls (`count`, `string`, `keys`, `merge`, ...) get `_val` appended (`$count_val`). A changed name the module already uses, or gives to another name, is numbered (`$tmp_2`). A variable used after a branch must be assigned on every path to it.
 
-A `parallel` branch or a Map function cannot assign a name that its enclosing function assigns anywhere; Step Functions keeps those scopes apart. Return the value instead. Variables that sfnx adds for itself (loop counters, caught errors) never clash across scopes.
+A `parallel` branch or a Map function assigns names of its own, as in Python. Step Functions rejects a branch that assigns a variable its enclosing function assigns, so such a name is numbered in the branch (`total` is `$total_2` there), as are the variables sfnx adds for itself (loop counters, caught errors). A parameter of a `distributed_map` function is the name in `args=`, so it keeps its name, and assigning it again where the enclosing function has a variable of that name is rejected.
 
 ## Names outside the machine
 
