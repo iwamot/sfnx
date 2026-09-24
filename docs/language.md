@@ -35,7 +35,7 @@ receipt = aws.optimized.lambda_.invoke(FunctionName="charge")
 ```
 
 - The comment lines right above a statement, with no blank line between, are the `Comment` of the first state the statement makes: the Choice of an `if`, `for` or `while`, the Task of a Task call. Several lines are joined with line breaks.
-- Assignments that share a Pass share their comments too, one after another. A statement that makes no state of its own, such as `try:` or `while True:`, passes its comment to the first state of its body; one that makes none at all, such as `break`, drops it.
+- Assignments that share a Pass share their comments too, one after another. A statement that makes no state of its own, such as `try:` or `while True:`, passes its comment to the first state of its body, and a call of a function called directly to the first state of the function; one that makes none at all, such as `break`, drops it. A docstring or a string on a line of its own passes its comment on to the statement after it, so a function called directly that has a docstring takes the comment of its call as one without.
 - A comment at the end of a line of code stays in the source.
 - The docstring of a function run by `parallel()` or a map is the `Comment` of its branch or processor.
 

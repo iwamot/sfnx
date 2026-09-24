@@ -564,6 +564,15 @@ class Scope:
         compound statement that adds none first leaves it to its body."""
         own = self.module.comments.get(node.lineno)
         self.remark = "\n".join(r for r in (self.remark, own) if r) or None
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            # A docstring or a string used as a comment adds no state, so the
+            # comment waits for the statement after it, such as the first of
+            # the body of a function called directly.
+            return
         enclosing = self.current
         self.current = node
         try:
@@ -627,13 +636,6 @@ class Scope:
         elif isinstance(node, ast.FunctionDef):
             self.define(node)
         elif isinstance(node, ast.Pass):
-            return
-        elif (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        ):
-            # A docstring or a string used as a comment.
             return
         else:
             if (
