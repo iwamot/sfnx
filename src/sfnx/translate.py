@@ -3041,6 +3041,8 @@ class Translator:
         for name in ("timeout", "heartbeat"):
             if name in options:
                 check_seconds(node, name, options[name])
+        if "role" in options:
+            check_role(node, options["role"])
         timeout = options.get("timeout")
         heartbeat = options.get("heartbeat")
         if (
@@ -3352,6 +3354,16 @@ def check_seconds(node: ast.Call, name: str, value: Expr) -> None:
     elif value.type is not None and value.type.kinds != {NUMBER}:
         raise CompileError(
             f"{name} is a number of seconds, not {article(value.type.describe())}", node
+        )
+
+
+def check_role(node: ast.Call, value: Expr) -> None:
+    """role= is the ARN of an IAM role; Step Functions rejects a definition
+    whose RoleArn is null."""
+    if value.type is not None and value.type.kinds != {STRING}:
+        raise CompileError(
+            f"role is the ARN of an IAM role, not {article(value.type.describe())}",
+            node,
         )
 
 

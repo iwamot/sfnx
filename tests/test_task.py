@@ -520,6 +520,14 @@ def test_accepted_resources(resource, arguments):
             "timeout is a number of seconds, not a string",
         ),
         (
+            f'r = task("{PUBLISH}", {{"Message": "m"}}, role=None)',
+            "role is the ARN of an IAM role, not a null",
+        ),
+        (
+            f'r = task("{PUBLISH}", {{"Message": "m"}}, role=1)',
+            "role is the ARN of an IAM role, not a number",
+        ),
+        (
             f'r = task("{PUBLISH}", {{"Message": "m"}}, timeout=30, heartbeat=30)',
             "heartbeat must be shorter than timeout",
         ),
