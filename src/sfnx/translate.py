@@ -15,6 +15,7 @@ from sfnx.expressions import (
     ATOM,
     COMPARE,
     MULTIPLY,
+    OPAQUE,
     OR,
     WRITTEN,
     Expr,
@@ -2407,11 +2408,11 @@ class Translator:
         # The text is not parsed, so what it calls is unknown: it may call
         # $random under that name, or under one it binds the function to.
         if not bindings:
-            return expression(written, reads, precedence=WRITTEN, volatile=True)
+            return expression(written, reads, precedence=WRITTEN, volatile=OPAQUE)
         return expression(
             "(" + "".join(bindings) + written + ")",
             uses(values) | reads,
-            volatile=True,
+            volatile=OPAQUE,
         )
 
     def variables(self, written: str, bound: list[str]) -> frozenset[str]:

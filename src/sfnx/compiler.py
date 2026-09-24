@@ -15,6 +15,7 @@ from sfnx.errors import EVERYTHING, caught, raised, retriers
 from sfnx.expressions import (
     ADD,
     COMPARE,
+    OPAQUE,
     Expr,
     array,
     binary,
@@ -400,7 +401,7 @@ class Scope:
             and not self.opening
             and folded.keys() == pending.keys()
             and self.may_fold(result.state)
-            and self.holds_still(list(folded.values()))
+            and self.holds_still(list(folded.values()), result.state)
         ):
             self.result = self.fold(result, folded, origins, remarks)
             return
@@ -455,10 +456,9 @@ class Scope:
         or Choice rule on every path, instead of a Pass after them, as a
         hand-writer copies an assignment into each branch. Only where each can
         take them and they read there what they would read after it: none
-        reads or assigns a name that Assign assigns, and none changes on
-        evaluation."""
-        if not self.holds_still(list(pending.values())):
-            return False
+        reads or assigns a name that Assign assigns, and all read there what
+        they would read after it."""
+        values = list(pending.values())
         names = {self.spelling(n) for n in pending}
         reads = {
             self.spelling(v) for value in pending.values() for v in value.variables
@@ -467,7 +467,11 @@ class Scope:
         for container, key in self.graph.tails:
             assign = container.get("Assign", {})
             assert isinstance(assign, dict)
-            if not self.can_hold(container, key) or (names | reads) & assign.keys():
+            if (
+                not self.can_hold(container, key)
+                or (names | reads) & assign.keys()
+                or not self.holds_still(values, container)
+            ):
                 return False
             holders[id(container)] = container
         for holder in holders.values():
@@ -512,14 +516,12 @@ class Scope:
         """Whether assignments can be the Assign of what holds them. The
         carrier lasts until a state or a flush, and every join, branch and loop
         flushes first, so control reaches them only through its transition.
-        What is left is that no value reads what could differ there, the time,
-        a random value or the State part of the context. A Wait and a Choice
-        have no Catch, so a value that fails ends the execution either way."""
+        What is left is that each value reads there what it would read after
+        it. A Wait and a Choice have no Catch, so a value that fails ends the
+        execution either way."""
         [(tail, key)] = self.graph.tails
         assert tail is carrier.holder and key == carrier.key
-        return not any(
-            value.volatile or SHARED_CONTEXT.search(value.code) for value in values
-        )
+        return self.holds_still(values, carrier.holder)
 
     def hold(
         self,
@@ -1156,7 +1158,7 @@ class Scope:
         if result is None or not self.may_fold(result.state):
             return False
         value = self.read_result(result, value_node)
-        if value is None or not self.holds_still([value]):
+        if value is None or not self.holds_still([value], result.state):
             return False
         state = result.state
         self.graph.tails = []
@@ -1197,12 +1199,20 @@ class Scope:
         retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
         return "Catch" not in state and not retried & RETRIED
 
-    def holds_still(self, values: list[Expr]) -> bool:
-        """Whether values read nothing that could differ between a state and
-        the one after it: the time, a random value or the State part of the
-        context."""
+    def holds_still(self, values: list[Expr], holder: dict[str, object]) -> bool:
+        """Whether values read the same in the Assign or the Output of holder
+        as in a state after it. The State part of the context names the state
+        it is read in, and what a jsonata() expression reads is not known. The
+        time and a random value are read when the Assign runs: for a Task or a
+        Wait, when it ends (measured), and for a Choice rule, a catcher or a
+        Pass, where it is, both after what comes before them, as Python reads
+        them. A Parallel's or a Map's is not measured."""
+        timed = holder.get("Type") in {"Parallel", "Map"}
         return not any(
-            value.volatile or SHARED_CONTEXT.search(value.code) for value in values
+            value.volatile == OPAQUE
+            or (value.volatile and timed)
+            or SHARED_CONTEXT.search(value.code)
+            for value in values
         )
 
     def read_result(self, result: Result, value_node: ast.expr) -> Expr | None:

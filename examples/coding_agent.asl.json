@@ -87,10 +87,6 @@
           "Next": "if_4"
         }
       ],
-      "Default": "request"
-    },
-    "request": {
-      "Type": "Pass",
       "Assign": {
         "request": {
           "HarnessArn": "${CodingHarnessArn}",
@@ -127,7 +123,7 @@
           ]
         }
       },
-      "Next": "agent_candidate"
+      "Default": "agent_candidate"
     },
     "agent_candidate": {
       "Type": "Task",

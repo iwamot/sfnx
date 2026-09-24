@@ -99,6 +99,10 @@ FUNCTIONS = frozenset(
 
 # The functions that give another value on every call.
 VOLATILE = frozenset({"millis", "now", "random", "uuid"})
+# How a value may change when it is evaluated again: as the time or a random
+# value does, or as a jsonata() expression may, whose text is not read.
+CHANGES = 1
+OPAQUE = 2
 
 
 @dataclass(frozen=True)
@@ -111,7 +115,8 @@ class Expr:
     boolean, so a condition can use it without $boolean. constructor says the
     code is an array constructor, which one around it keeps as one element.
     volatile says the code may give another value when it is evaluated again,
-    as $random() and $uuid() do, so what writes it twice binds it once first.
+    as $random() and $uuid() do, so what writes it twice binds it once first:
+    CHANGES, or OPAQUE where a jsonata() expression is in it, 0 otherwise.
     """
 
     code: str
@@ -121,7 +126,7 @@ class Expr:
     type: Type | None = None
     boolean: bool = False
     constructor: bool = False
-    volatile: bool = False
+    volatile: int = 0
 
 
 def expression(
@@ -131,7 +136,7 @@ def expression(
     type: Type | None = None,
     boolean: bool = False,
     constructor: bool = False,
-    volatile: bool = False,
+    volatile: int = 0,
 ) -> Expr:
     return Expr(
         code,
@@ -213,9 +218,9 @@ def uses(values: list[Expr]) -> frozenset[str]:
     return frozenset().union(*(value.variables for value in values))
 
 
-def changes(values: list[Expr]) -> bool:
-    """Whether a value among values may differ when it is evaluated again."""
-    return any(value.volatile for value in values)
+def changes(values: list[Expr]) -> int:
+    """How a value among values may differ when it is evaluated again."""
+    return max((value.volatile for value in values), default=0)
 
 
 def array(items: list[Expr]) -> Expr:
@@ -281,7 +286,7 @@ def call(
 ) -> Expr:
     assert function in FUNCTIONS
     code = f"${function}(" + ", ".join(a.code for a in arguments) + ")"
-    volatile = function in VOLATILE or changes(arguments)
+    volatile = max(CHANGES if function in VOLATILE else 0, changes(arguments))
     return expression(
         code, uses(arguments), type=type, boolean=boolean, volatile=volatile
     )
