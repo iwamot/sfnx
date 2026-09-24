@@ -767,11 +767,11 @@ def test_module_functions_evaluate():
 
 @pytest.mark.parametrize(
     "value",
-    ['a"b}', "", {"k": [1, "x"], "b": "}"}, [1, [2], None], True, None],
+    ['a"b}', "", "😀", {"k": [1, "😀"], "b": "}"}, [1, [2], None], True, None],
 )
 def test_json_dumps_evaluates(value):
     written = asl.run(imported('return json.dumps(input["a"])'), {"a": value})
-    assert written == json.dumps(value, separators=(",", ":"))
+    assert written == json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def test_json_dumps_indents():

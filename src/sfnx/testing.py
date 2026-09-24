@@ -431,6 +431,7 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     expression.register_lambda("decodeUrlComponent", decode_url_component)
     expression.register_lambda("base64decode", base64_decode)
     expression.register_lambda("formatNumber", format_number)
+    expression.register_lambda("string", string)
     for name, function in REPLACED.get({}).items():
         expression.register_lambda(name, function)
     try:
@@ -621,6 +622,86 @@ def format_number(*args: object) -> str | None:
     if written < 0:
         return "-" + digits.rjust(width - 1, "0")
     return digits.rjust(width, "0")
+
+
+def string(*args: object) -> str | None:
+    """$string as Step Functions evaluates it: a string as it is, and any
+    other JSON value as the JSON text Step Functions writes, which
+    jsonata-python writes otherwise for numbers and escapes (measured). true
+    as the second argument puts each member on a line of its own, indented by
+    two spaces. A function is left to jsonata-python, which writes it as an
+    empty string, as Step Functions does."""
+    at_most("string", args, 2)
+    value = args[0] if args else None
+    prettify = args[1] if len(args) > 1 else None
+    if prettify is not None and not isinstance(prettify, bool):
+        raise mismatch("string", 2)
+    if value is None or isinstance(value, str):
+        return value
+    if value is not Utils.NULL_VALUE and not isinstance(
+        value, (dict, list, int, float)
+    ):
+        return Functions.string(value, prettify)
+    return json_text(value, 0 if prettify else None)
+
+
+# The characters Step Functions escapes in JSON text. Every other character,
+# U+0001 and U+2028 among them, is written as it is (measured).
+JSON_ESCAPES = {
+    '"': '\\"',
+    "\\": "\\\\",
+    "\b": "\\b",
+    "\f": "\\f",
+    "\n": "\\n",
+    "\r": "\\r",
+    "\t": "\\t",
+}
+
+
+def json_text(value: object, depth: int | None) -> str:
+    """A value as Step Functions writes it in $string: without spaces, or,
+    with a depth, each member on a line indented two spaces for each level it
+    is nested. A function, as JSONata writes one, is an empty string."""
+    if value is Utils.NULL_VALUE:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return number_text(value)
+    if isinstance(value, str):
+        return '"' + "".join(JSON_ESCAPES.get(c, c) for c in value) + '"'
+    inner = None if depth is None else depth + 1
+    if isinstance(value, dict):
+        colon = ":" if depth is None else ": "
+        members = [
+            json_text(k, None) + colon + json_text(v, inner) for k, v in value.items()
+        ]
+        return enclosed("{", members, "}", depth)
+    if isinstance(value, list):
+        return enclosed("[", [json_text(item, inner) for item in value], "]", depth)
+    return '""'
+
+
+def enclosed(start: str, members: list[str], end: str, depth: int | None) -> str:
+    if depth is None or not members:
+        return start + ",".join(members) + end
+    indent = "\n" + "  " * (depth + 1)
+    return start + indent + ("," + indent).join(members) + "\n" + "  " * depth + end
+
+
+def number_text(number: float) -> str:
+    """A number as Step Functions writes it in $string (measured): a whole
+    number below 1e21 in its digits, a larger one in exponent notation, and any
+    other rounded down to 15 significant digits, without trailing zeros, in
+    exponent notation from 1e-7 down and wherever the digits end before the
+    decimal point (1.23456789012345e+15)."""
+    if number == int(number):
+        return str(int(number)) if abs(number) < 1e21 else repr(float(number))
+    with decimal.localcontext() as context:
+        context.prec = 15
+        context.rounding = decimal.ROUND_FLOOR
+        rounded = (+decimal.Decimal(repr(number))).normalize()
+    return str(rounded).replace("E", "e")
 
 
 # A timezone as JSONata writes one. Step Functions reads utc as UTC, where

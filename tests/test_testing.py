@@ -83,6 +83,61 @@ def test_the_functions_read_as_step_functions_reads_them(code, expected):
     )
 
 
+# $string as Step Functions writes JSON text (measured): a whole number in its
+# digits below 1e21, any other number rounded down to 15 significant digits,
+# and only the quote, the backslash and \b \f \n \r \t escaped.
+STRING_CASES = [
+    ("a", "a"),
+    (1.0, "1"),
+    (1.5e16, "15000000000000000"),
+    (1.5e21, "1.5e+21"),
+    (1.7976931348623157e308, "1.7976931348623157e+308"),
+    (0.1, "0.1"),
+    (0.6666666666666666, "0.666666666666666"),
+    (-0.6666666666666666, "-0.666666666666667"),
+    (1234567890123456.7, "1.23456789012345e+15"),
+    (123456789012345.5, "123456789012345"),
+    (100.0000000000001, "1e+2"),
+    (0.0000015, "0.0000015"),
+    (0.00000015, "1.5e-7"),
+    (9007199254740993, "9007199254740993"),
+    (True, "true"),
+    (None, "null"),
+    ([1.0, {"a": [0.1, None]}], '[1,{"a":[0.1,null]}]'),
+    (
+        ['\t\b\f\r\n"\\', "\x01\x7f\u2028/é😀"],
+        '["\\t\\b\\f\\r\\n\\"\\\\","\x01\x7f\u2028/é😀"]',
+    ),
+    ({'k"\x01': 1}, '{"k\\"\x01":1}'),
+]
+
+
+@pytest.mark.parametrize("value, expected", STRING_CASES)
+def test_string_writes_what_step_functions_writes(value, expected):
+    output = machine({"Type": "Succeed", "Output": "{% $string($states.input.v) %}"})
+    assert asl.run(output, {"v": value}) == expected
+
+
+@pytest.mark.parametrize(
+    "code, expected",
+    [
+        ("$string([0.1 + 0.2])", "[0.3]"),
+        ("$string({'a': [], 'b': {}}, true)", '{\n  "a": [],\n  "b": {}\n}'),
+        (
+            "$string({'c': [1, {'d': 0.5}]}, true)",
+            '{\n  "c": [\n    1,\n    {\n      "d": 0.5\n    }\n  ]\n}',
+        ),
+        ("$string('a', true)", "a"),
+        ("$string(function($v) { $v })", ""),
+        ("$string([$uppercase, 1])", '["",1]'),
+        ("$exists($string($nothing))", False),
+    ],
+)
+def test_string_reads_its_arguments_as_step_functions_does(code, expected):
+    output = machine({"Type": "Succeed", "Output": "{% " + code + " %}"})
+    assert asl.run(output, {}) == expected
+
+
 @pytest.mark.parametrize("code", ["$decodeUrlComponent('%zz')", "$base64decode('!!')"])
 def test_a_malformed_text_fails(code):
     with pytest.raises(asl.Failure) as failure:
@@ -1067,6 +1122,8 @@ def test_range_gives_a_sequence(code, expected):
         ("$fromMillis(0, 1)", 'Argument 2 of function "fromMillis"'),
         ("$base64decode(123)", 'Argument 1 of function "base64decode"'),
         ("$decodeUrlComponent(1)", 'Argument 1 of function "decodeUrlComponent"'),
+        ("$string(1, 1)", 'Argument 2 of function "string"'),
+        ("$string(1, true, 1)", 'Argument 3 of function "string"'),
     ],
 )
 def test_functions_fail_where_step_functions_fails(code, cause):
