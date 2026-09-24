@@ -3,6 +3,7 @@
 import ast
 import copy
 import itertools
+import json
 import re
 import symtable
 from collections.abc import Callable, Iterator
@@ -1415,6 +1416,7 @@ class Scope:
         if scope.graph.reachable:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
+        share_ends(definition)
         docstring = ast.get_docstring(function)
         if docstring:
             definition = {"Comment": docstring, **definition}
@@ -2899,6 +2901,56 @@ def starting(loop: ast.For) -> Origin:
     return Origin(loop, "loop start", header=True)
 
 
+def share_ends(definition: dict[str, object]) -> None:
+    """Succeed and Fail states that end the same way are one state, as a
+    hand-writer ends every path that returns the same at one Succeed. They
+    are compared without the location line --source-locations adds, whose
+    spans the one kept takes, so the option changes no state."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    kept: dict[str, str] = {}
+    shared: dict[str, str] = {}
+    for name, state in states.items():
+        if state["Type"] not in {"Succeed", "Fail"}:
+            continue
+        own, located = split_comment(state.get("Comment"))
+        key = json.dumps(
+            {**{k: v for k, v in state.items() if k != "Comment"}, "Comment": own},
+            sort_keys=True,
+        )
+        if key not in kept:
+            kept[key] = name
+            continue
+        shared[name] = kept[key]
+        if located is not None:
+            first = states[kept[key]]
+            _, line = split_comment(first.get("Comment"))
+            assert line is not None
+            joined = json.loads(line.removeprefix(PREFIX))
+            spans = json.loads(located.removeprefix(PREFIX))["spans"]
+            joined["spans"] += [s for s in spans if s not in joined["spans"]]
+            text = [own] if own else []
+            located_line = PREFIX + json.dumps(joined, ensure_ascii=False)
+            first["Comment"] = "\n".join([*text, located_line])
+    for name in shared:
+        del states[name]
+    for state in states.values():
+        for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
+            for key in ("Next", "Default"):
+                if holder.get(key) in shared:
+                    holder[key] = shared[holder[key]]
+
+
+def split_comment(comment: object) -> tuple[str | None, str | None]:
+    """A Comment's own text, and the location line that ends it, if any."""
+    if not isinstance(comment, str):
+        return None, None
+    lines = comment.split("\n")
+    if lines[-1].startswith(PREFIX):
+        return "\n".join(lines[:-1]) or None, lines[-1]
+    return comment, None
+
+
 # A parameter of an inline map's function, read where it may be read from
 # $states.input, until the processor shows whether each read is. Each map
 # marks its own, as a map inside it reads its parameters too.
@@ -3034,7 +3086,9 @@ def compile_machine(
         scope.end_without_value(function, [ended(function)])
     docstring = ast.get_docstring(function)
     comment = {"Comment": docstring} if docstring else {}
-    return {**comment, "QueryLanguage": "JSONata", **options, **graph.definition()}
+    definition = graph.definition()
+    share_ends(definition)
+    return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
 
 # The Python API, which docs/api.md describes: the compiler as the CLI runs
