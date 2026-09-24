@@ -1,12 +1,11 @@
-from sfnx import jsonata, state_machine, task
+from sfnx import aws, jsonata, state_machine
 
 
 @state_machine
 def settle(input):
     """Load the charges of a day and total them per currency."""
-    charges: list = task(
-        "arn:aws:states:::lambda:invoke",
-        {"FunctionName": "load-charges", "Payload": {"date": input["date"]}},
+    charges: list = aws.optimized.lambda_.invoke(
+        FunctionName="load-charges", Payload={"date": input["date"]}
     )["Payload"]
     if not charges:
         return {"date": input["date"], "charges": 0, "totals": {}}

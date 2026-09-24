@@ -1,6 +1,6 @@
 from typing import TypedDict
 
-from sfnx import Timeout, aws, state_machine, task
+from sfnx import Timeout, aws, state_machine
 
 
 class Item(TypedDict):
@@ -23,21 +23,15 @@ def fulfill(input: Order):
     items = input["items"]
     for item in items:
         try:
-            task(
-                "arn:aws:states:::aws-sdk:dynamodb:updateItem",
-                {
-                    "TableName": "stock",
-                    "Key": {"sku": {"S": item["sku"]}},
-                    "UpdateExpression": "SET quantity = quantity - :n",
-                    "ConditionExpression": "quantity >= :n",
-                    "ExpressionAttributeValues": {":n": {"N": str(item["quantity"])}},
-                },
+            aws.sdk.dynamodb.update_item(
+                TableName="stock",
+                Key={"sku": {"S": item["sku"]}},
+                UpdateExpression="SET quantity = quantity - :n",
+                ConditionExpression="quantity >= :n",
+                ExpressionAttributeValues={":n": {"N": str(item["quantity"])}},
                 retry=[{"ErrorEquals": [Timeout], "MaxAttempts": 3}],
             )
         except aws.sdk.dynamodb.errors.ConditionalCheckFailedException:
             raise OutOfStock(f"{item['sku']} is out of stock") from None
-    receipt = task(
-        "arn:aws:states:::lambda:invoke",
-        {"FunctionName": "charge", "Payload": input},
-    )
+    receipt = aws.optimized.lambda_.invoke(FunctionName="charge", Payload=input)
     return {"order": input["id"], "receipt": receipt["Payload"]}

@@ -65,6 +65,21 @@ def task(
     raise NotImplementedError(f"task({resource!r}) runs in Step Functions")
 
 
+def activity(
+    resource: str,
+    input: object = None,
+    /,
+    *,
+    timeout: float | None = None,
+    heartbeat: float | None = None,
+    retry: Sequence[Mapping[str, object]] | None = None,
+) -> R:
+    """A Task state that waits for a worker of the activity resource, an
+    activity ARN, to take input and send back the result, a JSON object. It
+    only runs in Step Functions."""
+    raise NotImplementedError(f"activity({resource!r}) runs in Step Functions")
+
+
 def jsonata(expression: str, /, **values: object) -> V:
     """A JSONata expression, for what has no Python spelling here. Each value
     is bound to the variable of its name: jsonata("$pad($s, -5, '0')", s=code),
@@ -193,6 +208,7 @@ __all__ = [
     "TaskFailed",
     "Timeout",
     "__version__",
+    "activity",
     "aws",
     "context",
     "distributed_map",

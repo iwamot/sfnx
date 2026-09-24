@@ -6,7 +6,7 @@
 import json
 import uuid
 
-from sfnx import TaskFailed, Timeout, jsonata, state_machine, task
+from sfnx import TaskFailed, Timeout, aws, jsonata, state_machine
 
 
 class Lambda:
@@ -166,15 +166,12 @@ def coding_workflow(input):
     agent_candidate = None
     candidate = None
     try:
-        direct = task(
-            "arn:aws:states:::lambda:invoke",
-            {
-                "FunctionName": "${CheckDirectFunctionArn}",
-                "Payload": {
-                    "verbatim": verbatim,
-                    "encoding_dictionary": dictionary,
-                    "encoding_dictionary_version": version,
-                },
+        direct = aws.optimized.lambda_.invoke(
+            FunctionName="${CheckDirectFunctionArn}",
+            Payload={
+                "verbatim": verbatim,
+                "encoding_dictionary": dictionary,
+                "encoding_dictionary_version": version,
             },
             retry=LAMBDA_RETRY,
         )["Payload"]
@@ -217,10 +214,8 @@ def coding_workflow(input):
             agent_candidate = json.loads(
                 jsonata(
                     "$match($text, /\\{[\\s\\S]*\\}/)[0].match",
-                    text=task(
-                        "arn:aws:states:::bedrockagentcore:invokeHarness",
-                        request,
-                        retry=AGENT_RETRY,
+                    text=aws.optimized.bedrockagentcore.invoke_harness(
+                        **request, retry=AGENT_RETRY
                     )["Output"]["Message"]["Content"][0]["Text"],
                 )
             )
@@ -239,18 +234,15 @@ def coding_workflow(input):
         status = "open"
     if status != "open":
         try:
-            written = task(
-                "arn:aws:states:::lambda:invoke",
-                {
-                    "FunctionName": "${WriteBackFunctionArn}",
-                    "Payload": {
-                        "record_id": record_id,
-                        "target_status": status,
-                        "candidate": candidate,
-                        "derivation_only": derivation_only,
-                        "encoding_dictionary": dictionary,
-                        "encoding_dictionary_version": version,
-                    },
+            written = aws.optimized.lambda_.invoke(
+                FunctionName="${WriteBackFunctionArn}",
+                Payload={
+                    "record_id": record_id,
+                    "target_status": status,
+                    "candidate": candidate,
+                    "derivation_only": derivation_only,
+                    "encoding_dictionary": dictionary,
+                    "encoding_dictionary_version": version,
                 },
                 retry=LAMBDA_RETRY,
             )
@@ -258,16 +250,13 @@ def coding_workflow(input):
         except Exception as e:
             failure_reason = type(e).__name__
     rationale = agent_candidate.get("rationale") if agent_candidate else None
-    opened = task(
-        "arn:aws:states:::lambda:invoke",
-        {
-            "FunctionName": "${WriteBackFunctionArn}",
-            "Payload": {
-                "record_id": record_id,
-                "target_status": "open",
-                "failure_reason": failure_reason,
-                "rationale": rationale,
-            },
+    opened = aws.optimized.lambda_.invoke(
+        FunctionName="${WriteBackFunctionArn}",
+        Payload={
+            "record_id": record_id,
+            "target_status": "open",
+            "failure_reason": failure_reason,
+            "rationale": rationale,
         },
         retry=LAMBDA_RETRY,
     )

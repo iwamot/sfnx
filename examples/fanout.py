@@ -1,4 +1,4 @@
-from sfnx import inline_map, parallel, state_machine, task
+from sfnx import aws, inline_map, parallel, state_machine
 
 
 @state_machine
@@ -9,29 +9,22 @@ def publish(input):
 
     def resize(photo, index):
         # The index names the output, so two photos never overwrite each other.
-        return task(
-            "arn:aws:states:::lambda:invoke",
-            {
-                "FunctionName": "resize",
-                "Payload": {"source": photo, "target": f"{album}/{index}.jpg"},
-            },
+        return aws.optimized.lambda_.invoke(
+            FunctionName="resize",
+            Payload={"source": photo, "target": f"{album}/{index}.jpg"},
         )["Payload"]
 
     resized = inline_map(resize, photos, max_concurrency=4)
 
     def notify():
-        return task(
-            "arn:aws:states:::sns:publish",
-            {
-                "TopicArn": "arn:aws:sns:us-east-1:123456789012:albums",
-                "Message": f"{len(resized)} photos of {album} are ready",
-            },
+        return aws.optimized.sns.publish(
+            TopicArn="arn:aws:sns:us-east-1:123456789012:albums",
+            Message=f"{len(resized)} photos of {album} are ready",
         )["MessageId"]
 
     def index():
-        return task(
-            "arn:aws:states:::lambda:invoke",
-            {"FunctionName": "index", "Payload": {"album": album, "photos": resized}},
+        return aws.optimized.lambda_.invoke(
+            FunctionName="index", Payload={"album": album, "photos": resized}
         )["Payload"]
 
     notice, entry = parallel(notify, index)

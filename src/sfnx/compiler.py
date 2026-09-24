@@ -53,7 +53,7 @@ MAX_WAIT = 99_999_999
 # RFC 3339 with an uppercase T and Z, as Wait requires.
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 # The functions whose calls are states of their own.
-STATE_CALLS = ("task", "parallel", "inline_map", "distributed_map")
+STATE_CALLS = ("task", "activity", "parallel", "inline_map", "distributed_map")
 # The errors of a retrier that runs a state again when its Output fails.
 RETRIED = frozenset({EVERYTHING, "States.QueryEvaluationError"})
 # Context a state and the Pass after it read alike. The State part, its name
@@ -617,9 +617,7 @@ class Scope:
         elif isinstance(node, ast.Expr) and self.called(node.value, "wait"):
             assert isinstance(node.value, ast.Call)
             self.wait(node.value)
-        elif isinstance(node, ast.Expr) and any(
-            self.called(node.value, name) for name in STATE_CALLS
-        ):
+        elif isinstance(node, ast.Expr) and self.makes_state(node.value):
             _, call = self.translator.statement_value(node.value)
             assert call is not None
             self.flush()
@@ -673,6 +671,11 @@ class Scope:
         value = ast.copy_location(ast.BinOp(reading, node.op, node.value), node)
         self.assign(
             ast.copy_location(ast.Name(name, ast.Store()), node.target), value, None
+        )
+
+    def makes_state(self, node: ast.AST) -> bool:
+        return isinstance(node, ast.Call) and makes_state(
+            qualified(node.func, self.module.names)
         )
 
     def called(self, node: ast.expr, name: str) -> bool:
@@ -859,7 +862,7 @@ class Scope:
     def adds_states(self, node: ast.AST) -> bool:
         """Whether a node is a call that adds states."""
         return isinstance(node, ast.Call) and (
-            any(self.called(node, name) for name in STATE_CALLS)
+            self.makes_state(node)
             or (
                 isinstance(node.func, ast.Name)
                 and self.translator.is_function(node.func.id)
@@ -1113,12 +1116,7 @@ class Scope:
         from before the state, as the return does."""
         # A call in the return is a state of its own, and translating it again
         # would name its states again.
-        if any(
-            self.called(node, name)
-            for node in ast.walk(value_node)
-            if isinstance(node, ast.Call)
-            for name in STATE_CALLS
-        ):
+        if any(self.makes_state(node) for node in ast.walk(value_node)):
             return False
         # Assignments waiting for a state may go in this one's Assign first.
         if self.pending:
@@ -2632,19 +2630,31 @@ def label(node: ast.expr) -> str:
     return text
 
 
+def makes_state(target: str | None) -> bool:
+    """Whether a call of target makes a state: task(), activity(), parallel(),
+    a map, or an operation of aws.sdk or aws.optimized."""
+    if target is None:
+        return False
+    segments = target.split(".")
+    if segments[:2] == ["sfnx", "aws"]:
+        # Everything called there is an operation but an error class, which
+        # the translation of the call tells apart from a misspelled one.
+        return not (len(segments) == 6 and segments[4] == "errors")
+    return target in {f"sfnx.{name}" for name in STATE_CALLS}
+
+
 def makes_states(
     function: ast.FunctionDef,
     names: dict[str, str],
     functions: dict[str, ast.FunctionDef],
     seen: frozenset[str] = frozenset(),
 ) -> bool:
-    """Whether a function calls task(), parallel() or a map anywhere, or calls
-    directly a function that does."""
-    made = {f"sfnx.{name}" for name in STATE_CALLS}
+    """Whether a function makes a state anywhere, with a Task, parallel() or a
+    map, or calls directly a function that does."""
     for node in ast.walk(function):
         if not isinstance(node, ast.Call):
             continue
-        if qualified(node.func, names) in made:
+        if makes_state(qualified(node.func, names)):
             return True
         if (
             isinstance(node.func, ast.Name)
