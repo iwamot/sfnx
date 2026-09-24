@@ -78,7 +78,8 @@ def test_if_without_else_defaults_to_what_follows():
     states = definition(body)["States"]
     assert states["if"]["Default"] == "return"
     assert states["if"]["Choices"][0]["Next"] == "return"
-    assert states["x"]["Next"] == "if"
+    # x = 1 goes in the Choice, which assigns it on every path.
+    assert states["if"]["Assign"] == {"x": 1}
 
 
 def test_empty_branch_links_to_what_follows():

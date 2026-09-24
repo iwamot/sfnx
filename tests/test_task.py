@@ -65,7 +65,9 @@ def test_a_return_right_after_a_task_is_its_output():
         "Type": "Task",
         "Resource": LAMBDA,
         "Arguments": {"FunctionName": "f"},
-        "Output": "{% $states.result.Payload.total + $fee %}",
+        # fee goes in the Task, which reads it as its expression.
+        "Assign": {"fee": f"{{% {INPUT}.fee %}}"},
+        "Output": f"{{% $states.result.Payload.total + {INPUT}.fee %}}",
         "End": True,
     }
     tasks = {"r": lambda arguments: {"Payload": {"total": 2}}}
@@ -123,11 +125,12 @@ def test_assignments_right_after_a_task_go_in_its_assign():
         "return [r, total, due]"
     )
     compiled = states(body)
-    assert list(compiled) == ["fee", "r", "wait", "return"]
+    assert list(compiled) == ["r", "wait", "return"]
     assert compiled["r"]["Assign"] == {
+        "fee": f"{{% {INPUT}.fee %}}",
         "r": "{% $states.result %}",
         "total": "{% $states.result.Payload.total %}",
-        "due": "{% $states.result.Payload.total + $fee %}",
+        "due": f"{{% $states.result.Payload.total + {INPUT}.fee %}}",
     }
     tasks = {"r": lambda arguments: {"Payload": {"total": 2}}}
     assert asl.run(definition(body), {"fee": 1}, tasks) == [
@@ -292,13 +295,16 @@ def test_arguments_that_are_not_a_dict():
     assert state["Arguments"] == f"{{% {INPUT}.payload %}}"
 
 
-def test_pending_assignments_come_before_the_task():
+def test_assignments_that_start_the_machine_go_in_the_first_task():
+    """The Task reads each as its expression and assigns it, reading what a
+    Pass before it would."""
     compiled = states(
         f'fee = 10\nname = "f"\nr = task("{LAMBDA}", {{"FunctionName": name}})\nreturn [fee, r]'
     )
-    assert list(compiled) == ["fee", "r"]
-    assert compiled["fee"]["Assign"] == {"fee": 10, "name": "f"}
-    assert compiled["r"]["Output"] == ["{% $fee %}", "{% $states.result %}"]
+    assert list(compiled) == ["r"]
+    assert compiled["r"]["Arguments"] == {"FunctionName": "f"}
+    assert compiled["r"]["Assign"] == {"fee": 10, "name": "f"}
+    assert compiled["r"]["Output"] == [10, "{% $states.result %}"]
 
 
 def test_through_the_module():
@@ -651,3 +657,20 @@ except Exception:
     compiled = states(body)
     assert compiled["invoke"]["Next"] == "return"
     assert compiled["return"] == {"Type": "Succeed", "Output": None}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A Catch would take a failure of the Task's Assign.
+        f'fee = input["fee"]\ntry:\n    task("{LAMBDA}", {{"FunctionName": "f"}})\nexcept Exception:\n    pass\nreturn fee',
+        # The loop leads back to its Choice, which would assign them again.
+        'fee = input["fee"]\nwhile fee > input["cap"]:\n    fee = fee - 1\nreturn fee',
+        # The Choice binds the name, which would take over the expression.
+        'fee = input["fee"]\nxs: list = input["xs"]\nif [fee + 1 for fee in xs]:\n    return fee\nreturn 0',
+    ],
+)
+def test_assignments_that_start_the_machine_keep_their_pass(body):
+    compiled = definition(body, "from sfnx import state_machine, task")
+    first = compiled["States"][compiled["StartAt"]]
+    assert first["Type"] == "Pass"

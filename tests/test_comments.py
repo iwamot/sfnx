@@ -80,8 +80,8 @@ return total
 """
     compiled = definition(body)
     assert remarks(compiled["States"]) == {
-        "total": "the total\nand the count",
-        "receipt": "charge it",
+        # The assignments before the first Task go in it, their comments too.
+        "receipt": "the total\nand the count\ncharge it",
         "item_index": None,
         "for": "each item",
         "if": "leave early",

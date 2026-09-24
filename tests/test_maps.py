@@ -89,14 +89,13 @@ def test_a_function_that_makes_states_reads_its_parameters_in_its_first_state():
 
 
 def test_a_function_that_reads_its_parameters_later_binds_them_first():
+    """The first state binds them, reading the item as its input."""
     body = f'def charge(order):\n    task("{LAMBDA}", {{"FunctionName": "hold", "Payload": order}})\n    task("{LAMBDA}", {{"FunctionName": "charge", "Payload": order}})\n\ninline_map(charge, input["orders"])'
     processor = states(body)["map"]["ItemProcessor"]
-    assert processor["StartAt"] == "charge.order"
-    assert processor["States"]["charge.order"] == {
-        "Type": "Pass",
-        "Assign": {"order": "{% $states.input.order %}"},
-        "Next": "charge.invoke",
-    }
+    assert processor["StartAt"] == "charge.invoke"
+    first = processor["States"]["charge.invoke"]
+    assert first["Arguments"]["Payload"] == "{% $states.input.order %}"
+    assert first["Assign"] == {"order": "{% $states.input.order %}"}
     assert processor["States"]["charge.invoke_2"]["Arguments"]["Payload"] == (
         "{% $order %}"
     )
@@ -119,8 +118,9 @@ INVOKE = f'task("{LAMBDA}", {{"FunctionName": "f", "Payload": order}})'
         (f"def left():\n        return {INVOKE}\n    parallel(left)", False),
         # A nested map's processor takes items of its own.
         (f"def each(x):\n        return {INVOKE}\n    inline_map(each, [1])", True),
-        # A state after the first reads it, in the function or in a branch.
-        (f"{INVOKE}\n    {INVOKE}", True),
+        # A state after the first reads it, in the function or in a branch;
+        # the first state binds it where it is a Task or a Choice.
+        (f"{INVOKE}\n    {INVOKE}", False),
         (
             (
                 f"def left():\n        {INVOKE}\n        return {INVOKE}\n"

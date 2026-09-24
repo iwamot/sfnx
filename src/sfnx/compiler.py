@@ -15,6 +15,7 @@ from sfnx.diagnostics import CompileError
 from sfnx.errors import EVERYTHING, caught, raised, retriers
 from sfnx.expressions import (
     ADD,
+    ATOM,
     COMPARE,
     OPAQUE,
     Expr,
@@ -23,6 +24,7 @@ from sfnx.expressions import (
     call,
     expression,
     literal,
+    operand,
     spelling,
     variable,
 )
@@ -45,7 +47,14 @@ from sfnx.jsontypes import (
 )
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
-from sfnx.translate import StateCall, Translator, direct_call, text, unpacked
+from sfnx.translate import (
+    VARIABLE,
+    StateCall,
+    Translator,
+    direct_call,
+    text,
+    unpacked,
+)
 
 # Step Functions reserves $states for its own variables.
 MAX_VARIABLE = 80
@@ -296,6 +305,9 @@ class Scope:
         # Independent assignments wait here to share one Pass.
         self.pending: dict[str, Expr] = {}
         self.pending_node: ast.AST | None = None
+        # The Pass that starts the scope, if its values read in the next state
+        # what they read in it, with the value of each variable it assigns.
+        self.starting: tuple[str, dict[str, Expr]] | None = None
         self.pending_origins: list[Origin] = []
         # The comments above the pending assignments, for the Pass they share,
         # and the comment of the statement being compiled, for the first state
@@ -412,7 +424,18 @@ class Scope:
         state: dict[str, object] = {"Type": "Pass", "Assign": assign}
         if remarks:
             state = commented(state, "\n".join(remarks))
-        self.insert(first, state, node, origins)
+        opening = not self.graph.states
+        added = self.insert(first, state, node, origins)
+        values = list(pending.values())
+        if (
+            opening
+            and not any(v.volatile for v in values)
+            and self.holds_still(values, state)
+        ):
+            self.starting = (
+                added,
+                {self.spelling(k): value for k, value in pending.items()},
+            )
 
     def fold(
         self,
@@ -1225,10 +1248,7 @@ class Scope:
         state after it: a Catch would take the failure, and a retrier for
         States.ALL or States.QueryEvaluationError would run the state again
         (measured)."""
-        retriers = state.get("Retry", [])
-        assert isinstance(retriers, list)
-        retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
-        return "Catch" not in state and not retried & RETRIED
+        return may_fold(state)
 
     def holds_still(self, values: list[Expr], holder: dict[str, object]) -> bool:
         """Whether values read the same in the Assign or the Output of holder
@@ -1446,6 +1466,7 @@ class Scope:
         if scope.graph.reachable:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
+        fold_start(definition, scope.starting)
         share_ends(definition)
         docstring = ast.get_docstring(function)
         if docstring:
@@ -2942,6 +2963,113 @@ def starting(loop: ast.For) -> Origin:
     return Origin(loop, "loop start", header=True)
 
 
+def may_fold(state: dict[str, object]) -> bool:
+    """Whether what follows a Task, a Parallel or a Map can go in its Assign
+    or its Output: its failure there ends the execution, as the failure of a
+    state after it would."""
+    retriers = state.get("Retry", [])
+    assert isinstance(retriers, list)
+    retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
+    return "Catch" not in state and not retried & RETRIED
+
+
+def fold_start(
+    definition: dict[str, object], starting: tuple[str, dict[str, Expr]] | None
+) -> None:
+    """The Pass that starts a machine, a branch or a Map processor, in the
+    state after it, as a hand-writer assigns what the input gives in the first
+    state: that state reads each value as its expression, and its Assign
+    assigns it, reading what the Pass would, as nothing between them changes.
+    Only where the state after it is a Choice, whose Assign runs on every
+    path out of it, or a Task whose failure there ends the execution, and only
+    the Pass leads there. A value the input lacks then fails after the Task
+    runs, where Python fails before calling it."""
+    if starting is None:
+        return
+    start, values = starting
+    states = definition["States"]
+    assert isinstance(states, dict)
+    opening = states[start]
+    following = opening["Next"]
+    state = states[following]
+    kind = state["Type"]
+    if not (kind == "Choice" or (kind == "Task" and may_fold(state))):
+        return
+    leading = [
+        name
+        for name, other in states.items()
+        for holder in [other, *other.get("Choices", []), *other.get("Catch", [])]
+        if name != start and following in (holder.get("Next"), holder.get("Default"))
+    ]
+    if leading or not all(reads_as(state, name, values[name]) for name in values):
+        return
+    for name, value in values.items():
+        substitute(state, name, value)
+    assign = opening["Assign"]
+    assert isinstance(assign, dict)
+    holders = [state, *state.get("Choices", [])] if kind == "Choice" else [state]
+    for holder in holders:
+        own = holder.get("Assign", {})
+        assert isinstance(own, dict)
+        holder["Assign"] = {
+            **{k: v for k, v in assign.items() if k not in own},
+            **own,
+        }
+        # Each holder describes the assignments, as a Pass would.
+        comment = joined_comments(opening.get("Comment"), holder.get("Comment"))
+        if comment is not None:
+            holder["Comment"] = comment
+    del states[start]
+    definition["StartAt"] = following
+
+
+def reads_as(state: dict[str, object], name: str, value: Expr) -> bool:
+    """Whether a value can be written where a state reads the variable of a
+    name: no expression in the state binds that name, or a name the value
+    reads, which would take them over."""
+    names = {name, *(read for read in VARIABLE.findall(value.code))}
+    return not any(
+        re.search(rf"\$({bound})\s*:=|function\s*\([^)]*\$({bound})\b", code)
+        for code in expressions_in(state)
+        for bound in map(re.escape, names)
+    )
+
+
+def expressions_in(node: object) -> list[str]:
+    """The JSONata of the {% %} strings in a state, past its Comment."""
+    if isinstance(node, dict):
+        return [c for k, v in node.items() if k != "Comment" for c in expressions_in(v)]
+    if isinstance(node, list):
+        return [c for item in node for c in expressions_in(item)]
+    if isinstance(node, str) and node.startswith("{%") and node.endswith("%}"):
+        return [node[2:-2]]
+    return []
+
+
+def substitute(node: dict[str, object], name: str, value: Expr) -> None:
+    """Each read of a variable in a state as a value's expression: an
+    expression that is only the variable is the value as written, and one
+    that reads it among others reads the value's code."""
+    whole = f"{{% ${name} %}}"
+    pattern = re.compile(rf"\${re.escape(name)}(?!\w)")
+    code = operand(value, ATOM)
+
+    def replaced(item: object) -> object:
+        if isinstance(item, dict):
+            return {k: v if k == "Comment" else replaced(v) for k, v in item.items()}
+        if isinstance(item, list):
+            return [replaced(v) for v in item]
+        if item == whole:
+            return value.template
+        if isinstance(item, str) and item.startswith("{%") and item.endswith("%}"):
+            return pattern.sub(lambda _: code, item)
+        return item
+
+    for key, written in list(node.items()):
+        if key != "Comment":
+            node[key] = replaced(written)
+
+
 def share_ends(definition: dict[str, object]) -> None:
     """Succeed and Fail states that end the same way are one state, as a
     hand-writer ends every path that returns the same at one Succeed. They
@@ -2980,6 +3108,29 @@ def share_ends(definition: dict[str, object]) -> None:
             for key in ("Next", "Default"):
                 if holder.get(key) in shared:
                     holder[key] = shared[holder[key]]
+
+
+def joined_comments(first: object, second: object) -> str | None:
+    """The Comment of a state that takes the place of two: the text of each,
+    and one location line holding the spans of both."""
+    texts: list[str] = []
+    located: dict[str, object] | None = None
+    for comment in (first, second):
+        own, line = split_comment(comment)
+        if own:
+            texts.append(own)
+        if line is None:
+            continue
+        found = json.loads(line.removeprefix(PREFIX))
+        if located is None:
+            located = found
+            continue
+        spans = located["spans"]
+        assert isinstance(spans, list)
+        spans += [span for span in found["spans"] if span not in spans]
+    if located is not None:
+        texts.append(PREFIX + json.dumps(located, ensure_ascii=False))
+    return "\n".join(texts) or None
 
 
 def split_comment(comment: object) -> tuple[str | None, str | None]:
@@ -3128,6 +3279,7 @@ def compile_machine(
     docstring = ast.get_docstring(function)
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
+    fold_start(definition, scope.starting)
     share_ends(definition)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
