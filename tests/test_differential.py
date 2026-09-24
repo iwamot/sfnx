@@ -317,9 +317,16 @@ class Program:
             name = self.fresh("x")
             source = self.numbers(env, d)
             inner = env.reading(NUMBER, name)
-            element = self.number(inner, d)
             test = f" if {self.boolean(inner, d)}" if self.number_in(0, 1) else ""
-            return f"[{element} for {name} in {source}{test}]"
+            clauses = f"for {name} in {source}{test}"
+            if self.number_in(0, 1):
+                # A second for, whose list may read the first one's variable.
+                second = self.fresh("x")
+                more = self.numbers(inner, d)
+                inner = inner.reading(NUMBER, second)
+                test = f" if {self.boolean(inner, d)}" if self.number_in(0, 1) else ""
+                clauses += f" for {second} in {more}{test}"
+            return f"[{self.number(inner, d)} {clauses}]"
         if form == "if":
             return self.conditional(env, NUMBERS, d)
         return leaf

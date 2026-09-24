@@ -646,12 +646,63 @@ class Translator:
         )
 
     def comprehension(self, node: ast.ListComp) -> Expr:
-        """[f(x) for x in xs if c] as $map and $filter over xs, or over the keys
-        of a dict. JSONata returns a single value for a one-item result and
-        nothing for an empty one, so the result is wrapped in a list. Brackets
-        would merge a single result that is a list, so a result that may hold
-        lists is kept as an array with [] and appended to an empty one."""
-        generator = self.one_for(node)
+        if len(node.generators) > 1:
+            return self.flattened(node.generators, node.elt)
+        return self.mapped(node.generators[0], node.elt)
+
+    def flattened(
+        self,
+        generators: list[ast.comprehension],
+        elt: ast.expr,
+        first: ast.expr | None = None,
+    ) -> Expr:
+        """[f(x, y) for x in xs if c for y in ys(x)] as $reduce over xs, which
+        appends the comprehension of the fors after the first for each x the
+        conditions keep, in order, as Python runs the inner for for each."""
+        generator, rest = generators[0], generators[1:]
+        name = self.comprehended(generator)
+        source = self.iterated(generator.iter, whole=True, first=first)
+        first = first or generator.iter
+        item = source.type.items if source.type else None
+        with self.parameters({name: item}):
+            tests, narrowed = self.conditions(generator.ifs)
+            with self.narrowed(narrowed):
+                inner = (
+                    self.flattened(rest, elt, first)
+                    if len(rest) > 1
+                    else self.mapped(rest[0], elt, first)
+                )
+        self.check_hiding({name: generator.target}, [inner, *tests])
+        spelled = self.spelling(name)
+        result = source
+        if tests:
+            result = call(
+                "filter",
+                [source, function([spelled], conjunction(tests))],
+                source.type,
+            )
+            if may_be_list(item):
+                # $reduce would iterate the items of a single list $filter kept.
+                result = expression(
+                    result.code + "[]", result.variables, volatile=result.volatile
+                )
+        accumulator = unused("a", self.hides([source, inner, *tests]) | {spelled})
+        carried = expression("$" + accumulator, type=inner.type)
+        body = call("append", [carried, inner], inner.type)
+        reduced = call(
+            "reduce", [result, function([accumulator, spelled], body), array([])], None
+        )
+        # $reduce of nothing, where the conditions keep nothing, is nothing.
+        return expression(
+            "$append([], " + reduced.code + ")",
+            reduced.variables,
+            type=inner.type,
+            constructor=True,
+            volatile=reduced.volatile,
+        )
+
+    def comprehended(self, generator: ast.comprehension) -> str:
+        """The variable a for of a comprehension binds."""
         if not isinstance(generator.target, ast.Name):
             if unpacking(generator.iter):
                 # Raise the advice of enumerate() or zip(), which says what to
@@ -661,13 +712,26 @@ class Translator:
                 "a comprehension iterates one variable: [x for x in xs]",
                 generator.target,
             )
-        name = generator.target.id
-        source = self.iterated(generator.iter)
+        return generator.target.id
+
+    def mapped(
+        self,
+        generator: ast.comprehension,
+        elt: ast.expr,
+        first: ast.expr | None = None,
+    ) -> Expr:
+        """[f(x) for x in xs if c] as $map and $filter over xs, or over the keys
+        of a dict. JSONata returns a single value for a one-item result and
+        nothing for an empty one, so the result is wrapped in a list. Brackets
+        would merge a single result that is a list, so a result that may hold
+        lists is kept as an array with [] and appended to an empty one."""
+        name = self.comprehended(generator)
+        source = self.iterated(generator.iter, first=first)
         item = source.type.items if source.type else None
         with self.parameters({name: item}):
             tests, narrowed = self.conditions(generator.ifs)
             with self.narrowed(narrowed):
-                element = self.expr(node.elt)
+                element = self.expr(elt)
         self.check_hiding({name: generator.target}, [element, *tests])
         result = source
         if tests:
@@ -676,7 +740,7 @@ class Translator:
                 [source, function([self.spelling(name)], conjunction(tests))],
                 source.type,
             )
-        mapped = not named(node.elt, name)
+        mapped = not named(elt, name)
         if mapped:
             if tests and may_be_list(item):
                 # $map would iterate the items of a single list $filter kept.
@@ -915,17 +979,32 @@ class Translator:
         return node.generators[0]
 
     def iterated(
-        self, node: ast.expr, subject: str = "a comprehension", *, whole: bool = False
+        self,
+        node: ast.expr,
+        subject: str = "a comprehension",
+        *,
+        whole: bool = False,
+        first: ast.expr | None = None,
     ) -> Expr:
         """What a comprehension iterates: a list, or the keys of a dict. whole
         asks for a list even where the dict is empty, which $keys gives nothing
         for: $map and $filter of nothing give nothing, which the brackets
         around a comprehension turn into an empty list, while $reduce of
-        nothing gives nothing in the place of its initial value."""
+        nothing gives nothing in the place of its initial value. first is the
+        list the first for of a comprehension iterates, when this is a later
+        one: what it iterates comes from its items, whose type is declared
+        there."""
         source = self.expr(node)
-        kind = self.known(
-            node, source, "list", f"{subject} depends on what it iterates"
-        )
+        purpose = f"{subject} depends on what it iterates"
+        if first is not None and source.type is None:
+            raise CompileError(
+                f"{purpose}, so the type of {ast.unparse(node)} must be known; "
+                f"declare the type of the items of {ast.unparse(first)} where it "
+                "is assigned, such as list[dict[str, list]] or a list of a "
+                "TypedDict class",
+                node,
+            )
+        kind = self.known(node, source, "list", purpose)
         if kind == OBJECT:
             if whole:
                 return keys_of(source)
