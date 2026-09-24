@@ -1,10 +1,12 @@
+import json
 import re
 import textwrap
 
 import pytest
 
-from sfnx.compiler import compile_source
+from sfnx.compiler import compile_source, definitions
 from sfnx.diagnostics import CompileError
+from sfnx.locations import PREFIX
 from tests import asl, truthy
 
 INPUT = "$states.context.Execution.Input"
@@ -550,3 +552,61 @@ return [r, other]
         "a",
         2,
     ]
+
+
+@pytest.mark.parametrize(
+    "body, kept",
+    [
+        # Paths that return the same end at one Succeed.
+        (
+            'if input["a"]:\n    return None\nif input["b"]:\n    return None\nreturn 1',
+            "return",
+        ),
+        # And paths that raise the same, at one Fail.
+        (
+            'if input["a"]:\n    raise Failed("no")\nif input["b"]:\n    raise Failed("no")\nreturn 1',
+            "raise",
+        ),
+    ],
+)
+def test_paths_that_end_the_same_share_the_state(body, kept):
+    source = "class Failed(Exception):\n    pass\n\n\n"
+    states = compile_source(
+        HEADER
+        + source
+        + "@state_machine\ndef pay(input):\n"
+        + textwrap.indent(body, "    ")
+    )
+    ((_, compiled),) = states.items()
+    ends = [
+        n for n, s in compiled["States"].items() if s["Type"] in {"Succeed", "Fail"}
+    ]
+    assert kept in ends and f"{kept}_2" not in ends
+    assert compiled["States"]["if"]["Choices"][0]["Next"] == kept
+    assert compiled["States"]["if_2"]["Choices"][0]["Next"] == kept
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'if input["a"]:\n    return 1\nreturn 2',
+        'if input["a"]:\n    # early\n    return None\n# late\nreturn None',
+    ],
+)
+def test_paths_that_end_otherwise_keep_their_states(body):
+    states = definition(body)["States"]
+    assert [n for n, s in states.items() if s["Type"] == "Succeed"] == [
+        "return",
+        "return_2",
+    ]
+
+
+def test_a_shared_end_names_the_source_of_each_path():
+    body = 'if input["a"]:\n    return None\nreturn None'
+    (plain,) = compile_source(source(body)).values()
+    (located,) = definitions(source(body), "app.py", located=True).values()
+    assert list(located["States"]) == list(plain["States"])
+    comment = located["States"]["return"]["Comment"]
+    assert comment.startswith(PREFIX)
+    spans = json.loads(comment.removeprefix(PREFIX))["spans"]
+    assert [span["at"] for span in spans] == ["7:9-7:20", "8:5-8:16"]
