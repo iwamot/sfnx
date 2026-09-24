@@ -1,6 +1,7 @@
 """Compile @state_machine functions to Amazon States Language."""
 
 import ast
+import copy
 import re
 import symtable
 from collections.abc import Callable
@@ -41,7 +42,7 @@ from sfnx.jsontypes import (
 )
 from sfnx.locations import Locations, Origin
 from sfnx.module import Module, holds, module, qualified
-from sfnx.translate import StateCall, Translator, direct_call, text, unpacked
+from sfnx.translate import StateCall, Translator, text, unpacked
 
 # Step Functions reserves $states for its own variables.
 MAX_VARIABLE = 80
@@ -152,6 +153,21 @@ class Loop:
     functions: frozenset[str] = frozenset()
     breaks: list[Flow] = field(default_factory=list)
     continues: list[Flow] = field(default_factory=list)
+
+
+@dataclass
+class Expansion:
+    """A function called directly, whose body is being compiled in place of
+    the call: the statement that calls it, the call, the loops open around the
+    call, which its break and continue cannot leave, and the flows its returns
+    leave with."""
+
+    name: str
+    statement: ast.stmt
+    call: ast.Call
+    depth: int
+    names: set[str]
+    returns: list[Flow] = field(default_factory=list)
 
 
 @dataclass
@@ -287,6 +303,12 @@ class Scope:
         # follows it; while it lasts, control is right after it.
         self.result: Result | None = None
         self.loops: list[Loop] = []
+        # The functions called directly whose bodies are being compiled here,
+        # innermost last.
+        self.expansions: list[Expansion] = []
+        # Names the bodies of functions called directly assigned here, which a
+        # later call may use again.
+        self.expanded: set[str] = set()
         # Names in the source, and the variables loops and handlers added for
         # themselves, shared by every scope of the machine.
         self.taken = taken
@@ -449,7 +471,12 @@ class Scope:
             self.current = enclosing
 
     def compile_statement(self, node: ast.stmt) -> None:
-        if isinstance(node, ast.Assign):
+        called = self.direct_call(node)
+        if called is not None:
+            self.expand(node, called)
+        elif isinstance(node, ast.Return) and self.expansions:
+            self.give_back(node)
+        elif isinstance(node, ast.Assign):
             if len(node.targets) != 1:
                 raise CompileError(
                     "assign one variable per statement: x = ...", node.targets[-1]
@@ -515,8 +542,6 @@ class Scope:
                 and isinstance(node.value.func, ast.Name)
             ):
                 self.translator.check_import(node.value.func)
-                if self.translator.is_function(node.value.func.id):
-                    raise CompileError(direct_call(node.value.func.id), node.value)
             name = type(node).__name__
             raise CompileError(
                 STATEMENTS.get(name, f"{name} statements are not supported"), node
@@ -553,6 +578,263 @@ class Scope:
             isinstance(node, ast.Call)
             and qualified(node.func, self.module.names) == f"sfnx.{name}"
         )
+
+    def direct_call(self, node: ast.stmt) -> ast.Call | None:
+        """The call of a function of the module or the machine that a
+        statement makes on its own, assigns or returns, read through
+        subscripts: f(...), x = f(...)["k"], return f(...)."""
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            value: ast.expr | None = node.value
+        elif isinstance(node, (ast.AnnAssign, ast.Return, ast.Expr)):
+            value = node.value
+        else:
+            return None
+        while isinstance(value, ast.Subscript):
+            value = value.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and (
+                self.translator.is_function(value.func.id)
+                or value.func.id in self.partial
+            )
+        ):
+            return value
+        return None
+
+    def expand(self, node: ast.stmt, call: ast.Call) -> None:
+        """A function called directly: its body compiled here, where each
+        parameter reads the argument written for it and each name the body
+        assigns is renamed if this scope uses it. Each return gives the
+        statement the value the call would, and the paths join after it."""
+        function = self.callee(call)
+        written = self.written_arguments(function, call)
+        renaming = self.renaming(function)
+        body = renamed(function.body, renaming)
+        assigned = {renaming[n] for n in assigned_names(function.body)}
+        self.assigned |= assigned
+        self.expanded |= assigned
+        frame = Expansion(
+            function.name, node, call, len(self.loops), set(renaming.values())
+        )
+        self.expansions.append(frame)
+        read = {
+            n.id
+            for n in ast.walk(ast.Module(body, []))
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+        }
+        try:
+            for parameter in function.args.args:
+                name = renaming[parameter.arg]
+                self.pass_argument(
+                    name, written[parameter.arg], parameter, name in read
+                )
+            self.block(body)
+            if self.graph.reachable:
+                self.give_back(ast.copy_location(ast.Return(None), node))
+        finally:
+            self.expansions.pop()
+            for name in renaming.values():
+                self.translator.arguments.pop(name, None)
+        self.join(frame.returns)
+        if len(frame.returns) > 1:
+            self.carrier = None
+            self.result = None
+        for name in renaming.values():
+            self.bindings.pop(name, None)
+            self.declared.pop(name, None)
+            self.partial.discard(name)
+
+    def callee(self, call: ast.Call) -> ast.FunctionDef:
+        """The function a direct call runs, if its body can be compiled in
+        place of the call."""
+        assert isinstance(call.func, ast.Name)
+        name = call.func.id
+        if name in self.partial and name not in self.functions:
+            raise CompileError(
+                f"{name} is not defined the same way on every path to here; "
+                "define the function once, before the if, loop or try",
+                call,
+            )
+        function = self.functions.get(name) or self.module.functions[name]
+        if function.decorator_list:
+            raise CompileError(
+                f"{name}() has decorators, and a function called directly takes "
+                "none; remove them",
+                call,
+            )
+        if any(frame.name == name for frame in self.expansions):
+            raise CompileError(
+                f"{name}() calls itself, and its body would be written here "
+                "without end; write the repetition as a loop",
+                call,
+            )
+        arguments = function.args
+        if (
+            arguments.posonlyargs
+            or arguments.vararg
+            or arguments.kwonlyargs
+            or arguments.kwarg
+        ):
+            raise CompileError(
+                f"a function called directly takes plain parameters, with or "
+                f"without defaults; {name} has others",
+                function,
+            )
+        nested = next(
+            (
+                n
+                for n in ast.walk(function)
+                if n is not function and isinstance(n, ast.FunctionDef)
+            ),
+            None,
+        )
+        if nested is not None:
+            raise CompileError(
+                f"{nested.name} is defined inside {name}, which is called "
+                f"directly; define it outside {name}",
+                nested,
+            )
+        if name not in self.functions:
+            # A function of the module reads the module's names, not this
+            # scope's variables, and so do its defaults.
+            defaults = {
+                n.id
+                for default in function.args.defaults
+                for n in ast.walk(default)
+                if isinstance(n, ast.Name)
+            }
+            for read in sorted(global_names(function) | defaults):
+                if read in self.bindings or read in self.assigned:
+                    raise CompileError(
+                        f"{name}() reads {read} of the module, and {read} is a "
+                        "variable here too; rename the variable",
+                        call,
+                    )
+        return function
+
+    def written_arguments(
+        self, function: ast.FunctionDef, call: ast.Call
+    ) -> dict[str, ast.expr]:
+        """The argument written for each parameter, or its default."""
+        name = function.name
+        parameters = [p.arg for p in function.args.args]
+        if len(call.args) > len(parameters):
+            raise CompileError(
+                f"{name}() takes {len(parameters)} arguments",
+                call.args[len(parameters)],
+            )
+        written = dict(zip(parameters, call.args, strict=False))
+        for keyword in call.keywords:
+            if keyword.arg is None or keyword.arg not in parameters:
+                raise CompileError(
+                    f"{name}() has no parameter "
+                    f"{'to unpack into' if keyword.arg is None else keyword.arg}",
+                    keyword,
+                )
+            if keyword.arg in written:
+                raise CompileError(f"{keyword.arg} is given twice to {name}()", keyword)
+            written[keyword.arg] = keyword.value
+        defaults = function.args.defaults
+        for parameter, default in zip(
+            parameters[len(parameters) - len(defaults) :], defaults, strict=True
+        ):
+            written.setdefault(parameter, default)
+        for parameter in parameters:
+            if parameter not in written:
+                raise CompileError(f"{name}() needs {parameter}", call)
+        for argument in written.values():
+            made = next((n for n in ast.walk(argument) if self.adds_states(n)), None)
+            if made is not None:
+                assert isinstance(made, ast.Call)
+                raise CompileError(
+                    f"{name}() takes values; call {ast.unparse(made.func)}() on a "
+                    "line of its own first and pass its result",
+                    made,
+                )
+        return written
+
+    def adds_states(self, node: ast.AST) -> bool:
+        """Whether a node is a call that adds states."""
+        return isinstance(node, ast.Call) and (
+            any(self.called(node, name) for name in STATE_CALLS)
+            or (
+                isinstance(node.func, ast.Name)
+                and self.translator.is_function(node.func.id)
+            )
+        )
+
+    def renaming(self, function: ast.FunctionDef) -> dict[str, str]:
+        """A name for each name local to a function called directly: its own,
+        unless this scope or a call around this one uses it, or the definition
+        gives it to another name."""
+        used = (
+            set(self.bindings)
+            | (self.assigned - self.expanded)
+            | self.outer
+            | self.hidden
+            | set(self.module.spellings.values())
+        )
+        for frame in self.expansions:
+            used |= frame.names
+        renaming = {}
+        for name in sorted(local_names(function)):
+            given = name
+            serial = 1
+            while given in used:
+                serial += 1
+                given = f"{name}_{serial}"
+            used.add(given)
+            renaming[name] = given
+        return renaming
+
+    def pass_argument(
+        self, name: str, written: ast.expr, parameter: ast.arg, read: bool
+    ) -> None:
+        """A parameter reads the argument written for it. A value is read where
+        the body reads it, as the same expression, except one that changes on
+        evaluation, which a variable keeps from the call. What is not a value,
+        such as a Retry, is read only where the body takes what is written; an
+        argument the body never reads has to be a value, as Python evaluates it
+        at the call."""
+        self.translator.arguments[name] = written
+        try:
+            value = self.translator.expr(written)
+        except CompileError:
+            if read:
+                return
+            raise
+        declared = annotate(parameter.annotation, self.module)
+        if value.volatile:
+            self.defer(name, value, written, self.here())
+            value = self.variable(name, value.type)
+        self.bindings[name] = replace(value, type=declared or value.type)
+
+    def give_back(self, node: ast.Return) -> None:
+        """A return in a function called directly: the statement that called
+        it, with the value in place of the call, then on to after the call. A
+        call on its own line evaluates only a call that adds states."""
+        frame = self.expansions.pop()
+        try:
+            value = node.value or ast.copy_location(ast.Constant(None), node)
+            statement = copy.deepcopy(frame.statement, {id(frame.call): value})
+            ast.copy_location(statement, node)
+            if isinstance(statement, ast.Expr):
+                while isinstance(statement.value, ast.Subscript):
+                    statement.value = statement.value.value
+                if not self.adds_states(statement.value):
+                    statement = None
+            if statement is not None:
+                self.compile_statement(statement)
+        finally:
+            self.expansions.append(frame)
+        if not isinstance(frame.statement, ast.Return) and self.graph.reachable:
+            # A return right after a Task leaves it the call's last state,
+            # unless another return joins it.
+            if self.pending:
+                self.flush()
+            frame.returns.append(self.save())
+            self.graph.tails = []
 
     def claim(self, name: str, node: ast.AST) -> None:
         """A name the scope assigns: not the input or a function, a valid Step
@@ -1009,7 +1291,9 @@ class Scope:
         selector: dict[str, object] = {}
         bindings = dict(self.bindings) if local else {}
         pending: dict[str, Expr] = {}
-        binds = makes_states(function, self.module.names)
+        binds = makes_states(
+            function, self.module.names, {**self.module.functions, **self.functions}
+        )
         for parameter, source, kind in zip(parameters, sources, kinds, strict=False):
             name = parameter.arg
             selector[name] = "{% " + source + " %}"
@@ -1607,7 +1891,8 @@ class Scope:
         return needed
 
     def leave(self, node: ast.Break | ast.Continue) -> None:
-        if not self.loops:
+        depth = self.expansions[-1].depth if self.expansions else 0
+        if len(self.loops) <= depth:
             raise CompileError(
                 f"{'break' if isinstance(node, ast.Break) else 'continue'} "
                 "is only for loops",
@@ -2127,13 +2412,53 @@ def label(node: ast.expr) -> str:
     return text
 
 
-def makes_states(function: ast.FunctionDef, names: dict[str, str]) -> bool:
-    """Whether a function calls task(), parallel() or a map anywhere."""
-    made = {"sfnx.task", "sfnx.parallel", "sfnx.inline_map", "sfnx.distributed_map"}
-    return any(
-        isinstance(n, ast.Call) and qualified(n.func, names) in made
-        for n in ast.walk(function)
-    )
+def makes_states(
+    function: ast.FunctionDef,
+    names: dict[str, str],
+    functions: dict[str, ast.FunctionDef],
+    seen: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether a function calls task(), parallel() or a map anywhere, or calls
+    directly a function that does."""
+    made = {f"sfnx.{name}" for name in STATE_CALLS}
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if qualified(node.func, names) in made:
+            return True
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in functions
+            and node.func.id not in seen
+            and makes_states(
+                functions[node.func.id], names, functions, seen | {node.func.id}
+            )
+        ):
+            return True
+    return False
+
+
+def renamed(statements: list[ast.stmt], renaming: dict[str, str]) -> list[ast.stmt]:
+    """A copy of statements with each name renamed as renaming says, where it
+    is read, assigned or bound by a lambda or an except clause."""
+
+    class Renamer(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.Name:
+            node.id = renaming.get(node.id, node.id)
+            return node
+
+        def visit_arg(self, node: ast.arg) -> ast.arg:
+            node.arg = renaming.get(node.arg, node.arg)
+            return node
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> ast.ExceptHandler:
+            if node.name is not None:
+                node.name = renaming.get(node.name, node.name)
+            self.generic_visit(node)
+            return node
+
+    renamer = Renamer()
+    return [renamer.visit(statement) for statement in copy.deepcopy(statements)]
 
 
 def joined(types: list[Type | None]) -> Type | None:
@@ -2153,6 +2478,20 @@ def local_names(function: ast.FunctionDef) -> set[str]:
     namespace = table.lookup(function.name).get_namespace()
     assert isinstance(namespace, symtable.Function)
     return set(namespace.get_locals())
+
+
+def global_names(function: ast.FunctionDef) -> set[str]:
+    """The names a function and its lambdas and comprehensions read from the
+    module."""
+    table = symtable.symtable(ast.unparse(function), "<function>", "exec")
+    pending = [table.lookup(function.name).get_namespace()]
+    names: set[str] = set()
+    while pending:
+        scope = pending.pop()
+        assert isinstance(scope, symtable.SymbolTable)
+        names |= {s.get_name() for s in scope.get_symbols() if s.is_global()}
+        pending.extend(scope.get_children())
+    return names
 
 
 def is_range(node: ast.For) -> bool:
