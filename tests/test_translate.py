@@ -707,6 +707,15 @@ def imported(body: str) -> dict:
             'return (datetime.fromtimestamp(input["t"]) - timedelta(days=1)).timestamp()',
             f"({INPUT}.t * 1000 - 86400000) / 1000",
         ),
+        # Datetimes compare as the milliseconds since the epoch.
+        (
+            'return datetime.fromisoformat(input["at"]) < datetime.now() - timedelta(days=7)',
+            f"$toMillis({INPUT}.at) < $millis() - 604800000",
+        ),
+        (
+            'return datetime.fromtimestamp(input["t"]) != datetime.fromisoformat(input["at"])',
+            f"{INPUT}.t * 1000 != $toMillis({INPUT}.at)",
+        ),
         # strftime writes the datetime with the picture string that writes
         # what its format writes.
         (
@@ -786,6 +795,19 @@ def test_datetimes_evaluate():
     assert later is True
 
 
+def test_datetimes_compare():
+    body = (
+        'at: str = input["at"]\n'
+        'return [datetime.fromisoformat(at) < datetime.fromtimestamp(input["t"]), '
+        'datetime.fromisoformat(at) == datetime.fromtimestamp(input["t"]) '
+        "- timedelta(seconds=1), datetime.now() - timedelta(days=1) >= "
+        "datetime.fromisoformat(at) > datetime.fromtimestamp(0)]"
+    )
+    moment = "2026-09-15T13:43:06.735Z"
+    later = datetime.fromisoformat(moment).timestamp() + 1
+    assert asl.run(imported(body), {"at": moment, "t": later}) == [True, True, True]
+
+
 @pytest.mark.parametrize(
     "body, value",
     [
@@ -857,13 +879,6 @@ def test_strftime_of_the_moment_runs():
             "return datetime.now() + timedelta(hours=1)",
             (
                 "datetime.now() + timedelta(hours=1) is a datetime object, not "
-                "JSON; write str(dt), dt.timestamp() or wait(until=dt)"
-            ),
-        ),
-        (
-            "return datetime.now() - timedelta(hours=1) < datetime.now()",
-            (
-                "datetime.now() - timedelta(hours=1) is a datetime object, not "
                 "JSON; write str(dt), dt.timestamp() or wait(until=dt)"
             ),
         ),
@@ -1070,6 +1085,18 @@ def test_a_function_named_timedelta_is_not_the_datetime_one():
             "datetime.now() is a datetime object, not JSON; write str(datetime.now())",
         ),
         ("return str(datetime.now(None))", "datetime.now() takes no arguments here"),
+        (
+            'return datetime.now() < input["at"]',
+            "input['at'] is not a datetime; a datetime is compared only with another",
+        ),
+        (
+            'return 0 < datetime.now() < datetime.fromisoformat(input["at"])',
+            "0 is not a datetime; a datetime is compared only with another",
+        ),
+        (
+            'return datetime.now() in [datetime.fromisoformat(input["at"])]',
+            "datetimes are compared with ==, !=, <, <=, > and >=",
+        ),
         ("return time.time(1)", "time.time() takes no arguments"),
         (
             "return datetime.fromisoformat(1).timestamp()",

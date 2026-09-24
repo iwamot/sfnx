@@ -1502,16 +1502,45 @@ class Translator:
         return result
 
     def compare(self, node: ast.Compare) -> Expr:
-        left = self.expr(node.left)
+        compared = self.datetimes_compared(node)
+        left = compared(node.left)
         rights = []
         for position, right_node in enumerate(node.comparators):
             if position:
                 # a < b < c evaluates c only when a < b holds.
                 with self.branch():
-                    rights.append(self.expr(right_node))
+                    rights.append(compared(right_node))
             else:
-                rights.append(self.expr(right_node))
+                rights.append(compared(right_node))
         return self.chain(node, 0, left, rights)
+
+    def datetimes_compared(self, node: ast.Compare) -> Callable[[ast.expr], Expr]:
+        """How the operands of a comparison are translated: as they are, or,
+        where they are datetimes, as the milliseconds since the epoch, which
+        order the moments as Python orders them. A datetime is not a JSON value
+        to compare with anything else."""
+        operands = [node.left, *node.comparators]
+        moments = [self.datetime_moment(operand) is not None for operand in operands]
+        if not any(moments):
+            return self.expr
+        if not all(isinstance(op, tuple(COMPARISONS)) for op in node.ops):
+            raise CompileError(
+                "datetimes are compared with ==, !=, <, <=, > and >=", node
+            )
+        if not all(moments):
+            other = operands[moments.index(False)]
+            raise CompileError(
+                f"{ast.unparse(other)} is not a datetime; a datetime is compared "
+                "only with another",
+                other,
+            )
+
+        def millis(operand: ast.expr) -> Expr:
+            moment = self.datetime_millis(operand)
+            assert moment is not None
+            return moment
+
+        return millis
 
     def chain(
         self, node: ast.Compare, first: int, left: Expr, rights: list[Expr]
