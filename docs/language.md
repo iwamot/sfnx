@@ -17,7 +17,7 @@ def pay(input):
 
 - The function is the machine and its name the file name (`pay.asl.json`). `timeout` becomes `TimeoutSeconds`; the parentheses are optional.
 - The parameter is the execution input. It compiles to `$states.context.Execution.Input` everywhere, because `$states.input` changes after a Task. A machine may take no parameter. Assigning to the parameter is rejected.
-- A function that ends without `return` returns `null`.
+- A function that ends without `return` returns `null`, as a `return` without a value does: both are `return None`, so a Task, a Parallel or a Map right before them ends the machine or the branch itself.
 - A file may hold several machines; the compiler reads it without importing it.
 - The docstring of the function is the `Comment` of the definition.
 

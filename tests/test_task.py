@@ -585,3 +585,52 @@ def test_a_task_in_the_first_comparison_of_a_chain_always_runs():
     assert states(body)["return"]["Output"] == (
         "{% 1 < $states.result.StatusCode and $states.result.StatusCode < 300 %}"
     )
+
+
+@pytest.mark.parametrize("end", ["", "return\n", "return None\n"])
+def test_a_task_before_a_return_without_a_value_ends_the_machine(end):
+    body = f'task("{LAMBDA}", {{"FunctionName": "f"}})\n{end}'
+    assert states(body) == {
+        "invoke": {
+            "Type": "Task",
+            "Resource": LAMBDA,
+            "Arguments": {"FunctionName": "f"},
+            "Output": None,
+            "End": True,
+        }
+    }
+
+
+def test_a_branch_and_a_processor_end_on_their_last_state():
+    body = f"""
+def left():
+    task("{LAMBDA}", {{"FunctionName": "left"}})
+
+def each(x):
+    task("{LAMBDA}", {{"FunctionName": "each", "Payload": x}})
+
+parallel(left)
+inline_map(each, input["items"])
+"""
+    compiled = definition(
+        body, "from sfnx import inline_map, parallel, state_machine, task"
+    )["States"]
+    assert list(compiled) == ["parallel", "map"]
+    assert compiled["map"]["End"] is True
+    branch = compiled["parallel"]["Branches"][0]["States"]
+    processor = compiled["map"]["ItemProcessor"]["States"]
+    assert list(branch) == ["left.invoke"] and branch["left.invoke"]["End"] is True
+    assert list(processor)[-1] == "each.invoke"
+    assert processor["each.invoke"]["End"] is True
+
+
+def test_a_task_that_catches_keeps_the_succeed_after_it():
+    body = f"""
+try:
+    task("{LAMBDA}", {{"FunctionName": "f"}})
+except Exception:
+    pass
+"""
+    compiled = states(body)
+    assert compiled["invoke"]["Next"] == "return"
+    assert compiled["return"] == {"Type": "Succeed", "Output": None}
