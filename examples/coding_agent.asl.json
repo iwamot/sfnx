@@ -344,14 +344,8 @@
           "BackoffRate": 2.0
         }
       ],
-      "Assign": {
-        "opened": "{% $states.result %}"
-      },
-      "Next": "return_2"
-    },
-    "return_2": {
-      "Type": "Succeed",
-      "Output": "{% $opened.Payload %}"
+      "Output": "{% $states.result.Payload %}",
+      "End": true
     }
   }
 }

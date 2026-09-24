@@ -60,15 +60,12 @@
           "version": "{% $states.context.Execution.Input.version %}"
         }
       },
-      "Next": "return_2"
-    },
-    "return_2": {
-      "Type": "Succeed",
       "Output": {
         "version": "{% $states.context.Execution.Input.version %}",
         "deployed": true,
         "reason": "{% $decision.comment %}"
-      }
+      },
+      "End": true
     }
   }
 }

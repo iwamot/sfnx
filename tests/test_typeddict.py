@@ -93,11 +93,11 @@ def test_an_assignment_a_payload_and_a_task_result_take_a_class():
     body = 'order: Order = input["order"]\nreturn order["items"][0]["quantity"] + 1'
     assert output(body, "input") == "{% $order.items[0].quantity + 1 %}"
     body = f'r: Item = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]\nreturn r["quantity"] + 1'
-    assert output(body) == "{% $r.quantity + 1 %}"
+    assert states(body)["r"]["Output"] == "{% $states.result.Payload.quantity + 1 %}"
     body = (
         f'r: Item = task("{LAMBDA}", {{"FunctionName": "f"}})\nreturn r["quantity"] + 1'
     )
-    assert output(body) == "{% $r.quantity + 1 %}"
+    assert states(body)["r"]["Output"] == "{% $states.result.quantity + 1 %}"
 
 
 def test_the_parameter_of_a_map_function_takes_a_class():

@@ -34,7 +34,7 @@ def states(body: str) -> dict:
 
 
 def test_a_task_assigns_its_result():
-    body = f'receipt = task(\n    "{LAMBDA}",\n    {{"FunctionName": "charge", "Payload": input}},\n    timeout=30,\n)\nreturn receipt'
+    body = f'receipt = task(\n    "{LAMBDA}",\n    {{"FunctionName": "charge", "Payload": input}},\n    timeout=30,\n)\nwait(5)\nreturn receipt'
     assert definition(body) == {
         "QueryLanguage": "JSONata",
         "StartAt": "receipt",
@@ -45,11 +45,80 @@ def test_a_task_assigns_its_result():
                 "Arguments": {"FunctionName": "charge", "Payload": f"{{% {INPUT} %}}"},
                 "TimeoutSeconds": 30,
                 "Assign": {"receipt": "{% $states.result %}"},
-                "Next": "return",
+                "Next": "wait",
             },
+            "wait": {"Type": "Wait", "Seconds": 5, "Next": "return"},
             "return": {"Type": "Succeed", "Output": "{% $receipt %}"},
         },
     }
+
+
+def test_a_return_right_after_a_task_is_its_output():
+    """The Output reads the result where the return reads the variable, and
+    the other variables from before the Task, as the return does."""
+    body = (
+        'fee: float = input["fee"]\n'
+        f'r = task("{LAMBDA}", {{"FunctionName": "f"}})\n'
+        'return r["Payload"]["total"] + fee'
+    )
+    assert states(body)["r"] == {
+        "Type": "Task",
+        "Resource": LAMBDA,
+        "Arguments": {"FunctionName": "f"},
+        "Output": "{% $states.result.Payload.total + $fee %}",
+        "End": True,
+    }
+    tasks = {"r": lambda arguments: {"Payload": {"total": 2}}}
+    assert asl.run(definition(body), {"fee": 1}, tasks) == 3
+
+
+R = f'r = task("{LAMBDA}", {{"FunctionName": "f"}}'
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A Catch would take a failing Output, where the return failed after it.
+        f"try:\n    {R})\n    return r['Payload']\nexcept Exception:\n    return 0",
+        # A retrier for these errors would run the Task again.
+        R + ', retry=[{"ErrorEquals": [Exception]}])\nreturn r["Payload"]',
+        R + ', retry=[{"ErrorEquals": [QueryEvaluationError]}])\nreturn r["Payload"]',
+        # What could differ between the Task and the state after it.
+        R + ")\nreturn [r, str(uuid.uuid4())]",
+        R + ')\nreturn [r, context["State"]["Name"]]',
+        # Another state comes between, or several paths lead to the return.
+        R + ")\nn = 1\nreturn [r, n]",
+        f"if input['a']:\n    {R})\nelse:\n    {R})\nreturn r",
+    ],
+)
+def test_a_return_that_could_fail_or_read_otherwise_keeps_its_state(body):
+    imports = "import uuid\nfrom sfnx import QueryEvaluationError, context, state_machine, task"
+    compiled = definition(body, imports)["States"]
+    assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
+    assert any(state["Type"] == "Succeed" for state in compiled.values())
+
+
+def test_a_retrier_for_task_errors_leaves_the_return_to_the_task():
+    """States.TaskFailed does not match a failing Output (measured)."""
+    body = R + ', retry=[{"ErrorEquals": [TaskFailed]}])\nreturn r["Payload"]'
+    state = definition(body, "from sfnx import TaskFailed, state_machine, task")[
+        "States"
+    ]["r"]
+    assert (state["Output"], state["End"]) == ("{% $states.result.Payload %}", True)
+    assert "Assign" not in state
+
+
+def test_a_loop_tried_again_after_a_task_leaves_the_task_as_it_was():
+    """The loop widens the type of r and compiles again from the Task."""
+    compiled = states(R + ')\nfor i in range(3):\n    r = "s"\nreturn r')
+    assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
+    assert compiled["r"]["Next"] == "i"
+    assert compiled["return"] == {"Type": "Succeed", "Output": "{% $r %}"}
+
+
+def test_the_comments_of_the_task_and_the_return_join():
+    body = f"# charge\n{R})\n# the receipt\nreturn r"
+    assert states(body)["r"]["Comment"] == "charge\nthe receipt"
 
 
 def test_a_task_at_the_end_ends_the_machine():
@@ -99,14 +168,14 @@ def test_a_task_at_the_end_ends_the_machine():
 )
 def test_a_task_on_its_own_line_is_named_after_its_action(call, name):
     compiled = states(f"{call}\nreturn 1")
-    assert list(compiled) == [name, "return"]
-    assert compiled[name]["Next"] == "return"
+    assert list(compiled) == [name]
+    assert (compiled[name]["Output"], compiled[name]["End"]) == (1, True)
     assert "Assign" not in compiled[name]
 
 
 def test_the_result_can_be_taken_apart_in_the_assignment():
     compiled = states(
-        f'amount = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]["amount"]\nreturn amount'
+        f'amount = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]["amount"]\nwait(1)\nreturn amount'
     )
     assert compiled["amount"]["Assign"] == {
         "amount": "{% $states.result.Payload.amount %}"
@@ -143,8 +212,9 @@ def test_pending_assignments_come_before_the_task():
     compiled = states(
         f'fee = 10\nname = "f"\nr = task("{LAMBDA}", {{"FunctionName": name}})\nreturn [fee, r]'
     )
-    assert list(compiled) == ["fee", "r", "return"]
+    assert list(compiled) == ["fee", "r"]
     assert compiled["fee"]["Assign"] == {"fee": 10, "name": "f"}
+    assert compiled["r"]["Output"] == ["{% $fee %}", "{% $states.result %}"]
 
 
 def test_through_the_module():
@@ -161,23 +231,23 @@ def test_through_the_module():
         # Types come from the botocore model.
         (
             f'item = task("{GET_ITEM}", {{"TableName": "t", "Key": {{}}}})\nreturn len(item["Item"])',
-            "$count($keys($item.Item))",
+            "$count($keys($states.result.Item))",
         ),
         (
             f'page = task("{QUERY}", {{"TableName": "t"}})\nreturn page["Count"] + input["extra"]',
-            f"$page.Count + {INPUT}.extra",
+            f"$states.result.Count + {INPUT}.extra",
         ),
         (
             f'page = task("{QUERY}", {{"TableName": "t"}})\nreturn len(page["Items"])',
-            "$count($page.Items)",
+            "$count($states.result.Items)",
         ),
         (
             'r = task("arn:aws:states:::http:invoke", {"ApiEndpoint": "https://e", "Method": "GET", "Authentication": {"ConnectionArn": "c"}})\nreturn len(r["Headers"])',
-            "$count($keys($r.Headers))",
+            "$count($keys($states.result.Headers))",
         ),
         (
             f'r = task("{LAMBDA}", {{"FunctionName": "f"}})\nreturn r["StatusCode"] + input["x"]',
-            f"$r.StatusCode + {INPUT}.x",
+            f"$states.result.StatusCode + {INPUT}.x",
         ),
         (
             f'r = task("{LAMBDA}", {{"FunctionName": "f"}})\ntotal: float = r["Payload"]["total"]\nreturn total + input["x"]',
@@ -186,7 +256,10 @@ def test_through_the_module():
     ],
 )
 def test_result_types(body, output):
-    assert states(body)["return"]["Output"] == f"{{% {output} %}}"
+    """A return right after the Task is its Output, so the result is read
+    there as $states.result."""
+    [end] = [s for s in states(body).values() if s["Type"] == "Succeed" or s.get("End")]
+    assert end["Output"] == f"{{% {output} %}}"
 
 
 @pytest.mark.parametrize(
@@ -263,7 +336,7 @@ def test_asl_run():
     ],
 )
 def test_accepted_resources(resource, arguments):
-    assert states(f'task("{resource}", {arguments})\nreturn 1')["return"]
+    assert states(f'task("{resource}", {arguments})\nreturn 1')
 
 
 @pytest.mark.parametrize(

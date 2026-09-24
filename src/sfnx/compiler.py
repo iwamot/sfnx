@@ -51,6 +51,10 @@ MAX_WIDENING = 8
 MAX_WAIT = 99_999_999
 # RFC 3339 with an uppercase T and Z, as Wait requires.
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
+# The functions whose calls are states of their own.
+STATE_CALLS = ("task", "parallel", "inline_map", "distributed_map")
+# The errors of a retrier that runs a state again when its Output fails.
+RETRIED = frozenset({EVERYTHING, "States.QueryEvaluationError"})
 # Context a state and the Pass after it read alike. The State part, its name
 # and when it was entered, differs, and so does the whole object.
 SHARED_CONTEXT = re.compile(r"\$states\.context(?!\.(Execution|StateMachine|Map)\b)")
@@ -164,6 +168,18 @@ class Carrier:
 
 
 @dataclass
+class Result:
+    """A Task, Parallel or Map just added: the state, the value each variable
+    its Assign gives the result takes, where in the source the state comes
+    from, and its own comment. A return right after it can be its Output."""
+
+    state: dict[str, object]
+    values: dict[str, Expr]
+    origins: list[Origin]
+    remark: str | None
+
+
+@dataclass
 class Handler:
     """An except clause. Each Catch that leads to it adds the flow from the
     state that failed."""
@@ -192,6 +208,9 @@ class Checkpoint:
     # Where pending assignments can go, and its fields at the checkpoint.
     carrier: Carrier | None
     carried: dict[str, object]
+    # The state a return can end with, and its fields at the checkpoint.
+    result: Result | None
+    resulted: dict[str, object]
     hidden: set[str]
     names: set[str]
     labels: set[str]
@@ -264,6 +283,9 @@ class Scope:
         # What can hold the assignments that follow, until a state or a flush
         # does; while it lasts, control is only at its transition.
         self.carrier: Carrier | None = None
+        # The Task, Parallel or Map just added, until another state or a flush
+        # follows it; while it lasts, control is right after it.
+        self.result: Result | None = None
         self.loops: list[Loop] = []
         # Names in the source, and the variables loops and handlers added for
         # themselves, shared by every scope of the machine.
@@ -310,6 +332,7 @@ class Scope:
         self, base: str, state: dict[str, object], node: ast.AST, origins: list[Origin]
     ) -> str:
         self.carrier = None
+        self.result = None
         if self.locations is not None:
             located = self.locations.line(origins)
             remark = state.get("Comment")
@@ -321,6 +344,7 @@ class Scope:
 
     def flush(self) -> None:
         carrier, self.carrier = self.carrier, None
+        self.result = None
         if not self.pending:
             return
         assert self.pending_node is not None
@@ -441,7 +465,7 @@ class Scope:
         elif isinstance(node, ast.Return):
             if node.value is None:
                 self.finish(literal(None), None, node)
-            else:
+            elif not self.end_with_result(node.value):
                 self.finish(*self.translator.statement_value(node.value), node)
         elif isinstance(node, ast.If):
             self.branch(node)
@@ -465,13 +489,14 @@ class Scope:
             assert isinstance(node.value, ast.Call)
             self.wait(node.value)
         elif isinstance(node, ast.Expr) and any(
-            self.called(node.value, name)
-            for name in ("task", "parallel", "inline_map", "distributed_map")
+            self.called(node.value, name) for name in STATE_CALLS
         ):
             _, call = self.translator.statement_value(node.value)
             assert call is not None
             self.flush()
-            self.add_call(call.name, call, {}, node)
+            remark = self.remark
+            added = self.add_call(call.name, call, {}, node)
+            self.result = Result(self.graph.states[added], {}, [self.here()], remark)
         elif isinstance(node, ast.FunctionDef):
             self.define(node)
         elif isinstance(node, ast.Pass):
@@ -595,7 +620,11 @@ class Scope:
             # declarations from before, as the assignment did not happen.
             self.flush()
             assign = {self.spelling(name): value.template}
-            self.add_call(name, call, {"Assign": assign}, target)
+            remark = self.remark
+            added = self.add_call(name, call, {"Assign": assign}, target)
+            self.result = Result(
+                self.graph.states[added], {name: value}, [self.here()], remark
+            )
             if declared is not None:
                 self.declared[name] = declared
             self.bindings[name] = self.variable(name, known)
@@ -652,7 +681,14 @@ class Scope:
         }
         if call is not None:
             self.flush()
-            self.add_call(names[0], call, {"Assign": assign}, target)
+            remark = self.remark
+            added = self.add_call(names[0], call, {"Assign": assign}, target)
+            self.result = Result(
+                self.graph.states[added],
+                dict(zip(names, values, strict=True)),
+                [self.here()],
+                remark,
+            )
         else:
             reads = frozenset().union(*(v.variables for v in values))
             if set(names) & self.pending.keys() or reads & self.pending.keys():
@@ -664,6 +700,68 @@ class Scope:
             known = self.announced.get(name) or value.type or self.declared.get(name)
             self.bindings[name] = self.variable(name, known)
             self.partial.discard(name)
+
+    def end_with_result(self, value_node: ast.expr) -> bool:
+        """A return right after a Task, a Parallel or a Map, as the state's
+        Output and End, where a person ends a machine or a branch. The Output
+        reads the result where the return reads the variables the state
+        assigns, and the other variables from before the state, as the return
+        does. The state keeps its Next where the Output could fail otherwise
+        than the return: a Catch would take the failure, and a retrier for
+        States.ALL or States.QueryEvaluationError would run the state again
+        (measured). So does a value that reads the time, a random value or the
+        State part of the context."""
+        result = self.result
+        if result is None or self.pending:
+            return False
+        # A call in the return is a state of its own, and translating it again
+        # would name its states again.
+        if any(
+            self.called(node, name)
+            for node in ast.walk(value_node)
+            if isinstance(node, ast.Call)
+            for name in STATE_CALLS
+        ):
+            return False
+        state = result.state
+        retriers = state.get("Retry", [])
+        assert isinstance(retriers, list)
+        retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
+        if "Catch" in state or retried & RETRIED:
+            return False
+        before = dict(self.bindings)
+        # Each variable reads as the result, with the type it was bound with,
+        # which a declaration can give.
+        self.bindings.update(
+            {
+                name: replace(value, type=before[name].type)
+                for name, value in result.values.items()
+            }
+        )
+        try:
+            value, call = self.translator.statement_value(value_node)
+        finally:
+            self.bindings.clear()
+            self.bindings.update(before)
+        if call is not None or value.volatile or SHARED_CONTEXT.search(value.code):
+            return False
+        [(tail, key)] = self.graph.tails
+        assert tail is state and key == "Next"
+        self.graph.tails = []
+        self.result = None
+        self.returns.append(value.type)
+        remark = "\n".join(r for r in (result.remark, self.remark) if r) or None
+        self.remark = None
+        if self.locations is not None:
+            located = self.locations.line(result.origins + [self.here()])
+            remark = f"{remark}\n{located}" if remark else located
+        if remark:
+            commented(state, remark)
+        state.pop("Assign", None)
+        if value.code != "$states.result":
+            state["Output"] = value.template
+        state["End"] = True
+        return True
 
     def finish(
         self,
@@ -1390,6 +1488,8 @@ class Scope:
             self.remark,
             self.carrier,
             dict(self.carrier.holder) if self.carrier else {},
+            self.result,
+            dict(self.result.state) if self.result else {},
             set(self.hidden),
             set(self.graph.names),
             set(self.labels),
@@ -1424,6 +1524,10 @@ class Scope:
         if saved.carrier is not None:
             saved.carrier.holder.clear()
             saved.carrier.holder.update(saved.carried)
+        self.result = saved.result
+        if saved.result is not None:
+            saved.result.state.clear()
+            saved.result.state.update(saved.resulted)
         self.hidden.intersection_update(saved.hidden)
         # A failed attempt can leave loops and try statements open.
         del self.loops[saved.depth[0] :]
