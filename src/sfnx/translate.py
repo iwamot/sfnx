@@ -2730,12 +2730,15 @@ class Translator:
 
     def affix(self, text: Expr, node: ast.expr, name: str) -> Expr:
         """s.startswith(p) and s.endswith(p): the part of s as long as p,
-        compared with p."""
+        compared with p. A string holding a ${Name} placeholder is measured
+        where it runs, since the deployment writes another text in its place."""
         affix = self.operand(node, STRING, f"{name}() compares with a string")
         template = affix.template
         spelled = (
             template
-            if isinstance(template, str) and affix.code == string(template)
+            if isinstance(template, str)
+            and affix.code == string(template)
+            and "${" not in template
             else None
         )
         size = (
