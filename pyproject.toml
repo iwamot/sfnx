@@ -43,7 +43,7 @@ Issues = "https://github.com/iwamot/sfnx/issues"
 # unlike a dev extra — is not published in the wheel metadata.
 [dependency-groups]
 dev = [
-    "hypothesis==6.168.0",
+    "hypothesis==6.168.1",
     "jsonata-python==0.7.0",
     "pip-licenses==5.5.5",
     "pytest==9.1.1",
