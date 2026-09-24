@@ -634,6 +634,16 @@ def imported(body: str) -> dict:
     [
         ('return json.loads(input["raw"])', f"$parse({INPUT}.raw)"),
         ('raw: str = input["raw"]\nreturn json.loads(raw)["a"]', "$parse($raw).a"),
+        # $string gives a string back without quotes, so a value that may be
+        # one is written inside an object and taken out of its text.
+        (
+            'return json.dumps(input["a"])',
+            f"$replace($string({{'v': {INPUT}.a}}), " + r"""/^\{"v":|\}$/, '')""",
+        ),
+        ('a: dict = input["a"]\nreturn json.dumps(a)', "$string($a)"),
+        ('a: list | None = input["a"]\nreturn json.dumps(a)', "$string($a)"),
+        ('return json.dumps({"n": input["n"]})', f"$string({{'n': {INPUT}.n}})"),
+        ('a: dict = input["a"]\nreturn json.dumps(a, indent=2)', "$string($a, true)"),
         ("return str(uuid.uuid4())", "$uuid()"),
         ('return f"order-{uuid4()}"', "'order-' & $uuid()"),
         ("return str(datetime.now())", "$now()"),
@@ -744,6 +754,21 @@ def test_module_functions_evaluate():
     )
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", moment)
     assert later is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['a"b}', "", {"k": [1, "x"], "b": "}"}, [1, [2], None], True, None],
+)
+def test_json_dumps_evaluates(value):
+    written = asl.run(imported('return json.dumps(input["a"])'), {"a": value})
+    assert written == json.dumps(value, separators=(",", ":"))
+
+
+def test_json_dumps_indents():
+    value = {"k": [1, {"a": None}], "e": {}, "l": []}
+    body = 'a: dict = input["a"]\nreturn json.dumps(a, indent=2)'
+    assert asl.run(imported(body), {"a": value}) == json.dumps(value, indent=2)
 
 
 def test_datetimes_evaluate():
@@ -1085,14 +1110,20 @@ def test_a_function_named_timedelta_is_not_the_datetime_one():
             'raw: str | None = input["raw"]\nreturn json.loads(raw)',
             "raw may be null | string; narrow it first",
         ),
-        # Rejected spellings whose messages name what to write instead.
         (
-            'return json.dumps(input["a"])',
-            (
-                "json.dumps() is not supported; write str(x), the JSON text of a "
-                "dict or a list"
-            ),
+            'return json.dumps(input["a"], sort_keys=True)',
+            "json.dumps() takes one value: json.dumps(x) or json.dumps(x, indent=2)",
         ),
+        (
+            'a: dict = input["a"]\nreturn json.dumps(a, indent=4)',
+            "json.dumps() takes one value",
+        ),
+        ("return json.dumps()", "json.dumps() takes one value"),
+        (
+            'return json.dumps(input["a"], indent=2)',
+            "json.dumps(x, indent=2) needs x known not to be a string, such as x: dict",
+        ),
+        # Rejected spellings whose messages name what to write instead.
         (
             'return math.pow(input["n"], 2)',
             "math.pow() is not supported; write x ** y",
