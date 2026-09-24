@@ -1494,6 +1494,7 @@ class Scope:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
         fold_start(definition, scope.starting)
+        thread_choices(definition)
         merge_choices(definition)
         share_ends(definition)
         docstring = ast.get_docstring(function)
@@ -3001,6 +3002,186 @@ def may_fold(state: dict[str, object]) -> bool:
     return "Catch" not in state and not retried & RETRIED
 
 
+# A JSONata literal as the compiler writes one: a string in single or double
+# quotes, a number, true, false or null.
+LITERAL = r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null"""
+# The tests a Choice rule makes of one variable that the compiler writes for
+# `x is None`, `x is not None`, `x == literal` and `x != literal`.
+IS_NONE = re.compile(r"\$not\(\$exists\(\$(\w+)\) and \$\1 != null\)")
+IS_NOT_NONE = re.compile(r"\$exists\(\$(\w+)\) and \$\1 != null")
+COMPARED = re.compile(rf"\$(\w+) (=|!=) ({LITERAL})")
+# The value of each variable known where a transition is taken.
+Known = dict[str, object]
+
+
+def thread_choices(definition: dict[str, object]) -> None:
+    """Each transition into a Choice whose tests are decided by values known
+    along it, as the transition to where the Choice would send it: a flag that
+    each path assigns a value written in the source, such as the stage a saga
+    failed at, is tested where a hand-writer would have sent each path on to
+    its own continuation. A Choice nothing leads to any more goes. A path
+    that would take a rule or a Default with an Assign keeps the Choice."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    # A path sent past a Choice no longer joins the others there, so what is
+    # known where it goes may grow: follow the values again until no
+    # transition moves.
+    moved = True
+    while moved:
+        moved = False
+        drop_unreachable(definition)
+        arriving = known_values(definition)
+        for name, state in list(states.items()):
+            for holder, key, known in exits(state, arriving[name]):
+                target = holder[key]
+                assert isinstance(target, str)
+                seen = set()
+                while states[target]["Type"] == "Choice" and target not in seen:
+                    seen.add(target)
+                    decided = decide(states[target], known)
+                    if decided is None:
+                        break
+                    target = decided
+                if target != holder[key]:
+                    holder[key] = target
+                    moved = True
+
+
+def drop_unreachable(definition: dict[str, object]) -> None:
+    """Remove the states no transition leads to any more."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    reachable = {definition["StartAt"]}
+    pending = [definition["StartAt"]]
+    while pending:
+        state = states[pending.pop()]
+        for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
+            for key in ("Next", "Default"):
+                if key in holder and holder[key] not in reachable:
+                    reachable.add(holder[key])
+                    pending.append(holder[key])
+    for name in [n for n in states if n not in reachable]:
+        del states[name]
+
+
+def known_values(definition: dict[str, object]) -> dict[str, Known]:
+    """The variables known on arriving at each state: those every path to it
+    assigns the same value written in the source, found by following the
+    transitions until nothing changes."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    start = definition["StartAt"]
+    assert isinstance(start, str)
+    arriving: dict[str, Known] = {start: {}}
+    pending = [start]
+    while pending:
+        name = pending.pop()
+        for holder, key, known in exits(states[name], arriving[name]):
+            target = holder[key]
+            assert isinstance(target, str)
+            kept = (
+                {
+                    k: v
+                    for k, v in arriving[target].items()
+                    if k in known and same(known[k], v)
+                }
+                if target in arriving
+                else known
+            )
+            if arriving.get(target) != kept:
+                arriving[target] = kept
+                pending.append(target)
+    return arriving
+
+
+def exits(
+    state: dict[str, object], known: Known
+) -> list[tuple[dict[str, object], str, Known]]:
+    """Each transition out of a state, with the values known when it is taken:
+    what the state and the transition assign on top of what was known on
+    arriving. A Task's own Assign does not happen when a Catch is taken."""
+    rules = state.get("Choices", [])
+    catchers = state.get("Catch", [])
+    assert isinstance(rules, list) and isinstance(catchers, list)
+    result: list[tuple[dict[str, object], str, Known]] = [
+        (holder, "Next", assigned(known, holder.get("Assign")))
+        for holder in [*rules, *catchers]
+    ]
+    for key in ("Next", "Default"):
+        if key in state:
+            result.append((state, key, assigned(known, state.get("Assign"))))
+    return result
+
+
+def assigned(known: Known, assign: object) -> Known:
+    """What is known after an Assign: a value written in the source is known,
+    and any other value makes its variable unknown."""
+    if not isinstance(assign, dict):
+        return known
+    result = dict(known)
+    for name, value in assign.items():
+        if written(value) and not isinstance(value, (dict, list)):
+            result[name] = value
+        else:
+            result.pop(name, None)
+    return result
+
+
+def decide(choice: dict[str, object], known: Known) -> str | None:
+    """Where a Choice sends a path, when its tests are decided by what is
+    known and the rule or Default it takes assigns nothing."""
+    rules = choice["Choices"]
+    assert isinstance(rules, list)
+    for rule in rules:
+        matched = test(rule["Condition"], known)
+        if matched is None:
+            return None
+        if matched:
+            return None if "Assign" in rule else rule["Next"]
+    if "Assign" in choice or "Default" not in choice:
+        return None
+    default = choice["Default"]
+    assert isinstance(default, str)
+    return default
+
+
+def test(condition: object, known: Known) -> bool | None:
+    """The result of a test of one known variable, or None for any other."""
+    if not (isinstance(condition, str) and condition.startswith("{%")):
+        return None
+    code = condition[2:-2].strip()
+    for pattern, negated in ((IS_NONE, True), (IS_NOT_NONE, False)):
+        found = pattern.fullmatch(code)
+        if found and found[1] in known:
+            present = known[found[1]] is not None
+            return not present if negated else present
+    found = COMPARED.fullmatch(code)
+    if found and found[1] in known:
+        equal = same(known[found[1]], json_literal(found[3]))
+        return equal if found[2] == "=" else not equal
+    return None
+
+
+def json_literal(code: str) -> object:
+    """The value of a JSONata literal as the compiler writes one."""
+    if code.startswith("'"):
+        return json.loads('"' + code[1:-1].replace('"', '\\"') + '"')
+    return json.loads(code)
+
+
+def same(first: object, second: object) -> bool:
+    """Whether JSONata's = holds: the same type and value, so true is not 1."""
+    return (
+        type(first) is type(second)
+        and first == second
+        or (
+            type(first) in {int, float}
+            and type(second) in {int, float}
+            and first == second
+        )
+    )
+
+
 def merge_choices(definition: dict[str, object]) -> None:
     """A Choice whose Default leads to a Choice that nothing else leads to, as
     one Choice with the rules of both, the first's before the second's, as a
@@ -3374,6 +3555,7 @@ def compile_machine(
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
     fold_start(definition, scope.starting)
+    thread_choices(definition)
     merge_choices(definition)
     share_ends(definition)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}

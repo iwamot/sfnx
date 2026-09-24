@@ -86,7 +86,7 @@
             "status": "autocoded",
             "candidate": "{% $direct.candidate %}"
           },
-          "Next": "if_4"
+          "Next": "written"
         }
       ],
       "Assign": {
@@ -202,14 +202,14 @@
           "Assign": {
             "status": "autocoded"
           },
-          "Next": "if_4"
+          "Next": "written"
         },
         {
           "Condition": "{% $score >= 0.7 %}",
           "Assign": {
             "status": "approval_required"
           },
-          "Next": "if_4"
+          "Next": "written"
         }
       ],
       "Assign": {

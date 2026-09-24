@@ -644,3 +644,63 @@ def test_an_if_that_reads_what_the_first_assigns_keeps_its_choice():
     states = definition(body)["States"]
     assert states["if_2"]["Type"] == "Choice"
     assert asl.run(definition(body), {"a": False, "y": True}) == 2
+
+
+FLAGGED = (
+    "from sfnx import state_machine, task\n\n\n"
+    "class Declined(Exception):\n    pass\n\n\n"
+    "@state_machine\ndef pay(input):\n"
+)
+CHARGE = 'task("arn:aws:states:::lambda:invoke", {"FunctionName": "charge"})'
+
+
+def flagged(body: str) -> dict:
+    ((_, compiled),) = compile_source(FLAGGED + textwrap.indent(body, "    ")).items()
+    return compiled
+
+
+def test_a_flag_known_on_each_path_sends_the_path_on_directly():
+    """The catcher that sets the flag leads where the tests of the flag
+    would send it, and so does the Task that succeeds, which leaves it None:
+    no Choice is left."""
+    body = (
+        f"failed = None\ntry:\n    {CHARGE}\nexcept Declined:\n"
+        '    failed = "charge"\n'
+        f"if failed is None:\n    {CHARGE}\n"
+        'if failed == "charge":\n    return "declined"\nreturn "done"'
+    )
+    compiled = flagged(body)
+    states = compiled["States"]
+    assert [s["Type"] for s in states.values()].count("Choice") == 0
+    first = states["invoke"]
+    assert first["Next"] == "invoke_2"
+    assert states[first["Catch"][0]["Next"]]["Output"] == "declined"
+
+    def charge(arguments):
+        return {}
+
+    def declined(arguments):
+        raise asl.Failure("Declined", "")
+
+    assert asl.run(compiled, {}, {"invoke": charge, "invoke_2": charge}) == "done"
+    assert asl.run(compiled, {}, {"invoke": declined}) == "declined"
+
+
+@pytest.mark.parametrize(
+    "value, test, kept, result",
+    [
+        # A rule that assigns keeps the path through its Choice.
+        ('"a"', 'if flag == "a":\n    x = 1\n    return x', True, 1),
+        ('"a"', 'if flag != "b":\n    return 1', False, 1),
+        ("None", "if flag is not None:\n    return 1", False, 0),
+        # JSONata's = holds for the same type only: true is not 1.
+        ("True", "if flag == 1:\n    return 1", False, 0),
+        ("1.0", "if flag == 1:\n    return 1", False, 1),
+    ],
+)
+def test_what_the_known_value_decides(value, test, kept, result):
+    body = f"flag = {value}\n{CHARGE}\n{test}\nreturn 0"
+    compiled = flagged(body)
+    states = compiled["States"]
+    assert any(s["Type"] == "Choice" for s in states.values()) == kept
+    assert asl.run(compiled, {}, {"invoke": lambda arguments: {}}) == result
