@@ -251,9 +251,16 @@ def test_what_a_wait_assigns(body, joined, passes):
         ),
         # Unless every branch returns, when only the Default leads there.
         ('if input["a"]:\n    return 0\ny = 2', None, {"y": 2}, []),
-        # An else that put its assignments in the Choice keeps them apart.
+        # An else that put its assignments in the Choice takes what follows
+        # too, unless it reads what they assign.
         (
             'if input["a"]:\n    return 0\nelse:\n    x = 1\ny = 2',
+            None,
+            {"x": 1, "y": 2},
+            [],
+        ),
+        (
+            'if input["a"]:\n    return 0\nelse:\n    x = 1\ny = x + 1',
             None,
             {"x": 1},
             ["y"],
@@ -515,3 +522,26 @@ def test_diagnostics(body, message):
     with pytest.raises(CompileError) as raised:
         definition(body)
     assert message in raised.value.message
+
+
+def test_what_follows_a_return_from_a_loop_goes_in_the_rule_that_leaves_it():
+    body = """
+def poll(i):
+    while True:
+        wait(10)
+        job = input["jobs"][i]
+        if job["done"]:
+            return job["id"]
+
+r = poll(0)
+other = input["x"] + 1
+return [r, other]
+"""
+    states = definition(body)["States"]
+    assert [n for n, s in states.items() if s["Type"] == "Pass"] == []
+    rule = states["if"]["Choices"][0]
+    assert set(rule["Assign"]) == {"r", "other"}
+    assert asl.run(definition(body), {"jobs": [{"done": True, "id": "a"}], "x": 1}) == [
+        "a",
+        2,
+    ]

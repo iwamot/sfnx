@@ -403,11 +403,7 @@ class Scope:
         ):
             self.result = self.fold(result, folded, origins, remarks)
             return
-        if (
-            not self.opening
-            and len(self.graph.tails) > 1
-            and self.spread(pending, origins, remarks)
-        ):
+        if self.choosing() and self.spread(pending, origins, remarks):
             return
         state: dict[str, object] = {"Type": "Pass", "Assign": assign}
         if remarks:
@@ -438,6 +434,18 @@ class Scope:
         if comment:
             commented(state, comment)
         return Result(state, {**result.values, **folded}, origins, remark)
+
+    def choosing(self) -> bool:
+        """Whether control comes here along several paths, or along one that a
+        Choice or a catcher takes, such as after a function called directly
+        that returns from a loop: the Assign of each can hold what follows."""
+        tails = self.graph.tails
+        if self.opening:
+            return False
+        if len(tails) != 1:
+            return len(tails) > 1
+        [(container, key)] = tails
+        return "Type" not in container or key == "Default"
 
     def spread(
         self, pending: dict[str, Expr], origins: list[Origin], remarks: list[str]

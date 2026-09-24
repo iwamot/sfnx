@@ -68,20 +68,16 @@
           "ErrorEquals": [
             "States.QueryEvaluationError"
           ],
-          "Next": "start_date_2"
+          "Assign": {
+            "start_date": "Failed to format",
+            "elapsed": "Failed to calculate"
+          },
+          "Next": "checkpoint_count"
         }
       ],
       "Assign": {
         "start_date": "{% $states.result[0] %}",
         "elapsed": "{% $states.result[1] %}"
-      },
-      "Next": "checkpoint_count"
-    },
-    "start_date_2": {
-      "Type": "Pass",
-      "Assign": {
-        "start_date": "Failed to format",
-        "elapsed": "Failed to calculate"
       },
       "Next": "checkpoint_count"
     },
