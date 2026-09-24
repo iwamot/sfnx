@@ -28,9 +28,11 @@ def run(body: str, execution_input: object, tasks: dict | None = None) -> object
     return asl.run(compiled, execution_input, tasks)
 
 
-def test_for_over_a_list_matches_the_handwritten_loop():
-    # The loop a person writes: a counter, a Choice and one Pass per iteration.
+def test_for_over_a_list_is_a_counter_and_a_choice():
+    # A counter and a Choice whose rule adds the item and leads back to it: the
+    # body's assignments go in the rule, as the increment does.
     body = 'values: list[float] = input["items"]\ntotal = 0\nfor value in values:\n    total = total + value\nreturn total'
+    assert run(body, {"items": [1, 2, 3]}) == 6
     assert states(body) == {
         "values": {
             "Type": "Pass",
@@ -44,25 +46,42 @@ def test_for_over_a_list_matches_the_handwritten_loop():
         "for": {
             "Type": "Choice",
             "Choices": [
-                {"Condition": "{% $value_index < $count($values) %}", "Next": "total"}
+                {
+                    "Condition": "{% $value_index < $count($values) %}",
+                    "Assign": {
+                        "total": "{% $total + $values[$value_index] %}",
+                        "value_index": "{% $value_index + 1 %}",
+                    },
+                    "Next": "for",
+                }
             ],
             "Default": "return",
-        },
-        "total": {
-            "Type": "Pass",
-            "Assign": {
-                "total": "{% $total + $values[$value_index] %}",
-                "value_index": "{% $value_index + 1 %}",
-            },
-            "Next": "for",
         },
         "return": {"Type": "Succeed", "Output": "{% $total %}"},
     }
 
 
+def test_what_follows_a_loop_goes_in_its_choice_unless_it_breaks():
+    """Only the Default leads out of a loop without break, and the Choice's
+    own Assign applies only there."""
+    body = 'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    n = n + 1\ndone = n * 2\nreturn done'
+    compiled = states(body)
+    assert compiled["for"]["Assign"] == {"done": "{% $n * 2 %}"}
+    assert run(body, {"xs": [1, 2]}) == 4
+    body = (
+        'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    if x > 1:\n        break\n'
+        "    n = n + 1\ndone = n * 2\nreturn done"
+    )
+    compiled = states(body)
+    assert "Assign" not in compiled["for"]
+    assert compiled["done"]["Assign"] == {"done": "{% $n * 2 %}"}
+    assert run(body, {"xs": [1, 2]}) == 2
+
+
 def test_enumerate_names_the_counter():
     # The counter a person writes, under the name the source gives it.
     body = 'xs: list[float] = input["xs"]\ntotal = 0\nfor i, x in enumerate(xs):\n    total = total + i * x\nreturn total'
+    assert run(body, {"xs": [5, 6, 7]}) == 20
     assert states(body) == {
         "xs": {
             "Type": "Pass",
@@ -71,13 +90,17 @@ def test_enumerate_names_the_counter():
         },
         "for": {
             "Type": "Choice",
-            "Choices": [{"Condition": "{% $i < $count($xs) %}", "Next": "total"}],
+            "Choices": [
+                {
+                    "Condition": "{% $i < $count($xs) %}",
+                    "Assign": {
+                        "total": "{% $total + $i * $xs[$i] %}",
+                        "i": "{% $i + 1 %}",
+                    },
+                    "Next": "for",
+                }
+            ],
             "Default": "return",
-        },
-        "total": {
-            "Type": "Pass",
-            "Assign": {"total": "{% $total + $i * $xs[$i] %}", "i": "{% $i + 1 %}"},
-            "Next": "for",
         },
         "return": {"Type": "Succeed", "Output": "{% $total %}"},
     }
@@ -89,7 +112,7 @@ def test_zip_counts_to_the_shorter_list():
     assert compiled["for"]["Choices"][0]["Condition"] == (
         "{% $a_index < $min([$count($xs), $count($ys)]) %}"
     )
-    assert compiled["pair"]["Assign"] == {
+    assert compiled["for"]["Choices"][0]["Assign"] == {
         "pair": ["{% $xs[$a_index] %}", "{% $ys[$a_index] %}"],
         "a_index": "{% $a_index + 1 %}",
     }
@@ -101,7 +124,7 @@ def test_items_reads_the_value_under_each_key():
     assert compiled["for"]["Choices"][0]["Condition"] == (
         "{% $k_index < $count($keys($d)) %}"
     )
-    assert compiled["total"]["Assign"] == {
+    assert compiled["for"]["Choices"][0]["Assign"] == {
         "total": "{% $total + $lookup($d, $keys($d)[$k_index]) %}",
         "k_index": "{% $k_index + 1 %}",
     }
@@ -171,7 +194,7 @@ def test_dict_loops_over_keys():
         == "{% $name_index < $count($keys($prices)) %}"
     )
     assert (
-        compiled["total"]["Assign"]["total"]
+        compiled["for"]["Choices"][0]["Assign"]["total"]
         == "{% $total + $lookup($prices, $keys($prices)[$name_index]) %}"
     )
 

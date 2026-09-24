@@ -1801,6 +1801,22 @@ class Scope:
         default = Carrier(state, "Default", origins, remark)
         ends.append(self.follow(start, failed, default, otherwise))
         self.join(ends)
+        self.after_default(default)
+
+    def after_default(self, default: Carrier) -> None:
+        """Where control goes on only through a Choice's Default, as after an
+        if whose branches all end or a loop left without break, what
+        follows can go in the Choice's own Assign, which applies only when no
+        rule matches (measured), unless an else already put its assignments
+        there."""
+        tails = self.graph.tails
+        if (
+            len(tails) == 1
+            and tails[0][0] is default.holder
+            and tails[0][1] == "Default"
+            and "Assign" not in default.holder
+        ):
+            self.carrier = default
 
     def save(self) -> Flow:
         return Flow(
@@ -2074,12 +2090,16 @@ class Scope:
                 when, unless = self.translator.narrowing(node.test)
                 rule: dict[str, object] = {"Condition": condition.template}
                 state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
-                head = self.add("while", state, node, [Origin(node, header=True)])
+                origins = [Origin(node, header=True)]
+                remark = self.remark
+                head = self.add("while", state, node, origins)
                 self.follow(start, when, Carrier(rule, "Next"), node.body)
                 exits = [self.narrow_flow(start, unless, [(state, "Default")])]
             self.loops.pop()
             needed = self.back(loop, [self.save(), *loop.continues], head)
             self.join([*exits, *loop.breaks])
+            if not forever:
+                self.after_default(Carrier(state, "Default", origins, remark))
             self.partial.update(
                 assigned_names(node.body) - self.bindings.keys(),
                 defined_functions(node.body) - self.functions.keys(),
@@ -2392,9 +2412,13 @@ class Scope:
         condition = binary(index, comparison, limit, COMPARE, of(BOOLEAN), True)
         rule: dict[str, object] = {"Condition": condition.template}
         state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
-        head = self.add("for", state, node, [Origin(node, header=True)])
+        origins = [Origin(node, header=True)]
+        remark = self.remark
+        head = self.add("for", state, node, origins)
         self.restore(start)
         self.graph.tails = [(rule, "Next")]
+        # The body's first assignments can go in the rule that leads there.
+        self.carrier = Carrier(rule, "Next")
         self.bindings.update(targets)
         self.materialize(node.body, node, "loop variables")
         self.block(node.body)
@@ -2428,6 +2452,7 @@ class Scope:
                 flow.bindings.pop(target, None)
             self.translator.expired.add(target)
         self.join([exit_flow, *loop.breaks])
+        self.after_default(Carrier(state, "Default", origins, remark))
         # What only the body assigns may be unassigned after zero iterations.
         body_only = assigned_names(node.body) - self.bindings.keys() - targets.keys()
         self.partial.update(

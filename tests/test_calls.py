@@ -89,12 +89,11 @@ def test_a_call_is_its_body_written_in_place():
 def test_each_return_gives_the_statement_its_value():
     body = 'size = classify(input["n"])\nreturn size'
     compiled = states(body)
+    # The branch returns, so what follows the if goes in the Choice's own
+    # Assign, which only the Default applies.
     assert compiled["if"]["Choices"][0]["Assign"] == {"size": "big"}
-    assert compiled["size"] == {
-        "Type": "Pass",
-        "Assign": {"size": "small"},
-        "Next": "return",
-    }
+    assert compiled["if"]["Assign"] == {"size": "small"}
+    assert list(compiled) == ["if", "return"]
     assert run(body, {"n": 11}) == "big"
     assert run(body, {"n": 1}) == "small"
 
