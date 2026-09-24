@@ -22,6 +22,7 @@ from typing import TypeGuard
 try:
     import jsonata
     from jsonata.functions import Functions
+    from jsonata.parser import Parser
     from jsonata.utils import Utils
 except ModuleNotFoundError as exc:
     raise ModuleNotFoundError(
@@ -46,6 +47,11 @@ class Failure(Exception):
 class Unsupported(ValueError):
     """A definition, or a field of one, that run() does not interpret. It is
     raised before anything runs, so it does not depend on the path taken."""
+
+
+class InvalidDefinition(ValueError):
+    """A definition Step Functions rejects when it validates it, so that it
+    never runs there. It is raised before anything runs."""
 
 
 @dataclass(frozen=True)
@@ -198,11 +204,13 @@ BATCHER = frozenset({"MaxItemsPerBatch", "MaxInputBytesPerBatch", "BatchInput"})
 
 def check(definition: Mapping[str, object]) -> None:
     """Raise Unsupported for a definition with a state that is not in JSONata
-    mode, or with a state or a field run() does not interpret."""
+    mode, or with a state or a field run() does not interpret, and
+    InvalidDefinition for one Step Functions rejects."""
     check_fields("the definition", definition, MACHINE)
     language = definition.get("QueryLanguage", "JSONPath")
     assert isinstance(language, str)
     check_states(definition, language)
+    check_valid(definition, frozenset())
 
 
 def check_states(machine: Mapping[str, object], language: str) -> None:
@@ -255,6 +263,153 @@ def check_fields(
     for key in found:
         if key not in allowed:
             raise Unsupported(f"{where}: {key} is not run by sfnx.testing")
+
+
+# The fields of $states in every expression. The result is there too in the
+# Assign and Output of the states that make one, and the error in those of a
+# catcher (ValidateStateMachineDefinition; measured).
+STATES_FIELDS = frozenset({"input", "context"})
+RESULT_STATES = frozenset({"Task", "Parallel", "Map"})
+# The fields of a state whose expressions are not the state's own: a Comment
+# holds none, and the others hold rules, catchers or states of their own.
+NESTED = frozenset({"Comment", "Choices", "Catch", "Branches", "ItemProcessor"})
+
+
+def check_valid(machine: Mapping[str, object], outer: frozenset[str]) -> None:
+    """What Step Functions rejects in a definition, in the states of the
+    machine or of one branch: a transition to a state that is not among them,
+    an expression that does not parse or reads a field $states lacks there,
+    and an Assign of a name in outer, the variables assigned on the way into
+    the branch (measured)."""
+    states = machine["States"]
+    assert isinstance(states, dict)
+    if machine["StartAt"] not in states:
+        raise InvalidDefinition(f"StartAt: there is no state {machine['StartAt']}")
+    for name, state in states.items():
+        for target, _ in transitions(state):
+            if target not in states:
+                raise InvalidDefinition(f"{name}: there is no state {target} to go to")
+    for name, state in states.items():
+        read = STATES_FIELDS | ({"result"} if state["Type"] in RESULT_STATES else set())
+        for key, template in state.items():
+            if key not in NESTED:
+                allowed = read if key in {"Assign", "Output"} else STATES_FIELDS
+                check_expressions(f"{name}.{key}", template, allowed)
+        for rule in state.get("Choices", []):
+            for key, template in rule.items():
+                if key != "Comment":
+                    check_expressions(f"{name}.Choices", template, STATES_FIELDS)
+        errors = STATES_FIELDS | {"errorOutput"}
+        for catcher in state.get("Catch", []):
+            for key, template in catcher.items():
+                if key != "Comment":
+                    check_expressions(f"{name}.Catch", template, errors)
+        for assign in [state, *state.get("Choices", []), *state.get("Catch", [])]:
+            for variable in assign.get("Assign", {}):
+                if variable in outer:
+                    raise InvalidDefinition(
+                        f"{name}: {variable} is assigned on the way into this"
+                        " branch, and a branch cannot assign it again"
+                    )
+        if state["Type"] in {"Parallel", "Map"}:
+            into = reaching(states, name)
+            before = {
+                variable
+                for source in states.values()
+                for target, assigned in transitions(source)
+                if target in into
+                for variable in assigned
+            }
+            branches = state.get("Branches") or [state["ItemProcessor"]]
+            for branch in branches:
+                check_valid(branch, outer | before)
+
+
+def transitions(state: Mapping[str, object]) -> list[tuple[object, dict[str, object]]]:
+    """Where a state goes next, each with the variables assigned on the way:
+    the state's for its Next or its Default, and a Choice rule's or a
+    catcher's own."""
+    assign = state.get("Assign", {})
+    assert isinstance(assign, dict)
+    taken = [(state[key], assign) for key in ["Next", "Default"] if key in state]
+    for key in ["Choices", "Catch"]:
+        entries = state.get(key, [])
+        assert isinstance(entries, list)
+        taken += [(entry["Next"], entry.get("Assign", {})) for entry in entries]
+    return taken
+
+
+def reaching(states: Mapping[str, Mapping[str, object]], name: str) -> set[str]:
+    """The state named and every state from which it can be reached."""
+    found = {name}
+    grown = True
+    while grown:
+        grown = False
+        for source, state in states.items():
+            if source not in found and any(
+                target in found for target, _ in transitions(state)
+            ):
+                found.add(source)
+                grown = True
+    return found
+
+
+def check_expressions(where: str, template: object, allowed: frozenset[str]) -> None:
+    """Every expression in a field parses, and reads of $states only the
+    fields in allowed. Step Functions looks at a path that starts at $states,
+    not at one that reaches it another way, such as ($states).result
+    (measured)."""
+    if isinstance(template, dict):
+        for value in template.values():
+            check_expressions(where, value, allowed)
+    elif isinstance(template, list):
+        for value in template:
+            check_expressions(where, value, allowed)
+    elif (code := expression(template)) is not None:
+        try:
+            parsed = jsonata.Jsonata(code).ast
+        except jsonata.JException as exc:
+            raise InvalidDefinition(
+                f"{where}: {code.strip()} does not parse: {exc}"
+            ) from exc
+        for field in states_fields(parsed):
+            if field not in allowed:
+                raise InvalidDefinition(f"{where}: $states has no {field} here")
+
+
+def states_fields(parsed: object) -> set[str]:
+    """The fields of $states a parsed expression reads by name."""
+    found: set[str] = set()
+    pending = [parsed]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, list):
+            pending.extend(node)
+            continue
+        if not isinstance(node, Parser.Symbol):
+            continue
+        steps = node.steps if node.type == "path" else None
+        if (
+            steps
+            and steps[0].type == "variable"
+            and steps[0].value == "states"
+            and len(steps) > 1
+            and steps[1].type == "name"
+        ):
+            found.add(str(steps[1].value))
+        pending.extend(v for k, v in vars(node).items() if k != "_outer_instance")
+    return found
+
+
+def expression(template: object) -> str | None:
+    """The JSONata of a string written as {% ... %}."""
+    if (
+        isinstance(template, str)
+        and template.startswith("{%")
+        and template.endswith("%}")
+    ):
+        return template[2:-2]
+    return None
 
 
 def evaluate(code: str, variables: Mapping[str, object], states: object) -> object:
@@ -597,12 +752,8 @@ def nulls(data: object) -> object:
 
 
 def value(template: object, variables: Mapping[str, object], states: object) -> object:
-    if (
-        isinstance(template, str)
-        and template.startswith("{%")
-        and template.endswith("%}")
-    ):
-        return evaluate(template[2:-2], variables, states)
+    if (code := expression(template)) is not None:
+        return evaluate(code, variables, states)
     if isinstance(template, dict):
         return {k: value(v, variables, states) for k, v in template.items()}
     if isinstance(template, list):
@@ -1014,4 +1165,12 @@ def exceeds(failed: int, total: int, count: int, percentage: int) -> bool:
     )
 
 
-__all__ = ["Call", "Execution", "Failure", "Tasks", "Unsupported", "run"]
+__all__ = [
+    "Call",
+    "Execution",
+    "Failure",
+    "InvalidDefinition",
+    "Tasks",
+    "Unsupported",
+    "run",
+]

@@ -83,6 +83,8 @@ An `Execution` has:
 
 `Unsupported`, a `ValueError`, is raised before anything runs when a state is not in JSONata mode, or the definition has a state or a field the runner does not interpret. Its message names the state and the field. A state is in JSONata mode when it sets `QueryLanguage` to JSONata, or the definition does and the state does not set it; a definition that leaves `QueryLanguage` out is in JSONPath mode, so without it every state, those in branches and Maps included, needs its own. A state in JSONPath mode is rejected this way.
 
+`InvalidDefinition`, a `ValueError`, is raised before anything runs for a definition Step Functions rejects when it validates it: a `StartAt`, `Next`, `Default` or catcher `Next` that names no state in its branch, an expression that does not parse (`{% (1 %}`), a read of a field `$states` does not have there (`$states.result` is there in the `Assign` and `Output` of a Task, a Parallel and a Map, and `$states.errorOutput` in those of a catcher), and a Parallel branch or a Map processor that assigns a variable assigned on the way into the state. Its message names the state and the field.
+
 ## What runs
 
 Every state type, with the fields it has in JSONata mode:
@@ -109,4 +111,4 @@ A test that passes locally shows the control flow of the definition against the 
 
 ## What is public
 
-`run`, `Call`, `Execution`, `Failure`, `Unsupported` and `Tasks` (the type of a tasks function) are the API, and `sfnx.testing.__all__` lists them; [compatibility.md](compatibility.md) says what a release can change of them. The module's other names are its own and change without notice.
+`run`, `Call`, `Execution`, `Failure`, `Unsupported`, `InvalidDefinition` and `Tasks` (the type of a tasks function) are the API, and `sfnx.testing.__all__` lists them; [compatibility.md](compatibility.md) says what a release can change of them. The module's other names are its own and change without notice.

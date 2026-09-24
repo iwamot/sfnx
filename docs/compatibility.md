@@ -26,6 +26,7 @@ A change to any of these is a 2.0.
 | `sfnx.testing` runs a state or a field it raised `Unsupported` for | minor |
 | `sfnx.testing` gives the result Step Functions gives where it gave another, measured | minor, listed in the release notes as changing results |
 | A source is rejected whose definition Step Functions refuses, or whose definition fails on every run that reaches what is now rejected | patch |
+| `sfnx.testing` raises `InvalidDefinition` for a definition Step Functions refuses, measured | patch |
 | The compiler stops with an internal error (exit 3), or rejects what docs/language.md says it accepts | patch |
 | The expressions in a definition, the layout of its JSON, or the text of a message change, with the same results and the same states | any |
 
