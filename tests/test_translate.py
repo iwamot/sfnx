@@ -1,4 +1,5 @@
 import base64
+import json
 import re
 import textwrap
 import urllib.parse
@@ -1712,10 +1713,39 @@ LISTS = (
             "return s.endswith(p)",
             "$substring($s, $length($s) - $length($p), $length($p)) = $p",
         ),
+        (
+            'return s.startswith("${Prefix}")',
+            "$substring($s, 0, $length('${Prefix}')) = '${Prefix}'",
+        ),
+        (
+            'return s.endswith("${Suffix}")',
+            (
+                "$substring($s, $length($s) - $length('${Suffix}'), "
+                "$length('${Suffix}')) = '${Suffix}'"
+            ),
+        ),
     ],
 )
 def test_list_and_string_functions(body, code):
     assert output(LISTS + body) == "{% " + code + " %}"
+
+
+def test_a_placeholder_affix_is_measured_after_the_deployment_fills_it():
+    body = LISTS + 'return [s.startswith("${Prefix}"), s.endswith("${Suffix}")]'
+    filled = json.loads(
+        json.dumps(definition(body))
+        .replace("${Prefix}", "s3://cache/")
+        .replace("${Suffix}", ".json")
+    )
+    execution_input = {
+        "s": "s3://cache/a.json",
+        "xs": [],
+        "d": {},
+        "n": 0,
+        "p": "",
+        "ds": [],
+    }
+    assert asl.run(filled, execution_input) == [True, True]
 
 
 def test_list_and_string_functions_evaluate():
