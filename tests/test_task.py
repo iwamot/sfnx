@@ -84,7 +84,7 @@ R = f'r = task("{LAMBDA}", {{"FunctionName": "f"}}'
         R + ', retry=[{"ErrorEquals": [Exception]}])\nreturn r["Payload"]',
         R + ', retry=[{"ErrorEquals": [QueryEvaluationError]}])\nreturn r["Payload"]',
         # What could differ between the Task and the state after it.
-        R + ")\nreturn [r, str(uuid.uuid4())]",
+        R + ')\nreturn [r, jsonata("$random()")]',
         R + ')\nreturn [r, context["State"]["Name"]]',
         # Another state comes between, or several paths lead to the return.
         R + ")\nwait(1)\nreturn r",
@@ -93,8 +93,8 @@ R = f'r = task("{LAMBDA}", {{"FunctionName": "f"}}'
 )
 def test_a_return_that_could_fail_or_read_otherwise_keeps_its_state(body):
     imports = (
-        "import uuid\n"
-        "from sfnx import QueryEvaluationError, context, state_machine, task, wait"
+        "from sfnx import QueryEvaluationError, context, jsonata, state_machine, task, "
+        "wait"
     )
     compiled = definition(body, imports)["States"]
     assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
@@ -164,15 +164,32 @@ def test_the_variable_the_task_assigns_can_be_assigned_again():
         ),
         R
         + ', retry=[{"ErrorEquals": [Exception]}])\nn = r["Payload"]\nwait(1)\nreturn n',
-        R + ")\nn = str(uuid.uuid4())\nwait(1)\nreturn [r, n]",
+        R + ')\nn = jsonata("$random()")\nwait(1)\nreturn [r, n]',
         R + ')\na, b = r["Payload"]\nwait(1)\nreturn [a, b]',
     ],
 )
 def test_an_assignment_that_could_differ_keeps_its_pass(body):
-    imports = "import uuid\nfrom sfnx import state_machine, task, wait"
+    imports = "from sfnx import jsonata, state_machine, task, wait"
     compiled = definition(body, imports)["States"]
     assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
     assert any(state["Type"] == "Pass" for state in compiled.values())
+
+
+@pytest.mark.parametrize(
+    "value, code",
+    [("str(uuid.uuid4())", "$uuid()"), ("time.time()", "$millis() / 1000")],
+)
+def test_the_time_and_a_random_value_go_in_the_assign_of_a_task(value, code):
+    """A Task's Assign and Output run when it ends (measured), where Python
+    reads them after the call."""
+    body = R + f")\nn = {value}\nwait(1)\nreturn [r, n]"
+    compiled = definition(
+        body, "import time\nimport uuid\nfrom sfnx import state_machine, task, wait"
+    )["States"]
+    assert compiled["r"]["Assign"] == {
+        "r": "{% $states.result %}",
+        "n": f"{{% {code} %}}",
+    }
 
 
 def test_a_loop_tried_again_after_a_task_leaves_the_task_as_it_was():

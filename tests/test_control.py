@@ -199,9 +199,12 @@ def test_assignments_after_a_wait_are_its_assign():
         ("wait(1)\nx = 1\ny = x + 1", {"x": 1, "y": "{% 1 + 1 %}"}, []),
         # Where another path joins, each path's last state takes it.
         ('if input["wait"]:\n    wait(1)\nx = 1', {"x": 1}, []),
-        # A value that differs when read later, or in another state.
-        ("wait(1)\nx = str(uuid.uuid4())", None, ["x"]),
-        ("wait(1)\nx = str(datetime.now())", None, ["x"]),
+        # The time and a random value, which the Wait reads when it ends
+        # (measured), as Python reads them after it.
+        ("wait(1)\nx = str(uuid.uuid4())", {"x": "{% $uuid() %}"}, []),
+        ("wait(1)\nx = str(datetime.now())", {"x": "{% $now() %}"}, []),
+        # A value that reads otherwise in another state, or may.
+        ('wait(1)\nx = jsonata("$random()")', None, ["x"]),
         ('wait(1)\nx = context["State"]["EnteredTime"]', None, ["x"]),
         ('wait(1)\nx = context["State"]["Name"]', None, ["x"]),
         ("wait(1)\nx = context", None, ["x"]),
@@ -215,7 +218,7 @@ def test_assignments_after_a_wait_are_its_assign():
     ],
 )
 def test_what_a_wait_assigns(body, joined, passes):
-    imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context\n"
+    imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context, jsonata\n"
     (compiled,) = compile_source(imports + source(body + "\nreturn 1")).values()
     states = compiled["States"]
     assert states["wait"].get("Assign") == joined
@@ -242,12 +245,12 @@ def test_what_a_wait_assigns(body, joined, passes):
         # What follows an if without else is where the branches join, and each
         # takes it.
         ('if input["a"]:\n    x = 1\ny = 2', {"x": 1, "y": 2}, {"y": 2}, []),
-        # A value that differs when read in another state keeps its Pass.
+        # So does a random value, read once on the path taken.
         (
             'if input["a"]:\n    x = 1\ny = str(uuid.uuid4())',
-            {"x": 1},
-            None,
-            ["y"],
+            {"x": 1, "y": "{% $uuid() %}"},
+            {"y": "{% $uuid() %}"},
+            [],
         ),
         # Unless every branch returns, when only the Default leads there.
         ('if input["a"]:\n    return 0\ny = 2', None, {"y": 2}, []),
@@ -265,19 +268,21 @@ def test_what_a_wait_assigns(body, joined, passes):
             {"x": 1},
             ["y"],
         ),
-        # A value that differs when read in another state.
-        ('if input["a"]:\n    x = str(uuid.uuid4())', None, None, ["x"]),
-        ('if input["a"]:\n    x = context["State"]["Name"]', None, None, ["x"]),
+        # The time and a random value read the same in the Choice.
+        ('if input["a"]:\n    x = str(uuid.uuid4())', {"x": "{% $uuid() %}"}, None, []),
         (
             'if input["a"]:\n    x = 1\nelse:\n    x = str(datetime.now())',
             {"x": 1},
-            None,
-            ["x"],
+            {"x": "{% $now() %}"},
+            [],
         ),
+        # A value that reads otherwise in another state, or may.
+        ('if input["a"]:\n    x = context["State"]["Name"]', None, None, ["x"]),
+        ('if input["a"]:\n    x = jsonata("$random()")', None, None, ["x"]),
     ],
 )
 def test_what_a_choice_assigns(body, rule, default, passes):
-    imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context\n"
+    imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context, jsonata\n"
     (compiled,) = compile_source(imports + source(body + "\nreturn 1")).values()
     states = compiled["States"]
     assert states["if"]["Choices"][0].get("Assign") == rule
