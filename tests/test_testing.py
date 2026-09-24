@@ -22,6 +22,35 @@ def test_null_is_a_value_and_undefined_fails():
     assert failure.value.error == "States.QueryEvaluationError"
 
 
+# Step Functions fails a field whose value holds a function (TestState).
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"Type": "Pass", "Assign": {"f": "{% function($v) { $v } %}"}, "End": True},
+        {"Type": "Pass", "Output": "{% function($v) { $v } %}", "End": True},
+        {"Type": "Pass", "Output": {"a": "{% $uppercase %}"}, "End": True},
+        {"Type": "Pass", "Output": "{% [function($v) { $v }] %}", "End": True},
+        {"Type": "Pass", "Output": "{% {'a': $uppercase} %}", "End": True},
+    ],
+)
+def test_a_function_is_not_a_value(state):
+    with pytest.raises(asl.Failure, match="unsupported result type") as failure:
+        asl.run(machine(state), {})
+    assert failure.value.error == "States.QueryEvaluationError"
+
+
+def test_values_of_every_json_type_pass():
+    output = "{% {'s': 'a', 'n': 1.5, 'b': true, 'z': null, 'l': [1, {'k': []}]} %}"
+    succeed = machine({"Type": "Succeed", "Output": output})
+    assert asl.run(succeed, {}) == {
+        "s": "a",
+        "n": 1.5,
+        "b": True,
+        "z": None,
+        "l": [1, {"k": []}],
+    }
+
+
 @pytest.mark.parametrize(
     "code, expected",
     [
