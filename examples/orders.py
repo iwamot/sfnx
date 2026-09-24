@@ -1,6 +1,6 @@
 from typing import TypedDict
 
-from sfnx import Timeout, state_machine, task
+from sfnx import Timeout, aws, state_machine, task
 
 
 class Item(TypedDict):
@@ -15,11 +15,6 @@ class Order(TypedDict):
 
 class OutOfStock(Exception):
     pass
-
-
-class DynamoDb:
-    class ConditionalCheckFailedException(Exception):
-        pass
 
 
 @state_machine(timeout=300)
@@ -39,7 +34,7 @@ def fulfill(input: Order):
                 },
                 retry=[{"ErrorEquals": [Timeout], "MaxAttempts": 3}],
             )
-        except DynamoDb.ConditionalCheckFailedException:
+        except aws.sdk.dynamodb.errors.ConditionalCheckFailedException:
             raise OutOfStock(f"{item['sku']} is out of stock") from None
     receipt = task(
         "arn:aws:states:::lambda:invoke",

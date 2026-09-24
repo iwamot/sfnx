@@ -10,6 +10,8 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from typing import TypeVar, overload
 
+from sfnx import aws
+
 try:
     from sfnx._version import __version__
 except ImportError:
@@ -191,6 +193,7 @@ __all__ = [
     "TaskFailed",
     "Timeout",
     "__version__",
+    "aws",
     "context",
     "distributed_map",
     "inline_map",

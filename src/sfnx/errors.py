@@ -2,9 +2,11 @@
 
 import ast
 import builtins
+import keyword
 from collections.abc import Callable
 
 from sfnx.diagnostics import CompileError
+from sfnx.integrations import ResourceError, sdk_error
 from sfnx.module import Module, qualified
 
 # The errors Step Functions reports in JSONata workflows that a Retry or Catch
@@ -41,6 +43,8 @@ def error_name(node: ast.expr, context: Module) -> str:
     target = qualified(node, context.names)
     if target is not None:
         segments = target.split(".")
+        if segments[:2] == ["sfnx", "aws"]:
+            return sdk(segments[2:], node)
         if segments[0] == "sfnx" and len(segments) == 2:
             if segments[1] not in STATES:
                 raise CompileError(f"sfnx has no error named {segments[1]}", node)
@@ -62,6 +66,25 @@ def error_name(node: ast.expr, context: Module) -> str:
             )
         raise CompileError(f"{node.id} is not defined; {DEFINE}, or import it", node)
     raise CompileError(f"name an exception class here; {DEFINE}", node)
+
+
+def sdk(path: list[str], node: ast.expr) -> str:
+    """The error name of aws.sdk.<service>.errors.<Exception>. The service is
+    named as the resource ARN names it, with a _ after a Python keyword:
+    lambda_ is lambda."""
+    if len(path) != 4 or path[0] != "sdk" or path[2] != "errors":
+        raise CompileError(
+            "an SDK integration's error is aws.sdk.<service>.errors.<Exception>, "
+            "such as aws.sdk.dynamodb.errors.ConditionalCheckFailedException",
+            node,
+        )
+    service = path[1]
+    if keyword.iskeyword(service.removesuffix("_")):
+        service = service.removesuffix("_")
+    try:
+        return sdk_error(service, path[3])
+    except ResourceError as exc:
+        raise CompileError(str(exc), node) from None
 
 
 def attributes(node: ast.expr) -> list[str]:
