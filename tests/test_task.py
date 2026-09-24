@@ -103,6 +103,27 @@ def test_a_return_that_could_fail_or_read_otherwise_keeps_its_state(body):
     assert any(state["Type"] == "Succeed" for state in compiled.values())
 
 
+@pytest.mark.parametrize(
+    "body, output",
+    [
+        (R + ', retry=[{"ErrorEquals": [Exception]}])\nreturn None', None),
+        (R + ', retry=[{"ErrorEquals": [Exception]}])', None),
+        (
+            (
+                f"try:\n    {R})\n    return {{'ok': True, 'tags': ['a']}}\n"
+                "except Exception:\n    return 0"
+            ),
+            {"ok": True, "tags": ["a"]},
+        ),
+    ],
+)
+def test_a_written_return_is_the_output_of_any_task(body, output):
+    """A value written in the source cannot fail, so the Output holds it even
+    where a Catch or a retrier would take a failure of the Output."""
+    state = definition(body, "from sfnx import state_machine, task")["States"]["r"]
+    assert (state["Output"], state["End"]) == (output, True)
+
+
 def test_a_retrier_for_task_errors_leaves_the_return_to_the_task():
     """States.TaskFailed does not match a failing Output (measured)."""
     body = R + ', retry=[{"ErrorEquals": [TaskFailed]}])\nreturn r["Payload"]'

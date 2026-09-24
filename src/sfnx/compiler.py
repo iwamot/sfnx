@@ -1209,10 +1209,14 @@ class Scope:
         if self.pending:
             self.flush()
         result = self.following()
-        if result is None or not self.may_fold(result.state):
+        if result is None:
             return False
         value = self.read_result(result, value_node)
         if value is None or not self.holds_still([value], result.state):
+            return False
+        # A value written in the source cannot fail, so neither a Catch nor a
+        # retrier has a failure of the Output to take.
+        if not (self.may_fold(result.state) or written(value.template)):
             return False
         state = result.state
         self.graph.tails = []
@@ -2971,6 +2975,15 @@ def may_fold(state: dict[str, object]) -> bool:
     assert isinstance(retriers, list)
     retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
     return "Catch" not in state and not retried & RETRIED
+
+
+def written(template: object) -> bool:
+    """Whether a template is a value written out, with no expression in it."""
+    if isinstance(template, dict):
+        return all(written(v) for v in template.values())
+    if isinstance(template, list):
+        return all(written(v) for v in template)
+    return not (isinstance(template, str) and template.startswith("{%"))
 
 
 def fold_start(
