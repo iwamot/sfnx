@@ -496,3 +496,36 @@ def test_a_caught_error_named_after_a_function_is_renamed():
     catcher = states(body)["string"]["Catch"][0]
     assert catcher["Assign"] == {"type_val": "{% $states.errorOutput %}"}
     assert run(body, {}, {"string": fails("Declined", "no")}) == ["no", "Declined"]
+
+
+def test_assignments_that_start_an_except_clause_go_in_its_catch():
+    """They read the error as the error output the Catch assigns, and one
+    reads what another before it assigns as its expression."""
+    body = (
+        f"try:\n    {CHARGE}\nexcept Declined as e:\n"
+        '    reason = str(e)\n    note = {"reason": reason, "kind": type(e).__name__}\n'
+        f"    {NOTIFY}\n    return note\nreturn 1"
+    )
+    compiled = states(body)
+    assert compiled["invoke"]["Catch"][0] == {
+        "ErrorEquals": ["Declined"],
+        "Assign": {
+            "e": "{% $states.errorOutput %}",
+            "reason": "{% $states.errorOutput.Cause %}",
+            "note": {
+                "reason": "{% $states.errorOutput.Cause %}",
+                "kind": "{% $states.errorOutput.Error %}",
+            },
+        },
+        "Next": "publish",
+    }
+    note = run(body, {}, {"invoke": fails("Declined", "no funds"), "publish": dict})
+    assert note == {"reason": "no funds", "kind": "Declined"}
+
+
+def test_after_a_state_in_an_except_clause_the_error_is_its_variable():
+    body = (
+        f"try:\n    {CHARGE}\nexcept Declined as e:\n"
+        f"    {NOTIFY}\n    reason = str(e)\n    {NOTIFY}\n    return reason\nreturn 1"
+    )
+    assert states(body)["publish"]["Assign"] == {"reason": "{% $e.Cause %}"}

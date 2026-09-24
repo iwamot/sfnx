@@ -326,6 +326,9 @@ class Scope:
         # The pending values as the Assign of that state reads them, for those
         # that can go in it.
         self.folded: dict[str, Expr] = {}
+        # The pending values as the Assign of the catchers that lead to an
+        # except clause reads them, with the error as $states.errorOutput.
+        self.caught: dict[str, Expr] = {}
         self.loops: list[Loop] = []
         # The functions called directly whose bodies are being compiled here,
         # innermost last.
@@ -394,6 +397,7 @@ class Scope:
         result = self.following()
         self.result = None
         folded, self.folded = self.folded, {}
+        caught, self.caught = self.caught, {}
         if not self.pending:
             return
         assert self.pending_node is not None
@@ -419,8 +423,12 @@ class Scope:
         ):
             self.result = self.fold(result, folded, origins, remarks)
             return
-        if self.choosing() and self.spread(pending, origins, remarks):
-            return
+        if self.choosing():
+            # Right after an except clause, the catchers assign the error, so
+            # the assignments read it as the error output they assign.
+            values = caught if caught.keys() == pending.keys() else pending
+            if self.spread(values, origins, remarks):
+                return
         state: dict[str, object] = {"Type": "Pass", "Assign": assign}
         if remarks:
             state = commented(state, "\n".join(remarks))
@@ -1119,6 +1127,11 @@ class Scope:
         if result is not None and all(read in self.folded for read in reads):
             substituted = {**result.values, **{r: self.folded[r] for r in reads}}
             self.folded[name] = self.read_as(value_node, substituted)
+        error = self.catching()
+        if error is not None and all(read in self.caught for read in reads):
+            error_output = expression("$states.errorOutput", type=ERROR_OUTPUT)
+            substituted = {error: error_output, **{r: self.caught[r] for r in reads}}
+            self.caught[name] = self.read_as(value_node, substituted)
         self.defer(name, value, target, self.here())
         self.hold_remark()
         self.bindings[name] = self.variable(name, known)
@@ -1234,6 +1247,16 @@ class Scope:
             state["Output"] = value.template
         state["End"] = True
         return True
+
+    def catching(self) -> str | None:
+        """The name an except clause binds the error to, while control is
+        still at the catchers that lead to it."""
+        if not self.handling or self.handling[-1].variable is None:
+            return None
+        tails = self.graph.tails
+        if tails and all("ErrorEquals" in container for container, _ in tails):
+            return self.handling[-1].variable
+        return None
 
     def following(self) -> Result | None:
         """The Task, Parallel or Map just added, while control is right after
