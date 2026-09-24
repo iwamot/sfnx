@@ -1465,9 +1465,18 @@ class Translator:
             if isinstance(operator, ast.NotIn):
                 return call("not", [test], boolean, boolean=True)
             return test
+        if isinstance(right_node, ast.Constant) and isinstance(right_node.value, bool):
+            # = compares a boolean only with a boolean, as is does: 0 = false is
+            # false. A missing value makes = false, so is not negates it rather
+            # than use !=, which is false for a missing value too.
+            test = binary(left, "=", right, COMPARE, boolean, True)
+            if isinstance(operator, ast.IsNot):
+                return call("not", [test], boolean, boolean=True)
+            return test
         if not (isinstance(right_node, ast.Constant) and right_node.value is None):
             raise CompileError(
-                "is compares with None only; compare values with ==", right_node
+                "is compares with None, True or False only; compare values with ==",
+                right_node,
             )
         # left is written twice: it exists, and is not null.
         with self.once([left]) as (bindings, (tested,)):

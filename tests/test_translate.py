@@ -118,6 +118,8 @@ def output(body: str, parameter: str = "input") -> object:
             f"$not($exists({INPUT}.a) and {INPUT}.a != null)",
         ),
         ('return input["a"] is not None', f"$exists({INPUT}.a) and {INPUT}.a != null"),
+        ('return input["a"] is True', f"{INPUT}.a = true"),
+        ('return input["a"] is not False', f"$not({INPUT}.a = false)"),
         (
             'return input["a"] or "none"',
             f"($v := {INPUT}.a; ({truthiness()}) ? $v : 'none')",
@@ -366,6 +368,21 @@ def test_evaluation(body, execution_input, expected):
     assert asl.run(definition(body), execution_input) == expected
 
 
+@pytest.mark.parametrize(
+    "execution_input", [{"a": True}, {"a": False}, {"a": 0}, {"a": 1}, {"a": None}, {}]
+)
+def test_is_true_and_is_false_evaluate_as_python(execution_input):
+    """= compares a boolean only with a boolean, and a missing value is not
+    False, so is not False holds for it."""
+    body = (
+        'a = input.get("a")\n'
+        "return [a is True, a is False, a is not True, a is not False]"
+    )
+    a = execution_input.get("a")
+    expected = [a is True, a is False, a is not True, a is not False]
+    assert asl.run(definition(body), execution_input) == expected
+
+
 def test_unpacking_a_value_that_is_not_a_dict_fails_where_it_unpacks():
     """Python raises there, and $merge would take a list of dicts as the
     dicts themselves."""
@@ -432,7 +449,7 @@ def test_dividing_by_zero_fails_where_it_divides():
         ('return "a" < 1', "a number and a string cannot be ordered"),
         ("return [1] < [2]", "JSONata orders only numbers and strings"),
         ('v: str | None = input["v"]\nreturn v < "x"', "v may be null | string"),
-        ('return input["a"] is 1', "is compares with None only"),
+        ('return input["a"] is 1', "is compares with None, True or False only"),
         (
             'return input["a"] in input["b"]',
             "in depends on the container, so the type of input['b'] must be known",
