@@ -224,9 +224,11 @@ class Checkpoint:
     # Where pending assignments can go, and its fields at the checkpoint.
     carrier: Carrier | None
     carried: dict[str, object]
-    # The state a return can end with, and its fields at the checkpoint.
+    # The state a return can end with, its fields at the checkpoint, and the
+    # pending values as it reads them.
     result: Result | None
     resulted: dict[str, object]
+    folded: dict[str, Expr]
     hidden: set[str]
     names: set[str]
     labels: set[str]
@@ -302,6 +304,9 @@ class Scope:
         # The Task, Parallel or Map just added, until another state or a flush
         # follows it; while it lasts, control is right after it.
         self.result: Result | None = None
+        # The pending values as the Assign of that state reads them, for those
+        # that can go in it.
+        self.folded: dict[str, Expr] = {}
         self.loops: list[Loop] = []
         # The functions called directly whose bodies are being compiled here,
         # innermost last.
@@ -366,7 +371,9 @@ class Scope:
 
     def flush(self) -> None:
         carrier, self.carrier = self.carrier, None
+        result = self.following()
         self.result = None
+        folded, self.folded = self.folded, {}
         if not self.pending:
             return
         assert self.pending_node is not None
@@ -383,10 +390,43 @@ class Scope:
         if carrier is not None and self.joins(carrier, list(pending.values())):
             self.hold(carrier, assign, origins, remarks)
             return
+        if (
+            result is not None
+            and folded.keys() == pending.keys()
+            and self.may_fold(result)
+            and self.holds_still(list(folded.values()))
+        ):
+            self.result = self.fold(result, folded, origins, remarks)
+            return
         state: dict[str, object] = {"Type": "Pass", "Assign": assign}
         if remarks:
             state = commented(state, "\n".join(remarks))
         self.insert(first, state, node, origins)
+
+    def fold(
+        self,
+        result: Result,
+        folded: dict[str, Expr],
+        origins: list[Origin],
+        remarks: list[str],
+    ) -> Result:
+        """Assignments right after a Task, a Parallel or a Map in its Assign,
+        where control still is right after it."""
+        state = result.state
+        assign = state.get("Assign", {})
+        assert isinstance(assign, dict)
+        for name, value in folded.items():
+            assign[self.spelling(name)] = value.template
+        state["Assign"] = assign
+        remark = "\n".join(r for r in (result.remark, *remarks) if r) or None
+        origins = result.origins + origins
+        comment = remark
+        if self.locations is not None:
+            located = self.locations.line(origins)
+            comment = f"{remark}\n{located}" if remark else located
+        if comment:
+            commented(state, comment)
+        return Result(state, {**result.values, **folded}, origins, remark)
 
     def joins(self, carrier: Carrier, values: list[Expr]) -> bool:
         """Whether assignments can be the Assign of what holds them. The
@@ -920,6 +960,11 @@ class Scope:
         # state, so one that reads a pending assignment needs a state of its own.
         if name in self.pending or value.variables & self.pending.keys():
             self.flush()
+        result = self.following()
+        if result is not None:
+            folded = self.read_result(result, value_node)
+            assert folded is not None
+            self.folded[name] = folded
         self.defer(name, value, target, self.here())
         self.hold_remark()
         self.bindings[name] = self.variable(name, known)
@@ -986,18 +1031,11 @@ class Scope:
             self.partial.discard(name)
 
     def end_with_result(self, value_node: ast.expr) -> bool:
-        """A return right after a Task, a Parallel or a Map, as the state's
-        Output and End, where a person ends a machine or a branch. The Output
-        reads the result where the return reads the variables the state
-        assigns, and the other variables from before the state, as the return
-        does. The state keeps its Next where the Output could fail otherwise
-        than the return: a Catch would take the failure, and a retrier for
-        States.ALL or States.QueryEvaluationError would run the state again
-        (measured). So does a value that reads the time, a random value or the
-        State part of the context."""
-        result = self.result
-        if result is None or self.pending:
-            return False
+        """A return right after a Task, a Parallel or a Map, or right after the
+        assignments that went in its Assign, as the state's Output and End,
+        where a person ends a machine or a branch. The Output reads the
+        variables the state assigns as what they take, and the other variables
+        from before the state, as the return does."""
         # A call in the return is a state of its own, and translating it again
         # would name its states again.
         if any(
@@ -1007,30 +1045,16 @@ class Scope:
             for name in STATE_CALLS
         ):
             return False
+        # Assignments waiting for a state may go in this one's Assign first.
+        if self.pending:
+            self.flush()
+        result = self.following()
+        if result is None or not self.may_fold(result):
+            return False
+        value = self.read_result(result, value_node)
+        if value is None or not self.holds_still([value]):
+            return False
         state = result.state
-        retriers = state.get("Retry", [])
-        assert isinstance(retriers, list)
-        retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
-        if "Catch" in state or retried & RETRIED:
-            return False
-        before = dict(self.bindings)
-        # Each variable reads as the result, with the type it was bound with,
-        # which a declaration can give.
-        self.bindings.update(
-            {
-                name: replace(value, type=before[name].type)
-                for name, value in result.values.items()
-            }
-        )
-        try:
-            value, call = self.translator.statement_value(value_node)
-        finally:
-            self.bindings.clear()
-            self.bindings.update(before)
-        if call is not None or value.volatile or SHARED_CONTEXT.search(value.code):
-            return False
-        [(tail, key)] = self.graph.tails
-        assert tail is state and key == "Next"
         self.graph.tails = []
         self.result = None
         self.returns.append(value.type)
@@ -1046,6 +1070,57 @@ class Scope:
             state["Output"] = value.template
         state["End"] = True
         return True
+
+    def following(self) -> Result | None:
+        """The Task, Parallel or Map just added, while control is right after
+        it: a branch or a loop moves control without adding a state."""
+        result = self.result
+        if result is None:
+            return None
+        tails = self.graph.tails
+        if len(tails) != 1 or tails[0][0] is not result.state or tails[0][1] != "Next":
+            return None
+        return result
+
+    def may_fold(self, result: Result) -> bool:
+        """Whether what follows a Task, a Parallel or a Map can go in its Assign
+        or its Output. Not where one that fails would do otherwise than the
+        state after it: a Catch would take the failure, and a retrier for
+        States.ALL or States.QueryEvaluationError would run the state again
+        (measured)."""
+        state = result.state
+        retriers = state.get("Retry", [])
+        assert isinstance(retriers, list)
+        retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
+        return "Catch" not in state and not retried & RETRIED
+
+    def holds_still(self, values: list[Expr]) -> bool:
+        """Whether values read nothing that could differ between a state and
+        the one after it: the time, a random value or the State part of the
+        context."""
+        return not any(
+            value.volatile or SHARED_CONTEXT.search(value.code) for value in values
+        )
+
+    def read_result(self, result: Result, value_node: ast.expr) -> Expr | None:
+        """A value as the Assign or the Output of the state just added reads
+        it: the variables the state assigns as what they take, and the others
+        as they were before it. None for a value that makes a state."""
+        before = dict(self.bindings)
+        # Each variable reads as what it takes, with the type it was bound
+        # with, which a declaration can give.
+        self.bindings.update(
+            {
+                name: replace(value, type=before[name].type)
+                for name, value in result.values.items()
+            }
+        )
+        try:
+            value, call = self.translator.statement_value(value_node)
+        finally:
+            self.bindings.clear()
+            self.bindings.update(before)
+        return value if call is None else None
 
     def finish(
         self,
@@ -1811,6 +1886,7 @@ class Scope:
             dict(self.carrier.holder) if self.carrier else {},
             self.result,
             dict(self.result.state) if self.result else {},
+            dict(self.folded),
             set(self.hidden),
             set(self.graph.names),
             set(self.labels),
@@ -1846,6 +1922,7 @@ class Scope:
             saved.carrier.holder.clear()
             saved.carrier.holder.update(saved.carried)
         self.result = saved.result
+        self.folded = dict(saved.folded)
         if saved.result is not None:
             saved.result.state.clear()
             saved.result.state.update(saved.resulted)

@@ -87,12 +87,15 @@ R = f'r = task("{LAMBDA}", {{"FunctionName": "f"}}'
         R + ")\nreturn [r, str(uuid.uuid4())]",
         R + ')\nreturn [r, context["State"]["Name"]]',
         # Another state comes between, or several paths lead to the return.
-        R + ")\nn = 1\nreturn [r, n]",
+        R + ")\nwait(1)\nreturn r",
         f"if input['a']:\n    {R})\nelse:\n    {R})\nreturn r",
     ],
 )
 def test_a_return_that_could_fail_or_read_otherwise_keeps_its_state(body):
-    imports = "import uuid\nfrom sfnx import QueryEvaluationError, context, state_machine, task"
+    imports = (
+        "import uuid\n"
+        "from sfnx import QueryEvaluationError, context, state_machine, task, wait"
+    )
     compiled = definition(body, imports)["States"]
     assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
     assert any(state["Type"] == "Succeed" for state in compiled.values())
@@ -106,6 +109,70 @@ def test_a_retrier_for_task_errors_leaves_the_return_to_the_task():
     ]["r"]
     assert (state["Output"], state["End"]) == ("{% $states.result.Payload %}", True)
     assert "Assign" not in state
+
+
+def test_assignments_right_after_a_task_go_in_its_assign():
+    """They read the result as $states.result, the variables the Task
+    assigns as what they take and the others as they were before it."""
+    body = (
+        'fee: float = input["fee"]\n'
+        f'r = task("{LAMBDA}", {{"FunctionName": "f"}})\n'
+        'total: float = r["Payload"]["total"]\n'
+        "due = total + fee\n"
+        "wait(1)\n"
+        "return [r, total, due]"
+    )
+    compiled = states(body)
+    assert list(compiled) == ["fee", "r", "wait", "return"]
+    assert compiled["r"]["Assign"] == {
+        "r": "{% $states.result %}",
+        "total": "{% $states.result.Payload.total %}",
+        "due": "{% $states.result.Payload.total + $fee %}",
+    }
+    tasks = {"r": lambda arguments: {"Payload": {"total": 2}}}
+    assert asl.run(definition(body), {"fee": 1}, tasks) == [
+        {"Payload": {"total": 2}},
+        2,
+        3,
+    ]
+
+
+def test_a_return_after_them_is_the_output():
+    body = R + ')\nx = r["Payload"]\nreturn x["a"]'
+    state = states(body)["r"]
+    assert (state["Output"], state["End"]) == ("{% $states.result.Payload.a %}", True)
+    assert "Assign" not in state
+
+
+def test_an_assignment_after_a_task_on_its_own_line_goes_in_its_assign():
+    body = f'task("{LAMBDA}", {{"FunctionName": "f"}})\nn = 1\nwait(n)\nreturn n'
+    assert states(body)["invoke"]["Assign"] == {"n": 1}
+
+
+def test_the_variable_the_task_assigns_can_be_assigned_again():
+    body = R + ')\nr = r["Payload"]\nwait(1)\nreturn r'
+    assert states(body)["r"]["Assign"] == {"r": "{% $states.result.Payload %}"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A Catch would take a failing Assign.
+        (
+            f"try:\n    {R})\n    n = r['Payload']['n']\nexcept Exception:\n"
+            "    return 0\nwait(1)\nreturn n"
+        ),
+        R
+        + ', retry=[{"ErrorEquals": [Exception]}])\nn = r["Payload"]\nwait(1)\nreturn n',
+        R + ")\nn = str(uuid.uuid4())\nwait(1)\nreturn [r, n]",
+        R + ')\na, b = r["Payload"]\nwait(1)\nreturn [a, b]',
+    ],
+)
+def test_an_assignment_that_could_differ_keeps_its_pass(body):
+    imports = "import uuid\nfrom sfnx import state_machine, task, wait"
+    compiled = definition(body, imports)["States"]
+    assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
+    assert any(state["Type"] == "Pass" for state in compiled.values())
 
 
 def test_a_loop_tried_again_after_a_task_leaves_the_task_as_it_was():
@@ -251,7 +318,7 @@ def test_through_the_module():
         ),
         (
             f'r = task("{LAMBDA}", {{"FunctionName": "f"}})\ntotal: float = r["Payload"]["total"]\nreturn total + input["x"]',
-            f"$total + {INPUT}.x",
+            f"$states.result.Payload.total + {INPUT}.x",
         ),
     ],
 )
