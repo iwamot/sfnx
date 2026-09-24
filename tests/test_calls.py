@@ -279,6 +279,11 @@ def test_a_call_runs_in_a_branch_and_a_map():
             "invoke() takes values; call classify() on a line of its own first",
         ),
         (
+            'return classify(aws.optimized.lambda_.invoke(FunctionName="f"))',
+            "\n\nfrom sfnx import aws\n",
+            "classify() takes values; call aws.optimized.lambda_.invoke() on a line",
+        ),
+        (
             "RETRY = 1\nreturn invoke('f', 1)",
             "",
             "invoke() reads RETRY of the module, and RETRY is a variable here too",
@@ -309,3 +314,65 @@ def test_a_call_runs_in_a_branch_and_a_map():
 )
 def test_what_a_call_cannot_do(body, module, message):
     assert message in rejected(body, module)
+
+
+INLINED = (
+    'PREFIX = "order-"\n\n\n'
+    "def keyed(k, n=1):\n"
+    '    """The key of an order."""\n'
+    '    return {"key": PREFIX + k, "both": [k, k], "n": n}\n\n\n'
+    "def labelled(k):\n"
+    '    return keyed(k)["key"] + "!"\n\n\n'
+    "def again(x):\n"
+    "    return again(x)\n"
+)
+
+
+def test_a_function_that_only_returns_is_written_into_the_expression():
+    """A body of one return of a value is an expression, so a call to it is
+    written where it is made, inside a Task's arguments among other places,
+    and evaluated there rather than in a state of its own."""
+    compiled = states(
+        'return task(LAMBDA, {"FunctionName": "f", "Payload": keyed(input["id"], n=2)})',
+        INLINED,
+    )
+    assert compiled["return"]["Arguments"]["Payload"] == {
+        "key": "{% 'order-' & $states.context.Execution.Input.id %}",
+        "both": [
+            "{% $states.context.Execution.Input.id %}",
+            "{% $states.context.Execution.Input.id %}",
+        ],
+        "n": 2,
+    }
+
+
+def test_a_function_that_only_returns_is_an_argument_of_one_called_directly():
+    compiled = states('return invoke("f", keyed(input["id"]))', INLINED)
+    payload = compiled["return"]["Arguments"]["Payload"]
+    assert payload["key"] == "{% 'order-' & $states.context.Execution.Input.id %}"
+
+
+def test_a_function_that_only_returns_evaluates():
+    body = (
+        "def plus(n):\n"
+        '    return n + input["b"]\n'
+        'return [keyed(input["id"]), labelled("x"), plus(1), '
+        'keyed(str(uuid.uuid4())), keyed(labelled("y"))["key"]]'
+    )
+    keyed_id, label, total, made, nested = run(
+        body, {"id": "a", "b": 2}, module=INLINED
+    )
+    assert keyed_id == {"key": "order-a", "both": ["a", "a"], "n": 1}
+    assert label == "order-x!"
+    assert total == 3
+    # The argument is evaluated once, as Python passes one value.
+    assert made["both"][0] == made["both"][1]
+    assert made["key"] == "order-" + made["both"][0]
+    assert nested == "order-order-y!"
+
+
+def test_a_function_that_only_returns_does_not_call_itself():
+    assert rejected("return [again(1)]", INLINED) == (
+        "again() calls itself, and its body would be written here without end; "
+        "write the repetition as a loop"
+    )

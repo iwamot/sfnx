@@ -295,9 +295,10 @@ def test_asl_matches_python(body, execution_input):
         (machine("x = wait(1)"), "wait is not imported", "6:9"),
         (
             HEADER
-            + "def task():\n    return 1\n\n\n@state_machine\ndef pay(input):\n    x = task() + 1",
+            + "def task():\n    x = 1\n    return x\n\n\n@state_machine\ndef pay(input):\n"
+            + "    x = task() + 1",
             "task() runs its body here, as states",
-            "10:9",
+            "11:9",
         ),
         ("from sfnx import *\n", "instead of *", "1:1"),
         ("def broken(:\n", "invalid syntax", "1:12"),
