@@ -129,3 +129,23 @@ for i in range(3):
 return x
 """
     assert definition(body)["States"]["for"]["Comment"] == "widen"
+
+
+def test_a_function_called_directly_takes_the_comment_of_its_call():
+    body = f'''
+def charge(amount):
+    """Charge the card."""
+    return task("{LAMBDA}", {{"FunctionName": "charge", "Payload": amount}})
+
+# charge it
+receipt = charge(input["amount"])
+return receipt
+'''
+    assert definition(body)["States"]["receipt"]["Comment"] == "charge it"
+
+
+def test_a_string_on_its_own_line_passes_its_comment_on():
+    body = (
+        '# the total\n"a string used as a note"\ntotal = input["a"] + 1\nreturn total'
+    )
+    assert remarks(definition(body)["States"])["total"] == "the total"
