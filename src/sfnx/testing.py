@@ -283,9 +283,28 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
         result = expression.evaluate(None, bindings)
     except jsonata.JException as exc:
         raise Failure("States.QueryEvaluationError", str(exc)) from exc
+    except IndexError as exc:
+        message = unwritten(exc)
+        if message is None:
+            raise
+        raise Failure("States.QueryEvaluationError", message) from exc
     if result is None:
         raise Failure("States.QueryEvaluationError", f"{code} is undefined")
     return Utils.convert_nulls(result)
+
+
+def unwritten(exc: IndexError) -> str | None:
+    """The code and template of a JSONata error whose message jsonata-python
+    fails to write: T0412 and T2009 have three places for the values and are
+    given two. An IndexError raised anywhere else is not one."""
+    trace = exc.__traceback__
+    assert trace is not None
+    while trace.tb_next is not None:
+        trace = trace.tb_next
+    frame = trace.tb_frame
+    if frame.f_code is not jsonata.JException.msg.__code__:
+        return None
+    return f"{frame.f_locals['error']}: {frame.f_locals['message']}"
 
 
 # jsonata-python passes an undefined argument as None, JSON null as its null
