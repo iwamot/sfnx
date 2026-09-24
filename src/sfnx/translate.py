@@ -458,6 +458,9 @@ class Translator:
         self.expired: set[str] = set()
         # Whether a name is a function defined for parallel() or a map.
         self.is_function: Callable[[str], bool] = lambda name: False
+        # The parameters of the functions being called directly, each with the
+        # argument written for it, for the places that take what is written.
+        self.arguments: dict[str, ast.expr] = {}
 
     def spelling(self, name: str) -> str:
         return spelling(name, self.spellings)
@@ -489,7 +492,11 @@ class Translator:
     def holds(self, node: ast.expr) -> ast.expr:
         """The value a name assigned outside the machine holds, for the places
         that take what is written out, such as a resource ARN. A name the
-        machine binds is itself, so its variable is read there instead."""
+        machine binds is itself, so its variable is read there instead. A
+        parameter of a function called directly holds the argument written for
+        it."""
+        while isinstance(node, ast.Name) and node.id in self.arguments:
+            node = self.arguments[node.id]
         if isinstance(node, ast.Name) and node.id in self.bindings:
             return node
         return holds(node, self.constants)
@@ -522,6 +529,10 @@ class Translator:
         if isinstance(node, ast.Name):
             if node.id in self.bindings:
                 return self.bindings[node.id]
+            if node.id in self.arguments:
+                # An argument that is not a value where the call is written
+                # is not one where the function reads it either.
+                return self.expr(self.arguments[node.id])
             if self.names.get(node.id) == "sfnx.context":
                 return expression("$states.context", type=CONTEXT)
             self.check_import(node)
@@ -3056,10 +3067,11 @@ def written_kind(node: ast.expr) -> str | None:
 
 
 def direct_call(name: str) -> str:
-    """The message for calling a function of the module directly."""
+    """The message for calling a function of the module inside an
+    expression."""
     return (
-        f"{name}() cannot be called directly; a function runs as states "
-        f"through parallel({name}) or a map, or write its body here"
+        f"{name}() runs its body here, as states; call it on its own line, "
+        f"assign its result or return it: result = {name}(...)"
     )
 
 

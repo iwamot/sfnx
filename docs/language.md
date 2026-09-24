@@ -287,6 +287,25 @@ message, receipt = parallel(email, audit)
 
 The function reads its parameters from `$states.context.Execution.Input` and nothing from outside; a variable it would need is reported with the `args=` to add.
 
+## Functions called directly
+
+```python
+def invoke(function, payload, retry=RETRY):
+    return task(LAMBDA, {"FunctionName": function, "Payload": payload}, retry=retry)["Payload"]
+
+
+@state_machine
+def pay(input):
+    receipt = invoke("${ChargeFunctionArn}", input)
+    return invoke("${NotifyFunctionArn}", receipt)
+```
+
+- A function of the module or of the machine can be called on a line of its own, as the value of an assignment or a `return`, and read through subscripts (`f(x)["id"]`). Its body is compiled in place of the call, so each call writes the states the function makes, as copying its body there would.
+- A parameter reads the argument written for it. A value is read as the same expression wherever the body reads it, and an ARN or a `retry=` passed on is taken as if written there. An argument that changes on evaluation, such as `str(uuid.uuid4())`, is kept first by a variable named after the parameter. A default is written in the source, and an argument cannot call `task()`, `parallel()`, a map or a function called directly.
+- A name the body assigns is the function's own. It keeps its name in the definition unless the calling function uses it too, in which case it is numbered (`ids_2`). A function of the module reads the module's names, so calling one that reads a name the caller assigns is rejected.
+- Each `return` gives the statement the value the call would, and the paths join after the call; a function that ends without one gives `None`. A `try` around the call puts its Catch on the states the body makes.
+- A function that calls itself, directly or through another, a function defined inside one called directly, decorators, and parameters other than plain ones with or without defaults are rejected.
+
 ## Errors
 
 ```python
@@ -352,7 +371,7 @@ Each of these is rejected with what to write instead:
 
 - **Statements**: `with`, `match`, `global` / `nonlocal`, `del`, `import` and `class` inside a state machine, `async`, `finally`, a bare `except:`, `except*`, `else` on a loop, and a value on a line of its own (`print(x)`).
 - **Expressions**: tuples, sets, a slice with a step other than `[::-1]`, methods other than `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip` of strings and `keys`, `values`, `get` and (in a `for` or a dict comprehension) `items` of dicts, `lambda` outside `key=`, `:=`, `*` unpacking, bitwise operators, unary `+`, conversions in f-strings and every format spec but a width, the digits of a number and `d`, old-style `%` formatting, a generator expression outside `sum`, `max`, `min`, `sorted`, `list`, `any` and `all`, set comprehensions, a dict comprehension whose key is not known to be a string, a comprehension with several `for`, built-in functions other than `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed`, `range`, `any` and `all`, `set` outside `list()`, `zip` outside `list()` or a `for`, `enumerate` outside a `for`, module functions other than `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `itertools.batched` in `list()`, the `hashlib` digests, `base64.b64encode` and `base64.b64decode` in `.decode()`, and `urllib.parse.unquote` and `unquote_plus`, and a datetime outside `str()`, an f-string, `.timestamp()`, `.strftime(format)` or `wait(until=...)`, a `timedelta` outside a datetime it moves and `total_seconds()`, a unit of `timedelta` that is not a number written in the source, a `strftime` directive other than `%Y`, `%y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%j` and `%%`, `strptime`, or `uuid.uuid4()` outside `str()` or an f-string.
-- **Calls**: a function of your own called directly (`f()`); it runs as states through `parallel(f)` or a map.
+- **Calls**: a function of your own called inside an expression (`f(x) + 1`, `if f(x):`); call it on its own line, assign its result or return it.
 - **TypedDicts**: one that names itself or a class written below it, one that inherits from another class, `TypedDict("Name", {...})`, a class argument other than `total=False`, a class of another module, and anything on the class but fields.
 
 ## Where results differ from Python
@@ -446,7 +465,7 @@ JSONata reads these where Python raises. The intent of the source is met, so not
 
 ### Written this way on purpose
 
-A minus sign written in the source counts from the end; a negative number that arrives in a variable does not, as the position would otherwise depend on a value the definition cannot see. A minus written before a variable counts that many from the end, so `s[-n:]` is the last `n` characters and an `n` of 0 is none of them, where Python reads `-0` as the start. A list comprehension is a `$filter` and then a `$map`, the two passes a hand-writer would put in an expression. A caught error is named as Step Functions names it.
+A minus sign written in the source counts from the end; a negative number that arrives in a variable does not, as the position would otherwise depend on a value the definition cannot see. A minus written before a variable counts that many from the end, so `s[-n:]` is the last `n` characters and an `n` of 0 is none of them, where Python reads `-0` as the start. A list comprehension is a `$filter` and then a `$map`, the two passes a hand-writer would put in an expression. A caught error is named as Step Functions names it. A function called on a line of its own evaluates the `task()` or other state-making call its `return` holds, and not a value nothing reads.
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
@@ -454,6 +473,7 @@ A minus sign written in the source counts from the end; a negative number that a
 | `xs[-n:]`, `xs[:-n]`, `s[-n:]`, `s[:-n]` | an `n` of 0 read from a variable | the last 0 items or characters and all but those: `[]` or `""` from `[-n:]`, the whole value from `[:-n]` | `-0` is the start: the whole value from `[-n:]`, `[]` or `""` from `[:-n]` |
 | `xs[-n:]`, `xs[:-n]`, `s[-n:]`, `s[:-n]` | a negative number read from a variable with a minus sign written, such as `n` = -2 | `[]` or `""` from `[-n:]`, the whole value from `[:-n]` | counted from the start: `xs[2:]` and `xs[:2]` |
 | `type(e).__name__` | `e` caught from a class that assigns `error = "..."` | the name the class declares, which is the error's name in Step Functions | the class name |
+| `f(x)` on a line of its own | a function that returns a value that fails, such as `return x["missing"]` | not evaluated, as nothing reads it | `KeyError` |
 | `[f(x) for x in xs if c]` | a `c` and an `f` that each give another value on every call, such as `random.random()` | `$filter` tests every item, then `$map` reads a result for each item it kept | the condition and the result of one item before the next item, so a dropped item takes no result |
 
 ### The ASL's own semantics
