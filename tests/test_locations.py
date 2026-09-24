@@ -146,22 +146,23 @@ def test_each_state_names_the_source_it_comes_from():
             ],
         ),
         "raise": ([], [('raise Declined("declined")', None)]),
-        "sent": ([], [("sent, _ = parallel(email, audit)", None)]),
+        # The return right after the Parallel is its Output.
+        "sent": (
+            [],
+            [
+                ("sent, _ = parallel(email, audit)", None),
+                (
+                    'return {"total": total, "count": count, "receipt": receipt, "sent": sent}',
+                    None,
+                ),
+            ],
+        ),
         "email.return": (
             [],
             [('return {"to": input["email"], "note": note}', None)],
         ),
         "audit.invoke": ([], [('task(LAMBDA, {"FunctionName": "audit"})', None)]),
         "audit.return": ([], [("def audit():", "end of function")]),
-        "return": (
-            [],
-            [
-                (
-                    'return {"total": total, "count": count, "receipt": receipt, "sent": sent}',
-                    None,
-                )
-            ],
-        ),
     }
     ship = "def ship(order: dict, index: int) -> None:"
     assert located(SOURCE, fan) == {

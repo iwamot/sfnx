@@ -176,17 +176,11 @@ The definition has the states a person would write by hand, named after what the
         "FunctionName": "charge",
         "Payload": "{% $states.context.Execution.Input %}"
       },
-      "Assign": {
-        "receipt": "{% $states.result %}"
-      },
-      "Next": "return"
-    },
-    "return": {
-      "Type": "Succeed",
       "Output": {
         "order": "{% $states.context.Execution.Input.id %}",
-        "receipt": "{% $receipt.Payload %}"
-      }
+        "receipt": "{% $states.result.Payload %}"
+      },
+      "End": true
     }
   }
 }

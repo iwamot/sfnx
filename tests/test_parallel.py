@@ -61,17 +61,13 @@ def test_branches_are_named_after_their_functions():
                     "Type": "Task",
                     "Resource": PUBLISH,
                     "Arguments": {"Message": "{% $order.id %}"},
-                    "Assign": {"entry": "{% $states.result %}"},
-                    "Next": "audit.return",
+                    "Output": "{% $states.result.MessageId %}",
+                    "End": True,
                 },
-                "audit.return": {"Type": "Succeed", "Output": "{% $entry.MessageId %}"},
             },
         },
     ]
-    assert parallel["Assign"] == {
-        "message": "{% $states.result[0] %}",
-        "receipt": "{% $states.result[1] %}",
-    }
+    assert parallel["Output"] == ["{% $states.result[0] %}", "{% $states.result[1] %}"]
 
 
 def test_state_names_are_unique_across_the_whole_definition():
@@ -124,8 +120,8 @@ def test_branch_returns_join_their_types():
 def test_branch_types_join_into_the_result():
     body = 'def one():\n    return 1\n\ndef two():\n    return 2\n\na, b = parallel(one, two)\nreturn a + input["x"]'
     assert (
-        states(body)["return"]["Output"]
-        == "{% $a + $states.context.Execution.Input.x %}"
+        states(body)["a"]["Output"]
+        == "{% $states.result[0] + $states.context.Execution.Input.x %}"
     )
 
 

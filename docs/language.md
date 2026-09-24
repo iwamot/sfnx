@@ -25,7 +25,7 @@ def pay(input):
 
 A state is named after what it does: the variable it assigns, `return`, `raise`, `if`, `for`, `while`, `wait`, `map`, `parallel`, or the action of a Task on its own line (`getItem`, `invoke`). Repeated names get serials (`amount`, `amount_2`). States inside a Parallel branch or a Map are prefixed with the function that holds them (`email.return`).
 
-States split only where ASL requires it: an assignment that reads another pending assignment, a Task, a Choice. Independent assignments share one Pass, or go in the `Assign` of what is the only way to them: a Wait right before them, or the Choice rule of the `if` branch or `while` body they start (the Choice's own `Assign` for `else`). A Task's result goes in the Task's `Assign`, and a machine that returns a Task's result ends on that Task.
+States split only where ASL requires it: an assignment that reads another pending assignment, a Task, a Choice. Independent assignments share one Pass, or go in the `Assign` of what is the only way to them: a Wait right before them, or the Choice rule of the `if` branch or `while` body they start (the Choice's own `Assign` for `else`). A Task's result goes in the Task's `Assign`, and a machine that returns a Task's result ends on that Task. A `return` right after a Task, a Parallel or a Map is that state's `Output`, reading the result it assigned as `$states.result`, and the state ends the machine or the branch; the `return` keeps its Succeed inside a `try`, after a Task that retries on `Exception` or `QueryEvaluationError`, or when it reads the time, a random value or the context's `State`.
 
 ## Comments
 

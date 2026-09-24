@@ -76,7 +76,9 @@ def test_a_function_that_makes_states_binds_its_parameters_first():
     assert (
         processor["States"]["charge.receipt"]["Arguments"]["Payload"] == "{% $order %}"
     )
-    assert compiled["totals"]["Assign"] == {"totals": "{% $states.result %}"}
+    # The return right after the Map ends the machine with its result.
+    assert "Assign" not in compiled["totals"]
+    assert compiled["totals"]["End"] is True
     tasks = {
         "charge.receipt": lambda arguments: {
             "Payload": {"amount": arguments["Payload"]["amount"]}
@@ -150,7 +152,7 @@ def test_map_names_retry_and_catch():
 
 def test_result_types():
     body = 'def f(x):\n    return "a"\n\nnames = inline_map(f, input["xs"])\nreturn len(names)'
-    assert states(body)["return"]["Output"] == "{% $count($names) %}"
+    assert states(body)["names"]["Output"] == "{% $count($states.result) %}"
     body = 'def f(x: list):\n    return len(x)\n\nreturn inline_map(f, input["xs"])'
     assert (
         states(body)["return"]["ItemProcessor"]["States"]["f.return"]["Output"]

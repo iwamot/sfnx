@@ -91,20 +91,13 @@
           }
         }
       ],
-      "Assign": {
-        "notice": "{% $states.result[0] %}",
-        "entry": "{% $states.result[1] %}"
-      },
-      "Next": "return"
-    },
-    "return": {
-      "Type": "Succeed",
       "Output": {
         "album": "{% $album %}",
         "photos": "{% $resized %}",
-        "index": "{% $entry %}",
-        "notice": "{% $notice %}"
-      }
+        "index": "{% $states.result[1] %}",
+        "notice": "{% $states.result[0] %}"
+      },
+      "End": true
     }
   }
 }
