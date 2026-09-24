@@ -361,12 +361,7 @@ def test_loop_initialization(body, first):
 
 def test_a_body_that_always_returns_has_no_increment():
     compiled = states('xs: list = input["xs"]\nfor x in xs:\n    return x\nreturn None')
-    assert [s["Type"] for s in compiled.values()] == [
-        "Pass",
-        "Choice",
-        "Succeed",
-        "Succeed",
-    ]
+    assert [s["Type"] for s in compiled.values()] == ["Choice", "Succeed", "Succeed"]
 
 
 @pytest.mark.parametrize(

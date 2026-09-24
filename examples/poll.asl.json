@@ -1,27 +1,21 @@
 {
   "Comment": "Transcribe an audio file, polling the job until it finishes.",
   "QueryLanguage": "JSONata",
-  "StartAt": "name",
+  "StartAt": "startTranscriptionJob",
   "States": {
-    "name": {
-      "Type": "Pass",
-      "Assign": {
-        "name": "{% $states.context.Execution.Name %}"
-      },
-      "Next": "startTranscriptionJob"
-    },
     "startTranscriptionJob": {
       "Type": "Task",
       "Comment": "Transcribe has no .sync integration, so the machine polls the job itself.",
       "Resource": "arn:aws:states:::aws-sdk:transcribe:startTranscriptionJob",
       "Arguments": {
-        "TranscriptionJobName": "{% $name %}",
+        "TranscriptionJobName": "{% $states.context.Execution.Name %}",
         "Media": {
           "MediaFileUri": "{% $states.context.Execution.Input.uri %}"
         },
         "IdentifyLanguage": true
       },
       "Assign": {
+        "name": "{% $states.context.Execution.Name %}",
         "polls": 0
       },
       "Next": "while"

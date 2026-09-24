@@ -1,26 +1,27 @@
 {
   "Comment": "A Hello World example that demonstrates various state types.",
   "QueryLanguage": "JSONata",
-  "StartAt": "is_hello_world_example",
+  "StartAt": "if",
   "States": {
-    "is_hello_world_example": {
-      "Type": "Pass",
-      "Assign": {
-        "is_hello_world_example": true,
-        "execution_wait_time_in_seconds": 3,
-        "checkpoint_count": 0
-      },
-      "Next": "if"
-    },
     "if": {
       "Type": "Choice",
       "Choices": [
         {
-          "Condition": "{% $not($is_hello_world_example) %}",
-          "Next": "raise"
+          "Condition": "{% $not(true) %}",
+          "Next": "raise",
+          "Assign": {
+            "is_hello_world_example": true,
+            "execution_wait_time_in_seconds": 3,
+            "checkpoint_count": 0
+          }
         }
       ],
-      "Default": "wait"
+      "Default": "wait",
+      "Assign": {
+        "is_hello_world_example": true,
+        "execution_wait_time_in_seconds": 3,
+        "checkpoint_count": 0
+      }
     },
     "raise": {
       "Type": "Fail",
