@@ -61,7 +61,7 @@
     "raise": {
       "Type": "Fail",
       "Error": "OutOfStock",
-      "Cause": "{% $string($items[$item_index].sku) & ' is out of stock' %}"
+      "Cause": "{% $items[$item_index].sku & ' is out of stock' %}"
     },
     "item_index": {
       "Type": "Pass",

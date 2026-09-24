@@ -1,4 +1,16 @@
+from typing import TypedDict
+
 from sfnx import Timeout, state_machine, task
+
+
+class Item(TypedDict):
+    sku: str
+    quantity: int
+
+
+class Order(TypedDict):
+    id: str
+    items: list[Item]
 
 
 class OutOfStock(Exception):
@@ -11,9 +23,9 @@ class DynamoDb:
 
 
 @state_machine(timeout=300)
-def fulfill(input):
+def fulfill(input: Order):
     """Reserve every item of an order, then charge for it."""
-    items: list = input["items"]
+    items = input["items"]
     for item in items:
         try:
             task(
