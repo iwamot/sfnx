@@ -10,7 +10,7 @@ Save this as `app.py` (it is also [examples/orders.py](https://github.com/iwamot
 ```python
 from typing import TypedDict
 
-from sfnx import Timeout, aws, state_machine, task
+from sfnx import Timeout, aws, state_machine
 
 
 class Item(TypedDict):
@@ -33,23 +33,17 @@ def fulfill(input: Order):
     items = input["items"]
     for item in items:
         try:
-            task(
-                "arn:aws:states:::aws-sdk:dynamodb:updateItem",
-                {
-                    "TableName": "stock",
-                    "Key": {"sku": {"S": item["sku"]}},
-                    "UpdateExpression": "SET quantity = quantity - :n",
-                    "ConditionExpression": "quantity >= :n",
-                    "ExpressionAttributeValues": {":n": {"N": str(item["quantity"])}},
-                },
+            aws.sdk.dynamodb.update_item(
+                TableName="stock",
+                Key={"sku": {"S": item["sku"]}},
+                UpdateExpression="SET quantity = quantity - :n",
+                ConditionExpression="quantity >= :n",
+                ExpressionAttributeValues={":n": {"N": str(item["quantity"])}},
                 retry=[{"ErrorEquals": [Timeout], "MaxAttempts": 3}],
             )
         except aws.sdk.dynamodb.errors.ConditionalCheckFailedException:
             raise OutOfStock(f"{item['sku']} is out of stock") from None
-    receipt = task(
-        "arn:aws:states:::lambda:invoke",
-        {"FunctionName": "charge", "Payload": input},
-    )
+    receipt = aws.optimized.lambda_.invoke(FunctionName="charge", Payload=input)
     return {"order": input["id"], "receipt": receipt["Payload"]}
 ```
 
@@ -190,8 +184,8 @@ The definition has the states a person would write by hand, named after what the
 ASL is a JSON document of states that name each other, with the logic in JSONata strings. Writing it means choosing the right spelling for every operation (`+`, `&` or `$append`), wiring `Next` by hand, and repeating Retry and Catch on every Task. sfnx lets you write the flow as Python and does that part.
 
 - **The output is ASL you can read.** States split only where ASL needs them, independent assignments share one Pass, and each state is named after its variable, `return`, `if`, `for` or the API it calls, so execution histories and the console read like the source.
-- **Mistakes surface at compile time.** Every rejected line comes with what to write instead. SDK integration ARNs and their argument names are checked against the botocore service models (whether Step Functions integrates the action is not checked).
-- **Python control flow with a few workflow primitives.** The names sfnx exports make states (`task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes, `jsonata` for an expression written out). Everything else is Python syntax, compiled to the JSONata you would write for it. [Where results differ from Python](https://github.com/iwamot/sfnx/blob/main/docs/language.md#where-results-differ-from-python) lists the values known to come out otherwise.
+- **Mistakes surface at compile time.** Every rejected line comes with what to write instead. SDK integrations' services, operations, argument names and errors are checked against the botocore service models (whether Step Functions integrates the action is not checked).
+- **Python control flow with a few workflow primitives.** The names sfnx exports make states (the operations of `aws`, `activity`, `task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes, `jsonata` for an expression written out). Everything else is Python syntax, compiled to the JSONata you would write for it. [Where results differ from Python](https://github.com/iwamot/sfnx/blob/main/docs/language.md#where-results-differ-from-python) lists the values known to come out otherwise.
 
 sfnx compiles, and can run a JSONata-mode definition locally with mocked tasks to test it; it does not deploy, and it does not run workflows in AWS. The Python module stays importable, but the definition is the contract, not what CPython computes.
 
@@ -209,7 +203,7 @@ uv add sfnx
 
 - **The machine** is a function marked `@state_machine` or `@state_machine(timeout=300)`. Its parameter is the execution input, read as `$states.context.Execution.Input`; its return value is the output.
 - **Assignments, `if` / `elif` / `else`, `for`, `while`, `break`, `continue`, `return`, `raise`, `try` / `except`** become Pass, Choice, loops through Choice, Succeed, Fail and Catch. `for` iterates a list, the keys of a dict, `range()`, `enumerate()`, `zip()` or `d.items()`.
-- **`task(resource, arguments, timeout=, heartbeat=, role=, retry=)`** is a Task for any integration: SDK (`arn:aws:states:::aws-sdk:dynamodb:getItem`), optimized (`arn:aws:states:::lambda:invoke`, with `.sync` or `.waitForTaskToken`), HTTP, activities, or a `${Placeholder}` filled in at deploy time.
+- **`aws.sdk.dynamodb.get_item(TableName=..., Key=...)`** is a Task calling `arn:aws:states:::aws-sdk:dynamodb:getItem`, and **`aws.optimized.lambda_.invoke(FunctionName=..., Payload=...)`** one calling `arn:aws:states:::lambda:invoke`: the service as its ARN names it, the operation in snake_case, the API parameters in PascalCase, and `timeout=`, `heartbeat=`, `role=`, `retry=` and `pattern=".waitForTaskToken"` (or `".sync"`) for the Task. **`activity(arn, input)`** waits for a worker of an activity. **`task(resource, arguments)`** writes the resource ARN out, for any Task, including a `${Placeholder}` filled in at deploy time.
 - **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
 - **`wait(10)`** and **`wait(until=timestamp)`**, which also takes a datetime, are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
 - **`jsonata("$pad($s, -5, '0')", s=code)`** writes a JSONata expression out, for what has no Python spelling, with each value bound to the variable of its name.

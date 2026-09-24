@@ -38,7 +38,13 @@ from sfnx.expressions import (
     string,
     uses,
 )
-from sfnx.integrations import HTTP_METHODS, Integration, ResourceError, integration
+from sfnx.integrations import (
+    HTTP_METHODS,
+    Integration,
+    ResourceError,
+    integration,
+    operation_resource,
+)
 from sfnx.jsontypes import (
     ARRAY,
     BOOLEAN,
@@ -104,7 +110,16 @@ TASK_OPTIONS = ("timeout", "heartbeat", "role")
 # The names sfnx exports that a workflow calls or reads, so that one used
 # without an import is told apart from an unknown name.
 EXPORTS = frozenset(
-    {"context", "task", "wait", "parallel", "inline_map", "distributed_map", "jsonata"}
+    {
+        "activity",
+        "context",
+        "task",
+        "wait",
+        "parallel",
+        "inline_map",
+        "distributed_map",
+        "jsonata",
+    }
 )
 
 
@@ -1753,6 +1768,10 @@ class Translator:
             target = ""
         if target == "sfnx.task":
             return self.task_call(node)
+        if target == "sfnx.activity":
+            return self.activity_call(node)
+        if target.startswith("sfnx.aws."):
+            return self.operation_call(node, target)
         if target == "sfnx.jsonata":
             return self.jsonata(node)
         if target.startswith("sfnx.") and target[5:] in COMPOSED:
@@ -2817,7 +2836,77 @@ class Translator:
                 'task("arn:aws:states:::lambda:invoke", {"FunctionName": ...})',
                 node,
             )
-        resource_node = self.holds(node.args[0])
+        resource, called = self.resource(node.args[0])
+        arguments = node.args[1] if len(node.args) == 2 else None
+        return self.task_state(node, resource, called, arguments, node.keywords)
+
+    def activity_call(self, node: ast.Call) -> Expr:
+        """activity(resource, input, timeout=, heartbeat=, retry=): a Task that
+        waits for a worker of the activity to send back its result."""
+        self.admit(node, "activity", "Task")
+        if not node.args or len(node.args) > 2:
+            raise CompileError(
+                "activity takes the activity ARN and its input: "
+                'activity("arn:aws:states:<region>:<account>:activity:review", {...})',
+                node,
+            )
+        resource, called = self.resource(node.args[0])
+        if called.kind == "substituted":
+            called = replace(called, name="activity")
+        elif called.kind != "activity":
+            raise CompileError(
+                "activity takes an activity ARN, "
+                "arn:aws:states:<region>:<account>:activity:<name>, or a ${...} "
+                "filled in when the machine is deployed; call other resources "
+                "with task() or aws.sdk",
+                node.args[0],
+            )
+        for keyword in node.keywords:
+            if keyword.arg not in {"timeout", "heartbeat", "retry"}:
+                raise CompileError(
+                    "activity takes timeout=, heartbeat= and retry=; put what "
+                    "the worker reads in its input",
+                    keyword,
+                )
+        arguments = node.args[1] if len(node.args) == 2 else None
+        return self.task_state(node, resource, called, arguments, node.keywords)
+
+    def operation_call(self, node: ast.Call, target: str) -> Expr:
+        """aws.sdk.<service>.<operation>(...) and aws.optimized.<service>.
+        <operation>(...): a Task calling the operation, whose keyword arguments
+        in PascalCase are its Arguments."""
+        segments = target.split(".")
+        if not (
+            len(segments) == 5
+            and segments[2] in {"sdk", "optimized"}
+            and segments[4] != "errors"
+        ):
+            raise CompileError(
+                "call an operation of a service: aws.sdk.<service>.<operation>"
+                "(...), such as aws.sdk.dynamodb.update_item(...), or "
+                "aws.optimized.<service>.<operation>(...)",
+                node,
+            )
+        self.admit(node, ast.unparse(node.func), "Task")
+        suffix, pattern = integration_pattern(node)
+        try:
+            resource = operation_resource(*segments[2:])
+        except ResourceError as exc:
+            raise CompileError(str(exc), node.func) from None
+        try:
+            called = integration(resource + suffix)
+        except ResourceError as exc:
+            # The operation's own ARN is valid, so only the pattern can fail.
+            raise CompileError(str(exc), pattern) from None
+        options = [k for k in node.keywords if k.arg in {*TASK_OPTIONS, "retry"}]
+        return self.task_state(
+            node, resource + suffix, called, operation_arguments(node), options
+        )
+
+    def resource(self, node: ast.expr) -> tuple[str, Integration]:
+        """The resource ARN of a task() or an activity(), written literally or
+        as a name assigned outside the machine."""
+        resource_node = self.holds(node)
         if not (
             isinstance(resource_node, ast.Constant)
             and isinstance(resource_node.value, str)
@@ -2827,16 +2916,27 @@ class Translator:
                 resource_node,
             )
         try:
-            called = integration(resource_node.value)
+            return resource_node.value, integration(resource_node.value)
         except ResourceError as exc:
             raise CompileError(str(exc), resource_node) from exc
-        # Nothing inside task() makes a Task of its own.
+
+    def task_state(
+        self,
+        node: ast.Call,
+        resource: str,
+        called: Integration,
+        arguments_node: ast.expr | None,
+        keywords: list[ast.keyword],
+    ) -> Expr:
+        # Nothing inside the call makes a Task of its own.
         self.accepts_task = False
         try:
-            arguments, options = self.task_arguments(node, called)
+            arguments, options = self.task_arguments(
+                node, called, arguments_node, keywords
+            )
         finally:
             self.accepts_task = True
-        state: dict[str, object] = {"Type": "Task", "Resource": resource_node.value}
+        state: dict[str, object] = {"Type": "Task", "Resource": resource}
         if arguments is not None:
             state["Arguments"] = arguments.template
         elif called.kind in {"sdk", "optimized"}:
@@ -2893,17 +2993,21 @@ class Translator:
         return expression("$states.result", type=result)
 
     def task_arguments(
-        self, node: ast.Call, called: Integration
+        self,
+        node: ast.Call,
+        called: Integration,
+        arguments_node: ast.expr | None,
+        keywords: list[ast.keyword],
     ) -> tuple[Expr | None, dict[str, Expr]]:
         arguments = None
         callback = called.pattern == ".waitForTaskToken"
-        if len(node.args) == 2:
+        if arguments_node is not None:
             self.token_readable, self.token_read = callback, False
             try:
-                arguments = self.expr(node.args[1])
+                arguments = self.expr(arguments_node)
             finally:
                 self.token_readable = False
-            check_arguments(node.args[1], called)
+            check_arguments(arguments_node, called)
         elif called.required:
             raise CompileError(
                 f"{called.name} needs {', '.join(sorted(called.required))}: "
@@ -2917,7 +3021,7 @@ class Translator:
                 node,
             )
         options: dict[str, Expr] = {}
-        for keyword in node.keywords:
+        for keyword in keywords:
             if keyword.arg == "retry":
                 # The error classes resolve against the module, in the statement.
                 continue
@@ -3249,6 +3353,53 @@ def check_seconds(node: ast.Call, name: str, value: Expr) -> None:
         raise CompileError(
             f"{name} is a number of seconds, not {article(value.type.describe())}", node
         )
+
+
+def integration_pattern(node: ast.Call) -> tuple[str, ast.expr | None]:
+    """pattern=".sync", ".sync:2" or ".waitForTaskToken" of an operation call,
+    which ends its resource ARN, and the value written for it."""
+    value = next((k.value for k in node.keywords if k.arg == "pattern"), None)
+    if value is None:
+        return "", None
+    if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+        raise CompileError(
+            "pattern is a literal string, as the resource ARN ends with it: "
+            'pattern=".waitForTaskToken"',
+            value,
+        )
+    return value.value, value
+
+
+def operation_arguments(node: ast.Call) -> ast.expr:
+    """The Arguments of an operation call: its keyword arguments in PascalCase,
+    and the dicts ** unpacks, as a dict written in their place. A dict unpacked
+    on its own is the Arguments as it is, as task(resource, arguments) takes
+    it."""
+    if node.args:
+        raise CompileError(
+            "pass the API parameters by name, in PascalCase: TableName=...",
+            node.args[0],
+        )
+    keys: list[ast.expr | None] = []
+    values: list[ast.expr] = []
+    for keyword in node.keywords:
+        if keyword.arg is None:
+            keys.append(None)
+        elif keyword.arg in {*TASK_OPTIONS, "retry", "pattern"}:
+            continue
+        elif keyword.arg[0].isupper():
+            keys.append(ast.copy_location(ast.Constant(keyword.arg), keyword))
+        else:
+            raise CompileError(
+                "API parameters are PascalCase, and timeout=, heartbeat=, "
+                f"role=, retry= and pattern= set the Task; {keyword.arg} is "
+                "neither",
+                keyword,
+            )
+        values.append(keyword.value)
+    if keys == [None]:
+        return values[0]
+    return ast.copy_location(ast.Dict(keys, values), node)
 
 
 def retry_option(node: ast.Call) -> ast.expr | None:

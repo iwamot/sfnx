@@ -1,4 +1,4 @@
-from sfnx import context, state_machine, task, wait
+from sfnx import aws, context, state_machine, wait
 
 
 class TranscriptionFailed(Exception):
@@ -18,21 +18,17 @@ def transcribe(input):
     """Transcribe an audio file, polling the job until it finishes."""
     name = context["Execution"]["Name"]
     # Transcribe has no .sync integration, so the machine polls the job itself.
-    task(
-        "arn:aws:states:::aws-sdk:transcribe:startTranscriptionJob",
-        {
-            "TranscriptionJobName": name,
-            "Media": {"MediaFileUri": input["uri"]},
-            "IdentifyLanguage": True,
-        },
+    aws.sdk.transcribe.start_transcription_job(
+        TranscriptionJobName=name,
+        Media={"MediaFileUri": input["uri"]},
+        IdentifyLanguage=True,
     )
     polls = 0
     while polls < MAX_POLLS:
         wait(POLL_SECONDS)
-        job = task(
-            "arn:aws:states:::aws-sdk:transcribe:getTranscriptionJob",
-            {"TranscriptionJobName": name},
-        )["TranscriptionJob"]
+        job = aws.sdk.transcribe.get_transcription_job(TranscriptionJobName=name)[
+            "TranscriptionJob"
+        ]
         status = job["TranscriptionJobStatus"]
         if status == "COMPLETED":
             return {"transcript": job["Transcript"]["TranscriptFileUri"]}

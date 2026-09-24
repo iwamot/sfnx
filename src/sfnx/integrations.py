@@ -1,11 +1,13 @@
 """What a Task resource ARN calls, and what botocore knows about it."""
 
 import difflib
+import keyword
 import re
 from dataclasses import dataclass
 from functools import cache
 
 import botocore.session
+from botocore import xform_name
 from botocore.model import (
     ListShape,
     MapShape,
@@ -181,11 +183,49 @@ def sdk_service(service: str, spelling: str) -> ServiceModel:
     return model
 
 
+def arn_service(name: str) -> str:
+    """A service as Python spells it after aws.sdk. or aws.optimized.: a _
+    after a Python keyword, lambda_ for lambda, is dropped."""
+    if keyword.iskeyword(name.removesuffix("_")):
+        return name.removesuffix("_")
+    return name
+
+
+def operation_resource(kind: str, service: str, operation: str) -> str:
+    """The resource ARN of aws.sdk.<service>.<operation>(...) or
+    aws.optimized.<service>.<operation>(...). An SDK integration's operation
+    is botocore's snake_case name for its action; an optimized integration has
+    no model to look one up in, so its words are joined in camelCase."""
+    service = arn_service(service)
+    if kind == "optimized":
+        if not (
+            re.fullmatch(r"[a-z0-9]+(?:_[a-z0-9]+)*", service)
+            and re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", operation)
+        ):
+            raise ResourceError(
+                "an optimized integration is aws.optimized.<service>.<operation> "
+                "in lowercase, with _ between words and for a hyphen: "
+                "aws.optimized.states.start_execution"
+            )
+        head, *rest = operation.split("_")
+        action = head + "".join(word.capitalize() for word in rest)
+        return f"arn:aws:states:::{service.replace('_', '-')}:{action}"
+    model = sdk_service(service, f"aws.sdk.{{}}.{operation}(...)")
+    operations = {xform_name(name): name for name in model.operation_names}
+    if operation not in operations:
+        close = difflib.get_close_matches(operation, sorted(operations), n=3)
+        hint = f"; did you mean {' or '.join(close)}?" if close else ""
+        raise ResourceError(f"{service} has no operation {operation}{hint}")
+    action = operations[operation]
+    return f"arn:aws:states:::aws-sdk:{service}:{action[0].lower()}{action[1:]}"
+
+
 def sdk_error(service: str, name: str) -> str:
     """The error name an SDK integration reports for an exception of its
     service, such as DynamoDb.ConditionalCheckFailedException: the class the
     AWS SDK for Java gives it, after the service's name in that SDK. An error
     the model does not list is the service's own, DynamoDb.DynamoDbException."""
+    service = arn_service(service)
     model = sdk_service(service, f"aws.sdk.{{}}.errors.{name}")
     prefix = java_service_name(model.service_id)
     renamed = JAVA_RENAMED_ERRORS.get(model.service_name, {})

@@ -31,10 +31,10 @@ States split only where ASL requires it: a Task, a Choice, an assignment of a na
 
 ```python
 # Charge the card once the stock is reserved.
-receipt = task("arn:aws:states:::lambda:invoke", {"FunctionName": "charge"})
+receipt = aws.optimized.lambda_.invoke(FunctionName="charge")
 ```
 
-- The comment lines right above a statement, with no blank line between, are the `Comment` of the first state the statement makes: the Choice of an `if`, `for` or `while`, the Task of a `task()`. Several lines are joined with line breaks.
+- The comment lines right above a statement, with no blank line between, are the `Comment` of the first state the statement makes: the Choice of an `if`, `for` or `while`, the Task of a Task call. Several lines are joined with line breaks.
 - Assignments that share a Pass share their comments too, one after another. A statement that makes no state of its own, such as `try:` or `while True:`, passes its comment to the first state of its body; one that makes none at all, such as `break`, drops it.
 - A comment at the end of a line of code stays in the source.
 - The docstring of a function run by `parallel()` or a map is the `Comment` of its branch or processor.
@@ -204,14 +204,11 @@ RETRIES = [{"ErrorEquals": [Lambda.ServiceException], "MaxAttempts": 3}]
 
 @state_machine
 def pay(input):
-    stock = task(
-        "arn:aws:states:::dynamodb:getItem",
-        {"TableName": TABLE, "Key": {"id": {"S": input["id"]}}},
+    stock = aws.optimized.dynamodb.get_item(
+        TableName=TABLE, Key={"id": {"S": input["id"]}}
     )
-    return task(
-        "arn:aws:states:::lambda:invoke",
-        {"FunctionName": "charge", "Payload": stock},
-        retry=RETRIES,
+    return aws.optimized.lambda_.invoke(
+        FunctionName="charge", Payload=stock, retry=RETRIES
     )
 ```
 
@@ -238,20 +235,32 @@ def pay(input):
 ## Tasks
 
 ```python
-receipt = task(
-    "arn:aws:states:::lambda:invoke",
-    {"FunctionName": "charge", "Payload": input},
+receipt = aws.optimized.lambda_.invoke(
+    FunctionName="charge",
+    Payload=input,
     timeout=30,
     retry=[{"ErrorEquals": [Timeout], "MaxAttempts": 3}],
 )
+stock = aws.sdk.dynamodb.get_item(TableName="stock", Key={"sku": {"S": sku}})
+decision = aws.optimized.sqs.send_message(
+    QueueUrl=QUEUE,
+    MessageBody={"token": context["Task"]["Token"]},
+    pattern=".waitForTaskToken",
+)
+review = activity("arn:aws:states:us-east-1:123456789012:activity:review", input)
+done = task("${ResourceArn}", {"Id": input["id"]})
 ```
 
-- The first argument is the literal resource ARN, the second the `Arguments`. The options are `timeout=` (`TimeoutSeconds`), `heartbeat=` (`HeartbeatSeconds`), `role=` (`Credentials.RoleArn`, not for activities and HTTP Tasks) and `retry=`.
-- A statement holds one `task()`, as an assignment (`Assign` gets `$states.result`), a `return` (the Task ends the machine) or a line of its own. It cannot sit in an `if` test, in a comprehension, or where it would run only sometimes (`a and task(...)`, `a < b < task(...)`).
-- SDK integrations (`arn:aws:states:::aws-sdk:<service>:<action>`) are checked against botocore: the service, the action, argument names in PascalCase and the required arguments. Service names follow the AWS SDK for Java (`sfn`, `eventbridge`, `cloudwatchlogs`); botocore's names that differ (`logs`) are rejected. Whether Step Functions supports a service or action that botocore has is not checked, nor are the types of argument values; ValidateStateMachineDefinition checks those it can, such as a number written as a Lambda `Payload`.
-- Optimized integrations (`arn:aws:states:::<service>:<action>`, with `.sync`, `.sync:2` or `.waitForTaskToken`) are checked for argument names and required arguments when botocore has the action. HTTP Tasks need `ApiEndpoint`, `Method` and a connection. Activity and Lambda function ARNs, and ARNs containing `${...}`, are passed as written.
+- **`aws.sdk.<service>.<operation>(...)`** calls `arn:aws:states:::aws-sdk:<service>:<action>`, and **`aws.optimized.<service>.<operation>(...)`** calls `arn:aws:states:::<service>:<action>` (`from sfnx import aws`). The service is named as its ARN names it, with `lambda_` for `lambda` and `_` for a hyphen (`emr_containers`). The operation is in snake_case: botocore's name for the SDK action (`list_db_instances` is `listDBInstances`), and for an optimized integration, which botocore does not model, its words joined in camelCase (`start_execution` is `startExecution`). `aws.optimized.http.invoke(...)` is an HTTP Task.
+- The API parameters are keyword arguments in PascalCase, and are the `Arguments`. A dict unpacked with `**` is merged into them, and one unpacked on its own is the `Arguments` as it is. The Task's settings are lowercase: `timeout=` (`TimeoutSeconds`), `heartbeat=` (`HeartbeatSeconds`), `role=` (`Credentials.RoleArn`), `retry=`, and `pattern=` (`".sync"`, `".sync:2"` or `".waitForTaskToken"`, which ends the ARN; SDK integrations take only `".waitForTaskToken"`).
+- **`activity(arn, input, timeout=, heartbeat=, retry=)`** waits for a worker of an activity, whose ARN is written out or is a `${...}` filled in at deploy time. The input is the `Arguments`, written as a dict.
+- **`task(resource, arguments, timeout=, heartbeat=, role=, retry=)`** writes the resource ARN out, the pattern included, and the `Arguments` as the second argument. Any Task can be written this way; it is the spelling for a resource that is not an operation of a service, such as a `${...}` or a Lambda function's ARN, and for arguments whose keys are not identifiers. The ARN is a literal string, or a name assigned outside the machine that holds one.
+- A statement holds one Task call, as an assignment (`Assign` gets `$states.result`), a `return` (the Task ends the machine) or a line of its own. It cannot sit in an `if` test, in a comprehension, or where it would run only sometimes (`a and task(...)`, `a < b < task(...)`).
+- SDK integrations are checked against botocore: the service, the operation, argument names and the required arguments. Service names follow the AWS SDK for Java (`sfn`, `eventbridge`, `cloudwatchlogs`); botocore's names that differ (`logs`) are rejected with the name to write. Whether Step Functions supports a service or action that botocore has is not checked, nor are the types of argument values; ValidateStateMachineDefinition checks those it can, such as a number written as a Lambda `Payload`.
+- Optimized integrations are checked for argument names and required arguments when botocore has the action, and which pattern an action supports is not checked. HTTP Tasks need `ApiEndpoint`, `Method` and a connection. Activity and Lambda function ARNs, and ARNs containing `${...}`, are passed as written.
 - Arguments that unpack a dict with `**` are checked only for the argument names written out; the required arguments and what an HTTP Task needs are left to Step Functions when the Task runs.
 - A `.waitForTaskToken` Task must pass `context["Task"]["Token"]` in its arguments, the only place it can be read.
+- sfnx ships no type stubs for the operations of `aws`, so a type checker takes any operation and any argument; the compiler checks them. An operation's result has the type an annotation on the assignment declares, as `task()`'s does.
 
 ## Parallel and maps
 
@@ -262,7 +271,7 @@ def email():
     return {"to": order["email"]}
 
 def audit():
-    entry = task("arn:aws:states:::aws-sdk:sns:publish", {"Message": order["id"]})
+    entry = aws.sdk.sns.publish(Message=order["id"])
     return entry["MessageId"]
 
 message, receipt = parallel(email, audit)
@@ -319,7 +328,7 @@ class Lambda:
 
 
 try:
-    receipt = task("arn:aws:states:::lambda:invoke", {"FunctionName": "charge"})
+    receipt = aws.optimized.lambda_.invoke(FunctionName="charge")
 except (Declined, Lambda.ServiceException) as e:
     return {"declined": str(e)}
 except Exception:
@@ -339,14 +348,12 @@ except Exception:
 Flow is Python: `if`, `for`, `while` and `try` become states, and the operators and built-ins on this page become expressions. A transform JSONata has and this page does not is written out, with the values it reads passed by name.
 
 ```python
-from sfnx import jsonata, state_machine, task
+from sfnx import aws, jsonata, state_machine
 
 
 @state_machine
 def settle(input):
-    charges: list = task("arn:aws:states:::lambda:invoke", {"FunctionName": "load"})[
-        "Payload"
-    ]
+    charges: list = aws.optimized.lambda_.invoke(FunctionName="load")["Payload"]
     if not charges:
         return {}
     return jsonata(
@@ -488,4 +495,4 @@ A Map Run reports what it tolerated instead of raising what its children raised,
 
 ## At run time
 
-Importing the module works, and the names sfnx exports behave as plain Python where they can: `state_machine` returns the function, `wait` returns at once, `parallel` and `inline_map` call their functions in turn, and `distributed_map` calls its function with each item, each value of a dict, or with `batch=` each list of up to `MaxItemsPerBatch` items. `task()` and `distributed_map(source=...)` raise `NotImplementedError`, and `context` is an empty dict. Functions get the arguments the definition gives them, but `retry=`, `tolerated_failure_count=`, `tolerated_failure_percentage=`, `result=` and `timeout` take effect only in Step Functions.
+Importing the module works, and the names sfnx exports behave as plain Python where they can: `state_machine` returns the function, `wait` returns at once, `parallel` and `inline_map` call their functions in turn, and `distributed_map` calls its function with each item, each value of a dict, or with `batch=` each list of up to `MaxItemsPerBatch` items. The Task calls (`task()`, `activity()` and the operations of `aws`) and `distributed_map(source=...)` raise `NotImplementedError`, and `context` is an empty dict. Functions get the arguments the definition gives them, but `retry=`, `tolerated_failure_count=`, `tolerated_failure_percentage=`, `result=` and `timeout` take effect only in Step Functions.

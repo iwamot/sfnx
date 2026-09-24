@@ -12,11 +12,11 @@ sfnx compile app.py -o out/               # one <function>.asl.json per machine
 The file is a JSONata-mode definition. Values that depend on the deployment are written as `${Name}` in the source, where Step Functions definition substitutions fill them in:
 
 ```python
-task("arn:aws:states:::lambda:invoke", {"FunctionName": "${ChargeFunctionArn}", "Payload": input})
-task("arn:aws:states:::aws-sdk:dynamodb:getItem", {"TableName": "${Table}", "Key": key})
+aws.optimized.lambda_.invoke(FunctionName="${ChargeFunctionArn}", Payload=input)
+aws.sdk.dynamodb.get_item(TableName="${Table}", Key=key)
 ```
 
-A placeholder inside a string argument is an ordinary string to the compiler. A resource ARN may be a placeholder too (`task("${ApproveActivityArn}")`), and is then passed through unchecked.
+A placeholder inside a string argument is an ordinary string to the compiler. A resource ARN may be a placeholder too (`activity("${ApproveActivityArn}", input)`, or `task("${Resource}", ...)` for any Task), and is then passed through unchecked.
 
 ## Building the definitions to deploy
 
@@ -48,7 +48,7 @@ sfnx compile examples/orders.py --source-locations
 ```json
     "raise": {
       "Type": "Fail",
-      "Comment": "sfnx-source: {\"file\": \"examples/orders.py\", \"spans\": [{\"at\": \"38:13-38:73\"}]}",
+      "Comment": "sfnx-source: {\"file\": \"examples/orders.py\", \"spans\": [{\"at\": \"35:13-35:73\"}]}",
 ```
 
 After `sfnx-source: ` comes a JSON object:
@@ -131,14 +131,14 @@ aws stepfunctions start-execution --state-machine-arn arn:aws:states:... --input
 
 | The workflow uses | The role needs |
 |---|---|
-| `task("arn:aws:states:::aws-sdk:<service>:<action>", ...)` | the action on the resource, as with any SDK call (`dynamodb:UpdateItem`, `sns:Publish`, ...) |
+| `aws.sdk.<service>.<operation>(...)`, which calls `arn:aws:states:::aws-sdk:<service>:<action>` | the action on the resource, as with any SDK call (`dynamodb:UpdateItem`, `sns:Publish`, ...) |
 | an optimized integration (`lambda:invoke`, `sqs:sendMessage`, ...) | the action of that API (`lambda:InvokeFunction`, `sqs:SendMessage`, ...) |
 | `.sync` / `.sync:2` | the action, plus what the integration polls: `events:PutTargets`, `events:PutRule`, `events:DescribeRule` on the managed rule, and the describe action of the job (`states:DescribeExecution`, `batch:DescribeJobs`, ...); and the action that stops the job (`states:StopExecution`, `batch:TerminateJob`, ...), which Step Functions calls when the execution is stopped |
 | `.waitForTaskToken` | the action; whoever receives the token calls `SendTaskSuccess` / `SendTaskFailure` with its own credentials |
 | an activity ARN | nothing on the role; the worker polls `GetActivityTask` and answers under its own credentials |
 | `arn:aws:states:::http:invoke` | `states:InvokeHTTPEndpoint`, `events:RetrieveConnectionCredentials` on the connection, and `secretsmanager:GetSecretValue` / `secretsmanager:DescribeSecret` on its secret |
 | `distributed_map` | `states:StartExecution` on the machine itself and `states:DescribeExecution` on its executions (`states:RedriveExecution` to redrive), the S3 actions of `source=` (`s3:GetObject`, `s3:ListBucket`) and of `result=` (`s3:PutObject`, `s3:GetObject`, `s3:ListMultipartUploadParts`, `s3:AbortMultipartUpload`, plus `kms:Decrypt` / `kms:Encrypt` / `kms:GenerateDataKey` on a KMS-encrypted bucket) |
-| `role=` on a task | `sts:AssumeRole` on that role, which then needs the API's action |
+| `role=` on a Task | `sts:AssumeRole` on that role, which then needs the API's action |
 
 ## Standard and Express
 

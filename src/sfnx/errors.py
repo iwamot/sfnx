@@ -2,7 +2,6 @@
 
 import ast
 import builtins
-import keyword
 from collections.abc import Callable
 
 from sfnx.diagnostics import CompileError
@@ -78,11 +77,8 @@ def sdk(path: list[str], node: ast.expr) -> str:
             "such as aws.sdk.dynamodb.errors.ConditionalCheckFailedException",
             node,
         )
-    service = path[1]
-    if keyword.iskeyword(service.removesuffix("_")):
-        service = service.removesuffix("_")
     try:
-        return sdk_error(service, path[3])
+        return sdk_error(path[1], path[3])
     except ResourceError as exc:
         raise CompileError(str(exc), node) from None
 
