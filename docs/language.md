@@ -88,7 +88,7 @@ def fulfill(input: Order):
 
 A Lambda `Payload` is typed the same way, `receipt: Receipt = task(...)["Payload"]`, and so is the whole result of a Task whose type is unknown, such as a `.waitForTaskToken` or activity result: `decision: Decision = task(...)`. The class derives from `TypedDict` directly (`typing` or `typing_extensions`) and declares every field on itself, one per line; it may name the classes written above it, in `list[Item]`, `dict[str, Item]` or a union. `NotRequired[T]` and `total=False` say a key may be left out, not that its value may be `None`: read such a key with `"coupon" in input` or `input.get("coupon")`, whose result is `str | None`, and `input["coupon"]` fails at run time when the key is missing, as any missing key does. A key the class does not declare has an unknown type. A recursive TypedDict, one that inherits from another, and the form `TypedDict("Order", {...})` are rejected.
 
-A value that may have several types must be narrowed first. `isinstance(x, str)`, `x is None` and `x is not None` narrow in `if` / `elif` / `else`, in the right operand of `and` / `or`, in conditional expressions, in comprehension conditions and after a branch that returns.
+A value that may have several types must be narrowed first. `isinstance(x, str)`, `x is None` and `x is not None` narrow in `if` / `elif` / `else`, in the right operand of `and` / `or`, in conditional expressions, in comprehension conditions and after a branch that returns. `x or default` never gives null, which is falsy, so `xs or []` of an `xs` that may be null is a list.
 
 Annotations are not checked at run time. A wrong one fails the way hand-written JSONata fails, with `States.QueryEvaluationError`.
 
