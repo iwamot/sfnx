@@ -4,6 +4,7 @@ import textwrap
 
 import pytest
 
+from sfnx import testing
 from sfnx.compiler import compile_source, definitions
 from sfnx.diagnostics import CompileError
 from sfnx.locations import PREFIX
@@ -618,6 +619,80 @@ def test_a_shared_end_names_the_source_of_each_path():
     assert comment.startswith(PREFIX)
     spans = json.loads(comment.removeprefix(PREFIX))["spans"]
     assert [span["at"] for span in spans] == ["7:9-7:20", "8:5-8:16"]
+
+
+TASKS = "from sfnx import context, state_machine, task\n\n\nclass Failed(Exception):\n    pass\n\n\n"
+
+
+def tasks_definition(body: str) -> dict:
+    (compiled,) = compile_source(
+        TASKS + "@state_machine\ndef pay(input):\n" + textwrap.indent(body, "    ")
+    ).values()
+    return compiled
+
+
+def called(compiled: dict, execution_input: object) -> list[object]:
+    execution = testing.run(compiled, execution_input, lambda call: {})
+    return [(call.arguments, execution.error) for call in execution.calls]
+
+
+def test_paths_that_end_with_the_same_task_share_it():
+    # Both paths unlock the record last, as a hand-writer runs one Unlock.
+    body = (
+        'if input["a"]:\n'
+        '    task("arn:aws:states:::lambda:invoke", {"FunctionName": "skipped"})\n'
+        '    task("arn:aws:states:::lambda:invoke", {"FunctionName": "unlock"})\n'
+        "    return None\n"
+        'task("arn:aws:states:::lambda:invoke", {"FunctionName": "done"})\n'
+        'task("arn:aws:states:::lambda:invoke", {"FunctionName": "unlock"})'
+    )
+    compiled = tasks_definition(body)
+    states = compiled["States"]
+    assert [n for n, s in states.items() if s["Type"] == "Task"] == [
+        "invoke",
+        "invoke_2",
+        "invoke_3",
+    ]
+    assert states["invoke"]["Next"] == states["invoke_3"]["Next"] == "invoke_2"
+    for a in (True, False):
+        assert [args for args, _ in called(compiled, {"a": a})] == [
+            {"FunctionName": "skipped" if a else "done"},
+            {"FunctionName": "unlock"},
+        ]
+
+
+def test_states_the_same_once_what_follows_is_shared_are_shared_too():
+    # The Fails are shared first, and then the Tasks that lead to them.
+    body = (
+        'if input["a"]:\n'
+        '    task("arn:aws:states:::lambda:invoke", {"FunctionName": "alert"})\n'
+        '    raise Failed("no")\n'
+        'task("arn:aws:states:::lambda:invoke", {"FunctionName": "charge"})\n'
+        'task("arn:aws:states:::lambda:invoke", {"FunctionName": "alert"})\n'
+        'raise Failed("no")'
+    )
+    compiled = tasks_definition(body)
+    states = compiled["States"]
+    assert [n for n, s in states.items() if s["Type"] in {"Task", "Fail"}] == [
+        "invoke",
+        "raise",
+        "invoke_2",
+    ]
+    assert called(compiled, {"a": True}) == [({"FunctionName": "alert"}, "Failed")]
+
+
+def test_a_state_that_reads_its_name_keeps_its_own():
+    body = (
+        'if input["a"]:\n'
+        '    task("arn:aws:states:::lambda:invoke", {"FunctionName": "skipped"})\n'
+        '    task("arn:aws:states:::lambda:invoke", {"FunctionName": "unlock", "Payload": context["State"]["Name"]})\n'
+        "    return None\n"
+        'task("arn:aws:states:::lambda:invoke", {"FunctionName": "done"})\n'
+        'task("arn:aws:states:::lambda:invoke", {"FunctionName": "unlock", "Payload": context["State"]["Name"]})'
+    )
+    compiled = tasks_definition(body)
+    names = [called(compiled, {"a": a})[1][0]["Payload"] for a in (True, False)]
+    assert names == ["invoke_2", "invoke_4"]
 
 
 def test_an_if_right_after_an_if_that_ends_is_one_choice():

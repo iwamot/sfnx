@@ -71,6 +71,8 @@ RETRIED = frozenset({EVERYTHING, "States.QueryEvaluationError"})
 # Context a state and the Pass after it read alike. The State part, its name
 # and when it was entered, differs, and so does the whole object.
 SHARED_CONTEXT = re.compile(r"\$states\.context(?!\.(Execution|StateMachine|Map)\b)")
+# The part of the context that names the state it is read in.
+NAMED_CONTEXT = re.compile(r"\$states\.context\.State\b")
 
 
 def machine_options(decorator: ast.expr, context: Module) -> dict[str, object]:
@@ -1496,7 +1498,7 @@ class Scope:
         fold_start(definition, scope.starting)
         thread_choices(definition)
         merge_choices(definition)
-        share_ends(definition)
+        share_states(definition)
         docstring = ast.get_docstring(function)
         if docstring:
             definition = {"Comment": docstring, **definition}
@@ -3345,23 +3347,44 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
             node[key] = replaced(written)
 
 
-def share_ends(definition: dict[str, object]) -> None:
-    """Succeed and Fail states that end the same way are one state, as a
-    hand-writer ends every path that returns the same at one Succeed. They
-    are compared without the location line --source-locations adds, whose
-    spans the one kept takes, so the option changes no state."""
+def share_states(definition: dict[str, object]) -> None:
+    """States that do the same and go the same way are one state, as a
+    hand-writer ends every path that returns the same at one Succeed and runs
+    a clean-up the paths share once. A state behaves as its fields, its input,
+    the variables and the context say, so one reached from either path does
+    what each did; only the context's State names the state it is read in,
+    and a state that reads it keeps its own. Sharing what two states lead to
+    can make them the same, so this repeats until nothing more is shared.
+    States are compared without the location line --source-locations adds,
+    whose spans the one kept takes, so the option changes no state."""
     states = definition["States"]
     assert isinstance(states, dict)
+    while shared := same_states(states):
+        for name in shared:
+            del states[name]
+        start = definition["StartAt"]
+        assert isinstance(start, str)
+        definition["StartAt"] = shared.get(start, start)
+        for state in states.values():
+            for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
+                for key in ("Next", "Default"):
+                    if holder.get(key) in shared:
+                        holder[key] = shared[holder[key]]
+
+
+def same_states(states: dict[str, dict[str, object]]) -> dict[str, str]:
+    """Each state that is the same as one before it, and that one, whose
+    Comment takes the spans of both."""
     kept: dict[str, str] = {}
     shared: dict[str, str] = {}
     for name, state in states.items():
-        if state["Type"] not in {"Succeed", "Fail"}:
-            continue
         own, located = split_comment(state.get("Comment"))
         key = json.dumps(
             {**{k: v for k, v in state.items() if k != "Comment"}, "Comment": own},
             sort_keys=True,
         )
+        if NAMED_CONTEXT.search(key):
+            continue
         if key not in kept:
             kept[key] = name
             continue
@@ -3376,13 +3399,7 @@ def share_ends(definition: dict[str, object]) -> None:
             text = [own] if own else []
             located_line = PREFIX + json.dumps(joined, ensure_ascii=False)
             first["Comment"] = "\n".join([*text, located_line])
-    for name in shared:
-        del states[name]
-    for state in states.values():
-        for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
-            for key in ("Next", "Default"):
-                if holder.get(key) in shared:
-                    holder[key] = shared[holder[key]]
+    return shared
 
 
 def joined_comments(first: object, second: object) -> str | None:
@@ -3557,7 +3574,7 @@ def compile_machine(
     fold_start(definition, scope.starting)
     thread_choices(definition)
     merge_choices(definition)
-    share_ends(definition)
+    share_states(definition)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
 
