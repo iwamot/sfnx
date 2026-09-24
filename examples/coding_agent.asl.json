@@ -58,9 +58,11 @@
             "States.ALL"
           ],
           "Assign": {
-            "e": "{% $states.errorOutput %}"
+            "e": "{% $states.errorOutput %}",
+            "failure_reason": "{% $states.errorOutput.Error %}",
+            "status": "open"
           },
-          "Next": "failure_reason"
+          "Next": "if_4"
         }
       ],
       "Assign": {
@@ -156,9 +158,11 @@
             "States.ALL"
           ],
           "Assign": {
-            "e": "{% $states.errorOutput %}"
+            "e": "{% $states.errorOutput %}",
+            "failure_reason": "{% $states.errorOutput.Error %}",
+            "status": "open"
           },
-          "Next": "failure_reason"
+          "Next": "if_4"
         }
       ],
       "Assign": {
@@ -212,14 +216,6 @@
         "status": "open"
       },
       "Default": "if_4"
-    },
-    "failure_reason": {
-      "Type": "Pass",
-      "Assign": {
-        "failure_reason": "{% $e.Error %}",
-        "status": "open"
-      },
-      "Next": "if_4"
     },
     "if_4": {
       "Type": "Choice",
@@ -277,9 +273,11 @@
             "States.ALL"
           ],
           "Assign": {
-            "e": "{% $states.errorOutput %}"
+            "e": "{% $states.errorOutput %}",
+            "failure_reason": "{% $states.errorOutput.Error %}",
+            "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
           },
-          "Next": "failure_reason_2"
+          "Next": "opened"
         }
       ],
       "Assign": {
@@ -290,14 +288,6 @@
     "return": {
       "Type": "Succeed",
       "Output": "{% $written.Payload %}"
-    },
-    "failure_reason_2": {
-      "Type": "Pass",
-      "Assign": {
-        "failure_reason": "{% $e.Error %}",
-        "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
-      },
-      "Next": "opened"
     },
     "opened": {
       "Type": "Task",
