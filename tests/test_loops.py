@@ -709,3 +709,41 @@ def test_diagnostics(body, message):
     with pytest.raises(CompileError) as raised:
         states(body)
     assert message in raised.value.message
+
+
+@pytest.mark.parametrize(
+    "before",
+    [
+        'if input["a"]:\n    n = 1\nelse:\n    n = 2\n',
+        'n = 0\nfor i in range(input["a"]):\n    n = n + i\n',
+    ],
+)
+def test_while_true_leads_back_to_what_its_body_assigns_first(before):
+    """The first assignment of the body could go in the Assign of what comes
+    right before the loop, a join or the exit of a for; the loop leads back
+    to it, so it stays a state of the body."""
+    body = (
+        "kept: list = input['rows']\n"
+        + before
+        + "while True:\n"
+        + "    kept = kept[:-1]\n"
+        + "    if len(kept) < 3:\n"
+        + "        break\n"
+        + "return kept"
+    )
+    assert run(body, {"a": 3, "rows": [1, 2, 3, 4, 5, 6]}) == [1, 2]
+
+
+def test_while_true_after_a_task_keeps_its_first_assignment():
+    """What follows a Task can go in its Assign, but not what starts a loop
+    that leads back to it."""
+    body = (
+        f'n: int = task("{PUBLISH}", {{"Message": "m"}})["n"]\n'
+        "k = 0\n"
+        "while True:\n"
+        "    k = k + 1\n"
+        "    if k > n:\n"
+        "        break\n"
+        "return k"
+    )
+    assert run(body, {}, {"n": lambda arguments: {"n": 3}}) == 4

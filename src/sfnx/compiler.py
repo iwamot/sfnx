@@ -298,6 +298,9 @@ class Scope:
         # it adds.
         self.pending_remarks: list[str] = []
         self.remark: str | None = None
+        # The body of a while True leads back to the first state it adds, so
+        # until it adds one, what it assigns cannot go in a state before it.
+        self.opening = False
         # What can hold the assignments that follow, until a state or a flush
         # does; while it lasts, control is only at its transition.
         self.carrier: Carrier | None = None
@@ -360,6 +363,7 @@ class Scope:
     ) -> str:
         self.carrier = None
         self.result = None
+        self.opening = False
         if self.locations is not None:
             located = self.locations.line(origins)
             remark = state.get("Comment")
@@ -392,13 +396,18 @@ class Scope:
             return
         if (
             result is not None
+            and not self.opening
             and folded.keys() == pending.keys()
             and self.may_fold(result.state)
             and self.holds_still(list(folded.values()))
         ):
             self.result = self.fold(result, folded, origins, remarks)
             return
-        if len(self.graph.tails) > 1 and self.spread(pending, origins, remarks):
+        if (
+            not self.opening
+            and len(self.graph.tails) > 1
+            and self.spread(pending, origins, remarks)
+        ):
             return
         state: dict[str, object] = {"Type": "Pass", "Assign": assign}
         if remarks:
@@ -2147,6 +2156,7 @@ class Scope:
             start = self.save()
             if forever:
                 exits: list[Flow] = []
+                self.opening = True
                 self.block(node.body)
                 self.flush()
                 added = [n for n in self.graph.states if n not in before]
