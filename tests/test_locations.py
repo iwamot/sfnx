@@ -170,19 +170,32 @@ def test_each_state_names_the_source_it_comes_from():
             [],
             [('return {"to": input["email"], "note": note}', None)],
         ),
-        "audit.invoke": ([], [('task(LAMBDA, {"FunctionName": "audit"})', None)]),
-        "audit.return": ([], [("def audit():", "end of function")]),
+        # The end of the function is where the Task ends the branch.
+        "audit.invoke": (
+            [],
+            [
+                ('task(LAMBDA, {"FunctionName": "audit"})', None),
+                ("def audit():", "end of function"),
+            ],
+        ),
     }
     ship = "def ship(order: dict, index: int) -> None:"
     assert located(SOURCE, fan) == {
-        "map": ([], [('inline_map(ship, input["orders"])', None)]),
+        "map": (
+            [],
+            [
+                ('inline_map(ship, input["orders"])', None),
+                ("def fan(input):", "end of function"),
+            ],
+        ),
         "ship.order": ([], [(ship, "parameters")]),
         "ship.invoke": (
             [],
-            [('task(LAMBDA, {"FunctionName": "ship", "Payload": order})', None)],
+            [
+                ('task(LAMBDA, {"FunctionName": "ship", "Payload": order})', None),
+                (ship, "end of function"),
+            ],
         ),
-        "ship.return": ([], [(ship, "end of function")]),
-        "return": ([], [("def fan(input):", "end of function")]),
     }
     # The docstrings of the machine and the processor stay as they are.
     assert pay["Comment"] == "Charge each order."

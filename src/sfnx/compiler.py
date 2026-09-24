@@ -602,7 +602,7 @@ class Scope:
             self.augment(node)
         elif isinstance(node, ast.Return):
             if node.value is None:
-                self.finish(literal(None), None, node)
+                self.end_without_value(node, [self.here()])
             elif not self.end_with_result(node.value):
                 self.finish(*self.translator.statement_value(node.value), node)
         elif isinstance(node, ast.If):
@@ -1110,12 +1110,23 @@ class Scope:
             self.bindings[name] = self.variable(name, known)
             self.partial.discard(name)
 
-    def end_with_result(self, value_node: ast.expr) -> bool:
+    def end_without_value(self, node: ast.AST, origins: list[Origin]) -> None:
+        """A return without a value, written or where a body ends, which
+        return None is: the state before it ends the machine or the branch
+        when it can, and a Succeed does otherwise."""
+        none = ast.copy_location(ast.Constant(None), node)
+        if not self.end_with_result(none, origins):
+            self.finish(literal(None), None, node, origins)
+
+    def end_with_result(
+        self, value_node: ast.expr, origins: list[Origin] | None = None
+    ) -> bool:
         """A return right after a Task, a Parallel or a Map, or right after the
         assignments that went in its Assign, as the state's Output and End,
         where a person ends a machine or a branch. The Output reads the
         variables the state assigns as what they take, and the other variables
-        from before the state, as the return does."""
+        from before the state, as the return does. origins are where the
+        return is written, the statement by default."""
         # A call in the return is a state of its own, and translating it again
         # would name its states again.
         if any(self.makes_state(node) for node in ast.walk(value_node)):
@@ -1136,7 +1147,7 @@ class Scope:
         remark = "\n".join(r for r in (result.remark, self.remark) if r) or None
         self.remark = None
         if self.locations is not None:
-            located = self.locations.line(result.origins + [self.here()])
+            located = self.locations.line(result.origins + (origins or [self.here()]))
             remark = f"{remark}\n{located}" if remark else located
         if remark:
             commented(state, remark)
@@ -1374,7 +1385,7 @@ class Scope:
         scope.materialize(function.body, function, "parameters")
         scope.block(function.body)
         if scope.graph.reachable:
-            scope.finish(literal(None), None, function, [ended(function)])
+            scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
         docstring = ast.get_docstring(function)
         if docstring:
@@ -2878,7 +2889,7 @@ def compile_machine(
     scope.locations = locations
     scope.block(function.body)
     if graph.reachable:
-        scope.finish(literal(None), None, function, [ended(function)])
+        scope.end_without_value(function, [ended(function)])
     docstring = ast.get_docstring(function)
     comment = {"Comment": docstring} if docstring else {}
     return {**comment, "QueryLanguage": "JSONata", **options, **graph.definition()}
