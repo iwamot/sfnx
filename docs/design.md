@@ -79,7 +79,7 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 ## What the compiler relies on
 
-From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14, 2026-09-18, 2026-09-22 and 2026-09-23).
+From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14, 2026-09-18, 2026-09-22, 2026-09-23 and 2026-09-24).
 
 ### JSONata in Step Functions
 
@@ -121,6 +121,7 @@ From the Step Functions and JSONata documentation, from [jsonata-python](https:/
 - `$trim` turns every run of whitespace into one space and removes it from both ends: `$split($trim('  a  b\t\nc '), ' ')` is `["a", "b", "c"]`, and `[""]` for blank text (measured).
 - `$replace` with a string pattern takes `$0` in the replacement literally, fails on an empty pattern and on a negative limit, replaces nothing with a limit of 0, and takes a limit of 2.5 as 2 (measured).
 - `$replace` also takes a regular expression written between slashes, and Step Functions reads `\s` in one as the ASCII whitespace: `$replace($s, /^\s+|\s+$/, '')` leaves a non-breaking space or an ideographic space at an end, which jsonata-python and Python's `strip()` remove (measured).
+- `$string` gives a string back as it is, and writes one inside an array or an object with the quotes and escapes of JSON. `$string([$x])` is no way to quote one, as an array `$x` is spliced into the brackets (`[1,2]`, not `[[1,2]]`); `$string({'v': $x})` keeps the value whole, and `$replace` with `/^\{"v":|\}$/` takes the value's own text out of it, emoji included, where `$substring` miscounts. It writes no spaces, and with `true` as its second argument it writes each member on a line of its own, indented by two spaces, as CPython's `json.dumps(x, indent=2)` does. It writes `1.0` as `1` and `1e-7` as `1e-7`, keeps a character outside ASCII such as `é` or `😀`, and escapes `\n` but writes U+0001 as it is (measured). jsonata-python escapes every character outside ASCII and U+0001 as `\uXXXX`, and writes `1.0` and `1e-07` as CPython does.
 - `$join` of `[]` is `""`, of a string is that string, and of an array holding a non-string fails (measured).
 - `$lowercase` and `$uppercase` changed `İ`, `ẞ`, `Σ`, `ß`, `ǆ` and `ﬁ` as Python's `lower()` and `upper()` do (measured).
 - `$substring` counts a negative start in UTF-16 units in Step Functions but in code points in jsonata-python (`$substring('héllo😀', -1, 1)`); `$length` counts code points in both (measured). On text with characters outside the Basic Multilingual Plane, Step Functions also returned other characters or half of one for some positive positions and lengths (`$substring('a😀b', 1, 1)`), and without a length it failed at 30 of 35 starts, where with a length it failed at none (measured).

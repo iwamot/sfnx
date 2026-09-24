@@ -105,6 +105,8 @@ EXPRESSIONS = {
 # removes it too, but also makes every run of whitespace inside the text one
 # space, which strip() does not.
 OUTER_WHITESPACE = expression(r"/^\s+|\s+$/")
+# What $string writes around a value it is given as the one member of {"v": x}.
+WRAPPER = expression(r'/^\{"v":|\}$/')
 
 MAX_SECONDS = 99_999_999
 TASK_OPTIONS = ("timeout", "heartbeat", "role")
@@ -338,7 +340,7 @@ UNQUOTE_PLUS = "urllib.parse.unquote_plus"
 # The standard library functions sfnx compiles, by how a call to one reads
 # without its import, and the import to write.
 MODULE_IMPORTS = {
-    "json.loads": "import json",
+    **dict.fromkeys(("json.loads", "json.dumps"), "import json"),
     **dict.fromkeys(BASE64, "import base64"),
     **dict.fromkeys((UNQUOTE, UNQUOTE_PLUS), "import urllib.parse"),
     "uuid.uuid4": "import uuid",
@@ -377,7 +379,6 @@ DICT_METHODS = {
 # The module functions sfnx does not compile that have one spelling here, by
 # how a call to one reads, and what to write instead.
 MODULE_REWRITES = {
-    "json.dumps": "write str(x), the JSON text of a dict or a list",
     "math.pow": "write x ** y",
     "os.path.basename": 'write path.split("/")[-1]',
 }
@@ -1872,6 +1873,8 @@ class Translator:
             )
         if target == "json.loads":
             return self.json_loads(node)
+        if target == "json.dumps":
+            return self.json_dumps(node)
         if target in MATH_FUNCTIONS:
             return self.math_function(node, target)
         if target in STRINGIFIED:
@@ -2562,6 +2565,39 @@ class Translator:
             raise CompileError("json.loads() takes one string: json.loads(s)", node)
         value = self.operand(node.args[0], STRING, "json.loads() reads a string")
         return call("parse", [value], None)
+
+    def json_dumps(self, node: ast.Call) -> Expr:
+        """json.dumps(x) as $string, which writes JSON text without the spaces
+        Python puts after , and :, and indent=2 as $string(x, true), which
+        writes what Python does. $string gives a string back as it is, so a
+        value that may be one is written inside an object and cut out of its
+        text with the quotes Python writes. It is cut out with $replace, as
+        Step Functions' $substring miscounts past a character outside the
+        Basic Multilingual Plane, such as an emoji."""
+        indent = next((k.value for k in node.keywords if k.arg == "indent"), None)
+        indented = [literal(True)] if indent is not None else []
+        if (
+            len(node.args) != 1
+            or len(node.keywords) != len(indented)
+            or (indent is not None and ast.dump(indent) != ast.dump(ast.Constant(2)))
+        ):
+            raise CompileError(
+                "json.dumps() takes one value: json.dumps(x) or "
+                "json.dumps(x, indent=2)",
+                node,
+            )
+        value = self.expr(node.args[0])
+        text = of(STRING)
+        if value.type is not None and STRING not in value.type.kinds:
+            return call("string", [value, *indented], text)
+        if indented:
+            raise CompileError(
+                "json.dumps(x, indent=2) needs x known not to be a string, "
+                "such as x: dict",
+                node,
+            )
+        written = call("string", [obj([("v", value)])], text)
+        return call("replace", [written, WRAPPER, literal("")], text)
 
     def string_method(self, node: ast.Call, method: ast.Attribute) -> Expr:
         """A method of str as the JSONata function for it. Of the JSON types
