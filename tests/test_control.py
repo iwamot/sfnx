@@ -501,22 +501,26 @@ def test_declarations_join_after_branches():
         ('xs: list = input["xs"]\nreturn [*xs]', "unpacking with * is not supported"),
         ('xs: list = input["xs"]\nreturn xs[::2]', "a slice takes no step"),
         # A function called directly runs as states, so the call is a
-        # statement's value, not a part of an expression.
+        # statement's value, not a part of an expression, unless its body is
+        # one return of a value.
         (
-            "def f():\n    return 1\nreturn f() + 1",
+            "def f():\n    x = 1\n    return x\nreturn f() + 1",
             (
                 "f() runs its body here, as states; call it on its own line, "
-                "assign its result or return it: result = f(...)"
+                "assign its result or return it: result = f(...). A function "
+                "whose body is one return of a value is called inside an "
+                "expression"
             ),
         ),
         (
-            "def f():\n    return 1\nif f():\n    pass",
+            "def f():\n    x = 1\n    return x\nif f():\n    pass",
             "f() runs its body here, as states",
         ),
+        ("def f():\n    return\nreturn [f()]", "f() runs its body here, as states"),
         # A function of the writer's own keeps its own message, even under the
         # name of a built-in that says what to write instead.
         (
-            "def filter(item):\n    return item\nreturn [filter(input)]",
+            "def filter(item):\n    x = item\n    return x\nreturn [filter(input)]",
             "filter() runs its body here, as states",
         ),
         (

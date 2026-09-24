@@ -45,7 +45,7 @@ from sfnx.jsontypes import (
 )
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
-from sfnx.translate import StateCall, Translator, text, unpacked
+from sfnx.translate import StateCall, Translator, direct_call, text, unpacked
 
 # Step Functions reserves $states for its own variables.
 MAX_VARIABLE = 80
@@ -278,6 +278,7 @@ class Scope:
         self.translator.is_function = lambda name: (
             name in self.functions or name in module.functions
         )
+        self.translator.returned = self.returned_expression
         # Functions defined in the body, for parallel() to run.
         self.functions: dict[str, ast.FunctionDef] = {}
         # What this scope assigns, and what enclosing scopes do: Step Functions
@@ -773,6 +774,19 @@ class Scope:
             self.declared.pop(name, None)
             self.partial.discard(name)
 
+    def returned_expression(
+        self, call: ast.Call
+    ) -> tuple[ast.expr, dict[str, ast.expr]]:
+        """For a call inside an expression, the value a function whose body is
+        one return of a value returns, and the argument written for each
+        parameter. A body of anything else makes states, which an expression
+        cannot hold."""
+        function = self.callee(call)
+        value = only_return(function)
+        if value is None:
+            raise CompileError(direct_call(function.name), call)
+        return value, self.written_arguments(function, call)
+
     def callee(self, call: ast.Call) -> ast.FunctionDef:
         """The function a direct call runs, if its body can be compiled in
         place of the call."""
@@ -872,7 +886,14 @@ class Scope:
             if parameter not in written:
                 raise CompileError(f"{name}() needs {parameter}", call)
         for argument in written.values():
-            made = next((n for n in ast.walk(argument) if self.adds_states(n)), None)
+            made = next(
+                (
+                    n
+                    for n in ast.walk(argument)
+                    if self.adds_states(n) and not self.returns_only(n)
+                ),
+                None,
+            )
             if made is not None:
                 assert isinstance(made, ast.Call)
                 raise CompileError(
@@ -881,6 +902,15 @@ class Scope:
                     made,
                 )
         return written
+
+    def returns_only(self, node: ast.AST) -> bool:
+        """Whether a node calls a function whose body is one return of a
+        value, which is written into the expression it is called in."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            return False
+        name = node.func.id
+        function = self.functions.get(name) or self.module.functions.get(name)
+        return function is not None and only_return(function) is not None
 
     def adds_states(self, node: ast.AST) -> bool:
         """Whether a node is a call that adds states."""
@@ -2797,6 +2827,17 @@ def local_names(function: ast.FunctionDef) -> set[str]:
     namespace = table.lookup(function.name).get_namespace()
     assert isinstance(namespace, symtable.Function)
     return set(namespace.get_locals())
+
+
+def only_return(function: ast.FunctionDef) -> ast.expr | None:
+    """The value a function returns where its body, past a docstring, is one
+    return of a value, or None where the body is anything else."""
+    body = (
+        function.body[1:] if ast.get_docstring(function) is not None else function.body
+    )
+    if len(body) == 1 and isinstance(body[0], ast.Return):
+        return body[0].value
+    return None
 
 
 def global_names(function: ast.FunctionDef) -> set[str]:

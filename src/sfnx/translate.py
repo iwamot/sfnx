@@ -491,6 +491,13 @@ class Translator:
         # The parameters of the functions being called directly, each with the
         # argument written for it, for the places that take what is written.
         self.arguments: dict[str, ast.expr] = {}
+        # The value a function whose body only returns one returns, called
+        # inside an expression, and the argument written for each parameter.
+        self.returned: Callable[[ast.Call], tuple[ast.expr, dict[str, ast.expr]]] = (
+            lambda call: (call, {})
+        )
+        # The functions whose value is being written in, innermost last.
+        self.inlining: list[str] = []
 
     def spelling(self, name: str) -> str:
         return spelling(name, self.spellings)
@@ -2027,6 +2034,10 @@ class Translator:
             )
         self.check_import(node.func)
         name = node.func.id
+        # A function of the module or the machine is called under its own name,
+        # which hides a built-in of that name, as it does in Python.
+        if self.is_function(name):
+            return self.inlined(node, name)
         if name in CONSUMERS:
             node = consumed(node)
         if name == "sorted":
@@ -2105,8 +2116,6 @@ class Translator:
                 "dict() does not convert here; declare the type instead: x: dict = ...",
                 node,
             )
-        if self.is_function(name):
-            raise CompileError(direct_call(name), node)
         if name in BUILTIN_REWRITES:
             raise CompileError(
                 f"{name}() is not supported; {BUILTIN_REWRITES[name]}", node
@@ -2629,6 +2638,40 @@ class Translator:
             and not right.keywords
             and ast.dump(left.args[0]) == ast.dump(right.args[0])
         )
+
+    def inlined(self, node: ast.Call, name: str) -> Expr:
+        """A function whose body only returns a value, called inside an
+        expression: that value, written where it is called, with each parameter
+        reading the value written for it. One that changes on evaluation is
+        bound first in a block, so the body reads the one value Python passes
+        it."""
+        if name in self.inlining:
+            raise CompileError(
+                f"{name}() calls itself, and its body would be written here "
+                "without end; write the repetition as a loop",
+                node,
+            )
+        returned, written = self.returned(node)
+        passed = {parameter: self.expr(value) for parameter, value in written.items()}
+        value = self.returned_value(name, passed, returned)
+        if not any(argument.volatile for argument in passed.values()):
+            return value
+        # The variables of the block hide nothing the body reads.
+        with self.once(list(passed.values()), [value]) as (bindings, bound):
+            once = dict(zip(passed, bound, strict=True))
+            return block(bindings, self.returned_value(name, once, returned))
+
+    def returned_value(
+        self, name: str, passed: dict[str, Expr], returned: ast.expr
+    ) -> Expr:
+        bindings = self.bindings
+        self.bindings = {**bindings, **passed}
+        self.inlining.append(name)
+        try:
+            return self.expr(returned)
+        finally:
+            self.inlining.pop()
+            self.bindings = bindings
 
     def json_loads(self, node: ast.Call) -> Expr:
         if node.keywords or len(node.args) != 1:
@@ -3371,7 +3414,8 @@ def direct_call(name: str) -> str:
     expression."""
     return (
         f"{name}() runs its body here, as states; call it on its own line, "
-        f"assign its result or return it: result = {name}(...)"
+        f"assign its result or return it: result = {name}(...). A function "
+        "whose body is one return of a value is called inside an expression"
     )
 
 
