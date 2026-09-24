@@ -1469,7 +1469,15 @@ class Translator:
         # writes a twice.
         result = values[-1]
         for value in reversed(values[:-1]):
-            kind = union(value.type, result.type)
+            given = value.type
+            if isinstance(node.op, ast.Or) and given and NULL in given.kinds:
+                # null is falsy, so or never gives it: x or [] is a list.
+                given = (
+                    exclude(given, frozenset({NULL})) if given.kind != NULL else None
+                )
+                kind = union(given, result.type) if given else result.type
+            else:
+                kind = union(given, result.type)
             with self.once([value], [result], always=self.bind(value)) as (
                 bindings,
                 (value,),

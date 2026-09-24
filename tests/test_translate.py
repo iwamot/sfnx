@@ -2124,3 +2124,35 @@ def test_renamed_variables_run():
         "value": 3,
     }
     assert asl.run(compiled, {"a": 1}) == [1, 2, 3, [2]]
+
+
+@pytest.mark.parametrize(
+    "body, execution_input, expected",
+    [
+        # or never gives null, as null is falsy: xs or [] is a list.
+        (
+            'xs: list[int] | None = input["xs"]\nreturn (xs or []) + [1]',
+            {"xs": None},
+            [1],
+        ),
+        (
+            'xs: list[int] | None = input["xs"]\nreturn (xs or []) + [1]',
+            {"xs": [2]},
+            [2, 1],
+        ),
+        (
+            'xs: list[int] | None = input["xs"]\nreturn [x * 2 for x in xs or []]',
+            {"xs": [3]},
+            [6],
+        ),
+        ("return len(None or [1, 2])", {}, 2),
+    ],
+)
+def test_or_leaves_out_null(body, execution_input, expected):
+    assert asl.run(definition(body), execution_input) == expected
+
+
+def test_and_keeps_null():
+    body = 'xs: list[int] | None = input["xs"]\nreturn (xs and [1]) + [2]'
+    with pytest.raises(CompileError, match="may be"):
+        definition(body)
