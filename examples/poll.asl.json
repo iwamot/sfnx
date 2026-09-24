@@ -53,28 +53,22 @@
         {
           "Condition": "{% $status = 'COMPLETED' %}",
           "Next": "return"
+        },
+        {
+          "Condition": "{% $status = 'FAILED' %}",
+          "Next": "raise"
         }
       ],
-      "Default": "if_2"
+      "Default": "while",
+      "Assign": {
+        "polls": "{% $polls + 1 %}"
+      }
     },
     "return": {
       "Type": "Succeed",
       "Output": {
         "transcript": "{% $job.Transcript.TranscriptFileUri %}"
       }
-    },
-    "if_2": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $status = 'FAILED' %}",
-          "Next": "raise"
-        }
-      ],
-      "Assign": {
-        "polls": "{% $polls + 1 %}"
-      },
-      "Default": "while"
     },
     "raise": {
       "Type": "Fail",

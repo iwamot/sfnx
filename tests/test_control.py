@@ -587,8 +587,11 @@ def test_paths_that_end_the_same_share_the_state(body, kept):
         n for n, s in compiled["States"].items() if s["Type"] in {"Succeed", "Fail"}
     ]
     assert kept in ends and f"{kept}_2" not in ends
-    assert compiled["States"]["if"]["Choices"][0]["Next"] == kept
-    assert compiled["States"]["if_2"]["Choices"][0]["Next"] == kept
+    # The second if's rule follows the first's in one Choice.
+    assert [rule["Next"] for rule in compiled["States"]["if"]["Choices"]] == [
+        kept,
+        kept,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -615,3 +618,29 @@ def test_a_shared_end_names_the_source_of_each_path():
     assert comment.startswith(PREFIX)
     spans = json.loads(comment.removeprefix(PREFIX))["spans"]
     assert [span["at"] for span in spans] == ["7:9-7:20", "8:5-8:16"]
+
+
+def test_an_if_right_after_an_if_that_ends_is_one_choice():
+    """The rules of the second follow the first's, and what the first
+    assigns on its Default goes in each of them, as it runs before them."""
+    body = (
+        'if input["a"]:\n    return 1\n# the fallback\ny = input["y"]\n'
+        'if input["b"]:\n    return 2\nreturn y'
+    )
+    states = definition(body)["States"]
+    choice = states["if"]
+    assert [rule["Next"] for rule in choice["Choices"]] == ["return", "return_2"]
+    assert choice["Choices"][1]["Assign"] == {"y": f"{{% {INPUT}.y %}}"}
+    assert choice["Choices"][1]["Comment"] == "the fallback"
+    plain = definition(body.replace("# the fallback\n", ""))["States"]["if"]
+    assert "Comment" not in plain["Choices"][1]
+    assert choice["Assign"] == {"y": f"{{% {INPUT}.y %}}"}
+    assert "if_2" not in states
+    assert asl.run(definition(body), {"a": False, "b": False, "y": 3}) == 3
+
+
+def test_an_if_that_reads_what_the_first_assigns_keeps_its_choice():
+    body = 'if input["a"]:\n    return 1\ny = input["y"]\nif y:\n    return 2\nreturn 3'
+    states = definition(body)["States"]
+    assert states["if_2"]["Type"] == "Choice"
+    assert asl.run(definition(body), {"a": False, "y": True}) == 2
