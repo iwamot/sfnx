@@ -592,6 +592,302 @@ def test_what_the_runner_does_not_interpret_is_rejected_before_it_runs(
         testing.run(definition, {})
 
 
+# What ValidateStateMachineDefinition rejects and accepts (measured).
+TASK = {"Type": "Task", "Resource": LAMBDA}
+DONE = {"Type": "Succeed"}
+
+
+def states(start: str, **named: dict) -> dict:
+    return {"QueryLanguage": "JSONata", "StartAt": start, "States": named}
+
+
+def assigning(name: str = "b") -> dict:
+    """A branch that assigns x."""
+    state = {"Type": "Pass", "Assign": {"x": 2}, "End": True}
+    return {"StartAt": name, "States": {name: state}}
+
+
+def fan(**fields: object) -> dict:
+    return {"Type": "Parallel", "Branches": [assigning()], **fields}
+
+
+def pass_to(target: str, **fields: object) -> dict:
+    return {"Type": "Pass", "Next": target, **fields}
+
+
+def assigns_x(target: str) -> dict:
+    return pass_to(target, Assign={"x": 1})
+
+
+def ends(state: dict) -> dict:
+    return {**state, "End": True}
+
+
+def choice(rule: dict, default: str, **fields: object) -> dict:
+    return {
+        "Type": "Choice",
+        "Choices": [{"Condition": "{% true %}", **rule}],
+        "Default": default,
+        **fields,
+    }
+
+
+def output(code: object, state: dict | None = None) -> dict:
+    return states("a", a=ends({**(state or {"Type": "Pass"}), "Output": code}))
+
+
+def caught(**fields: object) -> dict:
+    catcher = {"ErrorEquals": ["States.ALL"], "Next": "s", **fields}
+    return states("t", t=ends({**TASK, "Catch": [catcher]}), s=DONE)
+
+
+def mapped(mode: str) -> dict:
+    processor = {"ProcessorConfig": {"Mode": mode}, **assigning()}
+    return states(
+        "a",
+        a=assigns_x("p"),
+        p=ends({"Type": "Map", "Items": [1], "ItemProcessor": processor}),
+    )
+
+
+@pytest.mark.parametrize(
+    "definition, message",
+    [
+        (output("{% (1 %}"), r"a.Output: \(1 does not parse"),
+        (output("{% 1e400 %}"), "a.Output: 1e400 does not parse"),
+        (output({"k": ["{% (1 %}"]}), "a.Output: .* does not parse"),
+        (
+            states("a", a=ends({"Type": "Pass", "Assign": {"Comment": "{% (1 %}"}})),
+            "a.Assign: .* does not parse",
+        ),
+        (states("zz", a=ends({"Type": "Pass"})), "StartAt: there is no state zz"),
+        (states("a", a=pass_to("zz")), "a: there is no state zz to go to"),
+        (
+            states("a", a=choice({"Next": "a"}, "zz")),
+            "a: there is no state zz to go to",
+        ),
+        (caught(Next="zz"), "t: there is no state zz to go to"),
+        (output("{% $states.result %}"), r"a.Output: \$states has no result here"),
+        (output("{% $states.result.x %}"), r"\$states has no result"),
+        (output("{% $states.result[0] %}"), r"\$states has no result"),
+        (output("{% $states.`result` %}"), r"\$states has no result"),
+        (output("{% $count([$states.result]) %}"), r"\$states has no result"),
+        (output("{% $states.foo %}"), r"\$states has no foo"),
+        (output("{% $states.result %}", {"Type": "Wait", "Seconds": 0}), "result"),
+        (
+            states("a", a={**DONE, "Output": "{% $states.result %}"}),
+            r"a.Output: \$states has no result",
+        ),
+        (
+            states(
+                "a", a=ends({"Type": "Pass", "Assign": {"v": "{% $states.result %}"}})
+            ),
+            r"a.Assign: \$states has no result",
+        ),
+        (
+            states(
+                "a",
+                a=choice({"Next": "s", "Output": "{% $states.result %}"}, "s"),
+                s=DONE,
+            ),
+            r"a.Choices: \$states has no result",
+        ),
+        (
+            states("t", t=ends({**TASK, "Arguments": "{% $states.result %}"})),
+            r"t.Arguments: \$states has no result",
+        ),
+        (
+            output("{% $states.errorOutput %}", TASK),
+            r"a.Output: \$states has no errorOutput",
+        ),
+        (
+            states("a", a={"Type": "Fail", "Cause": "{% $states.errorOutput %}"}),
+            r"a.Cause: \$states has no errorOutput",
+        ),
+        (caught(Output="{% $states.result %}"), r"t.Catch: \$states has no result"),
+        (
+            states("a", a=assigns_x("p"), p=ends(fan())),
+            "b: x is assigned on the way into this branch",
+        ),
+        (
+            states(
+                "c", c=choice({"Next": "p", "Assign": {"x": 1}}, "p"), p=ends(fan())
+            ),
+            "b: x is assigned",
+        ),
+        (
+            states(
+                "c",
+                c=choice({"Next": "a"}, "p"),
+                a=assigns_x("p"),
+                p=ends(fan()),
+            ),
+            "b: x is assigned",
+        ),
+        (
+            states(
+                "p",
+                p=fan(Next="a"),
+                a=assigns_x("c"),
+                c=choice({"Next": "p"}, "s"),
+                s=DONE,
+            ),
+            "b: x is assigned",
+        ),
+        (
+            states(
+                "p",
+                p=fan(Assign={"x": 1}, Next="c"),
+                c=choice({"Next": "p"}, "s"),
+                s=DONE,
+            ),
+            "b: x is assigned",
+        ),
+        (
+            states(
+                "q",
+                q=pass_to("p", Assign={"x": 1}),
+                p=ends(fan()),
+            ),
+            "b: x is assigned",
+        ),
+        (
+            states(
+                "t",
+                t={
+                    **TASK,
+                    "Next": "p",
+                    "Catch": [
+                        {"ErrorEquals": ["States.ALL"], "Assign": {"x": 1}, "Next": "p"}
+                    ],
+                },
+                p=ends(fan()),
+            ),
+            "b: x is assigned",
+        ),
+        (
+            states(
+                "a",
+                a=assigns_x("p"),
+                p=ends(
+                    {
+                        "Type": "Parallel",
+                        "Branches": [{"StartAt": "q", "States": {"q": ends(fan())}}],
+                    }
+                ),
+            ),
+            "b: x is assigned",
+        ),
+        (
+            states(
+                "p",
+                p=ends(
+                    {
+                        "Type": "Parallel",
+                        "Branches": [
+                            {
+                                "StartAt": "a",
+                                "States": {"a": assigns_x("q"), "q": ends(fan())},
+                            }
+                        ],
+                    }
+                ),
+            ),
+            "b: x is assigned",
+        ),
+        (mapped("INLINE"), "b: x is assigned"),
+        (mapped("DISTRIBUTED"), "b: x is assigned"),
+    ],
+)
+def test_what_step_functions_rejects_is_rejected_before_it_runs(definition, message):
+    with pytest.raises(testing.InvalidDefinition, match=message):
+        testing.run(definition, {}, lambda call: {})
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        states("a", a=ends({"Type": "Pass", "Comment": "{% (1 %}"})),
+        states("a", a=choice({"Next": "s", "Comment": "{% (1 %}"}, "s"), s=DONE),
+        caught(Comment="{% (1 %}"),
+        output("{% '$states.result' %}"),
+        output("{% $states.input.result %}"),
+        output("{% ($states).result %}"),
+        output("{% $states.input.x.$states.qux %}"),
+        output("{% [$states, $states.input, $states.context] %}"),
+        output("{% $states.result %}", TASK),
+        output("{% $map([1], function($v) { $states.result }) %}", TASK),
+        states("t", t=ends({**TASK, "Assign": {"v": "{% $states.result %}"}})),
+        output("{% $states.result %}", fan()),
+        caught(Output="{% [$states.errorOutput.Cause, $states.input] %}"),
+        caught(Assign={"e": "{% $states.errorOutput %}"}),
+        states("p", p=fan(Next="a"), a=ends({"Type": "Pass", "Assign": {"x": 1}})),
+        states("p", p=ends(fan(Assign={"x": 1}))),
+        states(
+            "p",
+            p=ends(
+                fan(
+                    Catch=[
+                        {"ErrorEquals": ["States.ALL"], "Assign": {"x": 1}, "Next": "s"}
+                    ]
+                )
+            ),
+            s=DONE,
+        ),
+        states(
+            "t",
+            t={
+                **TASK,
+                "Assign": {"x": 1},
+                "Next": "s",
+                "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "p"}],
+            },
+            s=DONE,
+            p=ends(fan()),
+        ),
+        states(
+            "c",
+            c=choice({"Next": "s", "Assign": {"x": 1}}, "p"),
+            s=DONE,
+            p=ends(fan()),
+        ),
+        states(
+            "c",
+            c=choice({"Next": "p"}, "s", Assign={"x": 1}),
+            s=DONE,
+            p=ends(fan()),
+        ),
+        states(
+            "t",
+            t={
+                **TASK,
+                "Next": "p",
+                "Catch": [
+                    {"ErrorEquals": ["States.ALL"], "Assign": {"x": 1}, "Next": "s"}
+                ],
+            },
+            s=DONE,
+            p=ends(fan()),
+        ),
+        states(
+            "p",
+            p={
+                "Type": "Parallel",
+                "Branches": [{"StartAt": "q", "States": {"q": ends(fan())}}],
+                "Next": "a",
+            },
+            a=ends({"Type": "Pass", "Assign": {"x": 1}}),
+        ),
+        states(
+            "p",
+            p=ends({"Type": "Parallel", "Branches": [assigning("b"), assigning("c")]}),
+        ),
+    ],
+)
+def test_what_step_functions_accepts_runs(definition):
+    testing.run(definition, {}, lambda call: {})
+
+
 def test_a_definition_whose_every_state_sets_jsonata_runs():
     jsonata = {"QueryLanguage": "JSONata"}
     processor = {
