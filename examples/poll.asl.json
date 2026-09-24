@@ -21,10 +21,6 @@
         },
         "IdentifyLanguage": true
       },
-      "Next": "polls"
-    },
-    "polls": {
-      "Type": "Pass",
       "Assign": {
         "polls": 0
       },
@@ -52,14 +48,8 @@
         "TranscriptionJobName": "{% $name %}"
       },
       "Assign": {
-        "job": "{% $states.result.TranscriptionJob %}"
-      },
-      "Next": "status"
-    },
-    "status": {
-      "Type": "Pass",
-      "Assign": {
-        "status": "{% $job.TranscriptionJobStatus %}"
+        "job": "{% $states.result.TranscriptionJob %}",
+        "status": "{% $states.result.TranscriptionJob.TranscriptionJobStatus %}"
       },
       "Next": "if"
     },
@@ -87,14 +77,14 @@
           "Next": "raise"
         }
       ],
-      "Default": "polls_2"
+      "Default": "polls"
     },
     "raise": {
       "Type": "Fail",
       "Error": "TranscriptionFailed",
       "Cause": "{% $job.FailureReason %}"
     },
-    "polls_2": {
+    "polls": {
       "Type": "Pass",
       "Assign": {
         "polls": "{% $polls + 1 %}"
