@@ -639,6 +639,38 @@ AFTER_A_TRY = [
 ]
 
 
+@pytest.mark.parametrize(
+    "returned, kept, result",
+    [
+        # n is assigned after the statement that fails, so the except clause
+        # reads the n from before the Task either way.
+        ("n", False, 0),
+        # r is assigned before it, which Python keeps and a failing Assign
+        # loses, so the assignment keeps its Pass, whose failure ends the
+        # execution, as the table of the ASL's own semantics lists.
+        ("r", True, None),
+    ],
+)
+def test_an_except_clause_that_reads_only_what_follows_the_failure_takes_the_assign(
+    returned, kept, result
+):
+    body = (
+        f"n = 0\nr = {{}}\ntry:\n    r = {CHARGE}\n    n = r['Payload']['n']\n"
+        f'    m = "done"\nexcept Exception:\n    return {returned}\nreturn [n, m]'
+    )
+    compiled = states(body)
+    task = next(n for n, s in compiled.items() if s["Type"] == "Task")
+    assert ("n" not in compiled[task]["Assign"]) == kept
+    failing = {task: lambda arguments: {"Payload": {}}}
+    if result is None:
+        with pytest.raises(asl.Failure) as failure:
+            run(body, {}, failing)
+        assert failure.value.error == "States.QueryEvaluationError"
+    else:
+        assert run(body, {}, failing) == result
+    assert run(body, {}, {task: lambda arguments: {"Payload": {"n": 2}}}) == [2, "done"]
+
+
 @pytest.mark.parametrize("body", AFTER_A_TRY)
 def test_a_statement_after_a_try_is_not_in_its_reach(body):
     """The Task's catchers are those of the try bodies it is in, and the

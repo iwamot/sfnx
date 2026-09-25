@@ -181,12 +181,6 @@ def test_the_variable_the_task_assigns_can_be_assigned_again():
 @pytest.mark.parametrize(
     "body",
     [
-        # A Catch would take a failing Assign, which loses the value of n the
-        # except clause reads.
-        (
-            f"n = 0\ntry:\n    {R})\n    n = r['Payload']['n']\nexcept Exception:\n"
-            "    return n\nwait(1)\nreturn n"
-        ),
         R
         + ', retry=[{"ErrorEquals": [Exception]}])\nn = r["Payload"]\nwait(1)\nreturn n',
         R + ')\nn = jsonata("$random()")\nwait(1)\nreturn [r, n]',
