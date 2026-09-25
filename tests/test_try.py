@@ -63,7 +63,13 @@ def test_each_task_gets_a_catch_for_each_except():
         }
     ]
     assert compiled["publish"]["Catch"] == compiled["receipt"]["Catch"]
-    assert "Catch" not in compiled["note"]
+    # A value written in the source cannot fail, so the Task with the Catch
+    # takes it.
+    assert "note" not in compiled
+    assert compiled["receipt"]["Assign"] == {
+        "receipt": "{% $states.result %}",
+        "note": 1,
+    }
     assert compiled["return"] == {"Type": "Succeed", "Output": "{% $e.Cause %}"}
     assert list(compiled["receipt"]) == [
         "Type",
@@ -73,6 +79,35 @@ def test_each_task_gets_a_catch_for_each_except():
         "Assign",
         "Next",
     ]
+
+
+def test_values_written_in_the_source_go_in_the_state_that_catches():
+    # Right after the Task in the try, as a hand-writer assigns a status in
+    # the Task and in its catcher.
+    body = (
+        f"try:\n    {NOTIFY}\n    status = 200\nexcept Declined:\n    status = 500\n"
+        f"{CHARGE.replace('charge', 'log')}\nreturn status"
+    )
+    ((_, definition),) = compile_source(source(body, CLASSES)).items()
+    compiled = definition["States"]
+    assert compiled["publish"]["Assign"] == {"status": 200}
+    assert compiled["publish"]["Catch"][0]["Assign"] == {"status": 500}
+    assert [n for n, s in compiled.items() if s["Type"] == "Pass"] == []
+
+    def declined(arguments):
+        raise asl.Failure("Declined", "no")
+
+    log = {"invoke": lambda arguments: {}}
+    assert asl.run(definition, {}, {"publish": lambda arguments: {}, **log}) == 200
+    assert asl.run(definition, {}, {"publish": declined, **log}) == 500
+
+
+def test_values_written_in_the_source_go_in_each_state_where_paths_join():
+    body = f"try:\n    {NOTIFY}\nexcept Declined:\n    pass\nstatus = 200\n{CHARGE}\nreturn status"
+    compiled = states(body)
+    assert compiled["publish"]["Assign"] == {"status": 200}
+    assert compiled["publish"]["Catch"][0]["Assign"] == {"status": 200}
+    assert [n for n, s in compiled.items() if s["Type"] == "Pass"] == []
 
 
 def test_several_errors_and_clauses_in_order():
