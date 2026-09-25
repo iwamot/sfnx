@@ -614,3 +614,38 @@ def test_what_goes_in_the_assign_of_a_task_inside_try(statements, kept, result):
     assert any(s["Type"] == "Pass" for s in compiled["States"].values()) == kept
     tasks = {"r": lambda arguments: {"Payload": 2}}
     assert asl.run(compiled, {}, tasks) == result
+
+
+AFTER_A_TRY = [
+    # After a try whose except clause returns, only the Task leads on.
+    (
+        f'try:\n    r = {CHARGE}\nexcept Exception:\n    return "caught"\n'
+        'x = r["Payload"]["n"]\nwait(1)\nreturn x'
+    ),
+    # After an inner try, the statement is in the outer one only, whose
+    # except clause is not the one the Task's first catcher runs.
+    (
+        f"try:\n    try:\n        r = {CHARGE}\n    except Declined:\n"
+        '        return "declined"\n    x = r["Payload"]["n"]\n'
+        'except Exception:\n    return "caught"\nwait(1)\nreturn x'
+    ),
+    # At the start of the next try, whose clauses are its own, however like
+    # the first try's.
+    (
+        f'try:\n    r = {CHARGE}\nexcept Exception:\n    return "caught"\n'
+        f'try:\n    x = r["Payload"]["n"]\n    {CHARGE}\nexcept Exception:\n'
+        '    return "caught"\nwait(1)\nreturn x'
+    ),
+]
+
+
+@pytest.mark.parametrize("body", AFTER_A_TRY)
+def test_a_statement_after_a_try_is_not_in_its_reach(body):
+    """The Task's catchers are those of the try bodies it is in, and the
+    statement is not in all of them, so it keeps its Pass, whose failure no
+    Catch takes, as for any statement a Task's Assign does not hold."""
+    compiled = states(body)
+    assert any(s["Type"] == "Pass" and "x" in s["Assign"] for s in compiled.values())
+    with pytest.raises(asl.Failure) as failure:
+        run(body, {}, {"r": lambda arguments: {"Payload": {}}})
+    assert failure.value.error == "States.QueryEvaluationError"
