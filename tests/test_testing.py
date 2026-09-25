@@ -410,6 +410,26 @@ def test_a_failed_batch_counts_its_items():
     ) == [{"Status": "FAILED", "Error": "Boom", "Cause": "c"}, [3, 4], 5]
 
 
+def test_a_batch_holds_what_the_item_selector_selects():
+    # Step Functions selects each item, then batches what it selected
+    # (TestState; measured).
+    child = {"StartAt": "c", "States": {"c": {"Type": "Succeed"}}}
+    selector = {
+        "item": "{% $states.context.Map.Item.Value %}",
+        "at": "{% $states.context.Map.Item.Index %}",
+    }
+    batcher = {"MaxItemsPerBatch": 2, "BatchInput": {"c": "x"}}
+    assert asl.run(
+        distributed(child, ItemSelector=selector, ItemBatcher=batcher), ["a", "b", "c"]
+    ) == [
+        {
+            "Items": [{"item": "a", "at": 0}, {"item": "b", "at": 1}],
+            "BatchInput": {"c": "x"},
+        },
+        {"Items": [{"item": "c", "at": 2}], "BatchInput": {"c": "x"}},
+    ]
+
+
 def test_an_object_of_items():
     child = {"StartAt": "c", "States": {"c": {"Type": "Succeed"}}}
     selector = {

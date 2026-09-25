@@ -1183,30 +1183,35 @@ def run_map(
     else:
         assert isinstance(items, list)
         entries = [{"Value": v} for v in items]
+    # What each item passes on: what the ItemSelector selects from it, which
+    # Step Functions evaluates before an ItemBatcher batches the items
+    # (TestState; measured), or without one the item itself.
+    if "ItemSelector" in state:
+        entered_context = frame["context"]
+        assert isinstance(entered_context, dict)
+        selected: list[object] = []
+        for position, entry in enumerate(entries):
+            item = {"Index": position, **entry}
+            selecting = {**entered_context, "Map": {"Item": item}}
+            selected.append(
+                value(state["ItemSelector"], variables, {**frame, "context": selecting})
+            )
+    else:
+        objects = isinstance(items, dict)
+        selected = [entry if objects else entry["Value"] for entry in entries]
     # Each child's input, with the number of items it takes.
     inputs: list[tuple[object, int]] = []
     if "ItemBatcher" in state:
         batcher = value(state["ItemBatcher"], variables, frame)
         assert isinstance(batcher, dict)
-        size = batcher.get("MaxItemsPerBatch", len(items) or 1)
-        for start in range(0, len(items), size):
-            batch = {"Items": items[start : start + size]}
+        size = batcher.get("MaxItemsPerBatch", len(selected) or 1)
+        for start in range(0, len(selected), size):
+            batch = {"Items": selected[start : start + size]}
             if "BatchInput" in batcher:
                 batch["BatchInput"] = batcher["BatchInput"]
             inputs.append((batch, len(batch["Items"])))
-    elif "ItemSelector" in state:
-        entered_context = frame["context"]
-        assert isinstance(entered_context, dict)
-        for position, entry in enumerate(entries):
-            item = {"Index": position, **entry}
-            selecting = {**entered_context, "Map": {"Item": item}}
-            selected = value(
-                state["ItemSelector"], variables, {**frame, "context": selecting}
-            )
-            inputs.append((selected, 1))
     else:
-        objects = isinstance(items, dict)
-        inputs = [(entry if objects else entry["Value"], 1) for entry in entries]
+        inputs = [(child_input, 1) for child_input in selected]
     results = []
     failed = 0
     for child_input, taken in inputs:
