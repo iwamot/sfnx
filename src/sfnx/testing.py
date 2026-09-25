@@ -216,6 +216,34 @@ def check(definition: Mapping[str, object]) -> None:
     check_valid(definition, frozenset())
 
 
+def either_language(state: Mapping[str, object]) -> bool:
+    """Whether a Succeed or a Fail does the same in JSONPath as in JSONata: it
+    has no field one of them reads otherwise, such as OutputPath or
+    CausePath, and its Error and Cause are text JSONata would not evaluate."""
+    if state["Type"] not in {"Succeed", "Fail"}:
+        return False
+    if set(state) - {"Type", "Comment", "QueryLanguage", "Error", "Cause"}:
+        return False
+    return not any(
+        str(state[key]).startswith("{%") for key in ("Error", "Cause") if key in state
+    )
+
+
+def check_language(name: str, state: Mapping[str, object], language: str) -> None:
+    """A state that runs otherwise in JSONPath is in JSONata."""
+    if "QueryLanguage" in state and state["QueryLanguage"] != "JSONata":
+        raise Unsupported(
+            f"{name}: QueryLanguage {state['QueryLanguage']} is not run by"
+            " sfnx.testing, which runs JSONata only"
+        )
+    if state.get("QueryLanguage", language) != "JSONata":
+        raise Unsupported(
+            f"{name}: the state is in {language}, as the definition does not"
+            " set QueryLanguage to JSONata; set it there or on the state, as"
+            " sfnx.testing runs JSONata only"
+        )
+
+
 def check_states(machine: Mapping[str, object], language: str) -> None:
     """A state is in its own QueryLanguage, or else in the definition's, which
     is JSONPath when the definition does not set one; a state in a branch or
@@ -230,17 +258,8 @@ def check_states(machine: Mapping[str, object], language: str) -> None:
             raise Unsupported(
                 f"{name}: the state type {kind} is not run by sfnx.testing"
             )
-        if "QueryLanguage" in state and state["QueryLanguage"] != "JSONata":
-            raise Unsupported(
-                f"{name}: QueryLanguage {state['QueryLanguage']} is not run by"
-                " sfnx.testing, which runs JSONata only"
-            )
-        if state.get("QueryLanguage", language) != "JSONata":
-            raise Unsupported(
-                f"{name}: the state is in {language}, as the definition does not"
-                " set QueryLanguage to JSONata; set it there or on the state, as"
-                " sfnx.testing runs JSONata only"
-            )
+        if not either_language(state):
+            check_language(name, state, language)
         check_fields(name, state, COMMON | FIELDS[kind])
         for key, allowed in [("Retry", RETRIER), ("Catch", CATCHER), ("Choices", RULE)]:
             for entry in state.get(key, []):
