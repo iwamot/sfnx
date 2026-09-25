@@ -338,6 +338,9 @@ class Scope:
         # Names the bodies of functions called directly assigned here, which a
         # later call may use again.
         self.expanded: set[str] = set()
+        # The comparisons of a variable with a value written in the source,
+        # the tests a Choice decided by known values can drop, by variable.
+        self.flags: dict[str, list[ast.Compare]] = {}
         # Names in the source, and the variables loops and handlers added for
         # themselves, shared by every scope of the machine.
         self.taken = taken
@@ -663,6 +666,12 @@ class Scope:
                 self.end_without_value(node, [self.here()])
             elif not self.end_with_result(node.value):
                 self.finish(*self.translator.statement_value(node.value), node)
+        elif (
+            isinstance(node, ast.If)
+            and (conditional := self.as_conditional(node)) is not None
+        ):
+            target, value = conditional
+            self.assign(target, value, None)
         elif isinstance(node, ast.If):
             self.branch(node)
         elif isinstance(node, ast.While):
@@ -732,6 +741,43 @@ class Scope:
         self.assign(
             ast.copy_location(ast.Name(name, ast.Store()), node.target), value, None
         )
+
+    def as_conditional(self, node: ast.If) -> tuple[ast.Name, ast.expr] | None:
+        """An if whose every branch assigns one variable and does nothing
+        else, as that assignment of a conditional expression, which a
+        hand-writer writes in the Assign of the state before instead of a
+        Choice: `v = a if test else v`, or the else branch's value. Where there
+        is no else, the variable must hold a value on every path already, and
+        no value may call what makes a state. A flag keeps its Choice where a
+        branch gives it a value written in the source and the function tests
+        it elsewhere: that value is known on the path, which the other test
+        is decided by. The comments of the branches go with it."""
+        found = conditional_assignment(node)
+        if found is None:
+            return None
+        target, value, complete = found
+        if not complete and (
+            target.id not in self.bindings or target.id in self.partial
+        ):
+            return None
+        own = {id(n) for n in ast.walk(node.test)}
+        tested = [c for c in self.flags.get(target.id, []) if id(c) not in own]
+        if tested and any(isinstance(b, ast.Constant) for b in branches(value)):
+            return None
+        for made in ast.walk(value):
+            if not isinstance(made, ast.Call):
+                continue
+            if self.makes_state(made) or self.called(made, "wait"):
+                return None
+            if isinstance(made.func, ast.Name) and (
+                self.translator.is_function(made.func.id)
+                or made.func.id in self.partial
+            ):
+                return None
+        lines = range(node.lineno + 1, (node.end_lineno or node.lineno) + 1)
+        remarks = [self.module.comments.get(line) for line in lines]
+        self.remark = "\n".join(r for r in (self.remark, *remarks) if r) or None
+        return target, value
 
     def makes_state(self, node: ast.AST) -> bool:
         return isinstance(node, ast.Call) and makes_state(
@@ -1115,8 +1161,14 @@ class Scope:
         # instead, as a hand-writer spells a path out again. One that changes on
         # evaluation would give another value there, so it needs a state of its
         # own, and so does a name assigned again, whose first value is still
-        # evaluated, as Python evaluates it.
-        if name in self.pending:
+        # evaluated, as Python evaluates it, unless the new value evaluates it
+        # every time, as the test of `v = a if test(v) else v` does, and it
+        # never gives undefined, which a test reads without failing where the
+        # first Assign would fail.
+        first = self.pending.get(name)
+        if first is not None and (
+            first.volatile or not first.defined or not always_reads(value_node, name)
+        ):
             self.flush()
         reads = sorted(value.variables & self.pending.keys())
         if reads and not any(self.pending[read].volatile for read in reads):
@@ -1482,6 +1534,7 @@ class Scope:
         )
         scope.labels = self.labels
         scope.locations = self.locations
+        scope.flags = flags(function)
         if local:
             scope.functions = dict(self.functions)
             scope.declared = {n: t for n, t in self.declared.items() if n not in own}
@@ -2813,6 +2866,110 @@ def makes_state(target: str | None) -> bool:
     return target in {f"sfnx.{name}" for name in STATE_CALLS}
 
 
+def conditional_assignment(node: ast.If) -> tuple[ast.Name, ast.expr, bool] | None:
+    """The variable an if assigns in each branch and nothing else, the
+    conditional expression that gives its value, and whether every branch
+    assigns it, so that an if without else keeps the value it had."""
+    assigned = alone(node.body)
+    if assigned is None:
+        return None
+    target, then = assigned
+    otherwise: ast.expr
+    if not node.orelse:
+        otherwise = ast.copy_location(ast.Name(target.id, ast.Load()), target)
+        complete = False
+    elif len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+        inner = conditional_assignment(node.orelse[0])
+        if inner is None or inner[0].id != target.id:
+            return None
+        _, otherwise, complete = inner
+    else:
+        other = alone(node.orelse)
+        if other is None or other[0].id != target.id:
+            return None
+        otherwise = other[1]
+        complete = True
+    value = ast.IfExp(node.test, then, otherwise)
+    return target, ast.copy_location(value, node), complete
+
+
+# The functions whose first argument is evaluated wherever the call is,
+# in the JSONata they compile to as in Python.
+FIRST_ARGUMENT = frozenset({"isinstance", "len", "str", "int", "float", "bool"})
+
+
+def always_reads(node: ast.AST, name: str) -> bool:
+    """Whether an expression reads a variable every time it is evaluated, in
+    the JSONata it compiles to: through the test of a conditional
+    expression, the first operand of and / or, the operand of not, the first
+    two operands of a comparison, both operands of arithmetic, what a
+    subscript or an attribute reads from, and the first argument of a few
+    built-in functions. Other places, such as a default of get(), JSONata may
+    not evaluate."""
+    if isinstance(node, ast.Name):
+        return node.id == name
+    if isinstance(node, ast.IfExp):
+        return always_reads(node.test, name)
+    if isinstance(node, ast.BoolOp):
+        return always_reads(node.values[0], name)
+    if isinstance(node, ast.UnaryOp):
+        return always_reads(node.operand, name)
+    if isinstance(node, ast.Compare):
+        return always_reads(node.left, name) or always_reads(node.comparators[0], name)
+    if isinstance(node, ast.BinOp):
+        return always_reads(node.left, name) or always_reads(node.right, name)
+    if isinstance(node, (ast.Subscript, ast.Attribute)):
+        return always_reads(node.value, name)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in FIRST_ARGUMENT
+        and node.args
+    ):
+        return always_reads(node.args[0], name)
+    return False
+
+
+def branches(value: ast.expr) -> list[ast.expr]:
+    """The values a conditional expression chooses among, nested ones included."""
+    if isinstance(value, ast.IfExp):
+        return [*branches(value.body), *branches(value.orelse)]
+    return [value]
+
+
+def flags(function: ast.FunctionDef) -> dict[str, list[ast.Compare]]:
+    """The comparisons in a function of a variable with a value written in the
+    source, by ==, !=, is or is not, on either side, by variable."""
+    found: dict[str, list[ast.Compare]] = {}
+    for node in ast.walk(function):
+        if not (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.Is, ast.IsNot))
+        ):
+            continue
+        sides = [node.left, node.comparators[0]]
+        if any(isinstance(side, ast.Constant) for side in sides):
+            for side in sides:
+                if isinstance(side, ast.Name):
+                    found.setdefault(side.id, []).append(node)
+    return found
+
+
+def alone(statements: list[ast.stmt]) -> tuple[ast.Name, ast.expr] | None:
+    """The variable and the value of a block that is one assignment."""
+    if len(statements) != 1:
+        return None
+    statement = statements[0]
+    if (
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    ):
+        return statement.targets[0], statement.value
+    return None
+
+
 def makes_states(
     function: ast.FunctionDef,
     names: dict[str, str],
@@ -3642,6 +3799,7 @@ def compile_machine(
         set(),
     )
     scope.locations = locations
+    scope.flags = flags(function)
     scope.block(function.body)
     if graph.reachable:
         scope.end_without_value(function, [ended(function)])

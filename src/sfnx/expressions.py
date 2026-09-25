@@ -117,6 +117,9 @@ class Expr:
     volatile says the code may give another value when it is evaluated again,
     as $random() and $uuid() do, so what writes it twice binds it once first:
     CHANGES, or OPAQUE where a jsonata() expression is in it, 0 otherwise.
+    defined says the code never gives undefined, which fails an Assign or an
+    Output but passes through a test such as $type() without failing: a
+    literal, a variable, which no Assign leaves undefined, and d.get().
     """
 
     code: str
@@ -127,6 +130,7 @@ class Expr:
     boolean: bool = False
     constructor: bool = False
     volatile: int = 0
+    defined: bool = False
 
 
 def expression(
@@ -137,6 +141,7 @@ def expression(
     boolean: bool = False,
     constructor: bool = False,
     volatile: int = 0,
+    defined: bool = False,
 ) -> Expr:
     return Expr(
         code,
@@ -147,6 +152,7 @@ def expression(
         boolean,
         constructor,
         volatile,
+        defined,
     )
 
 
@@ -182,7 +188,9 @@ def spelling(name: str, spelled: Mapping[str, str]) -> str:
 
 
 def variable(name: str, spelled: Mapping[str, str], type: Type | None = None) -> Expr:
-    return expression("$" + spelling(name, spelled), frozenset({name}), type=type)
+    return expression(
+        "$" + spelling(name, spelled), frozenset({name}), type=type, defined=True
+    )
 
 
 def literal(value: object) -> Expr:
@@ -192,17 +200,21 @@ def literal(value: object) -> Expr:
     if isinstance(value, str):
         code = string(value)
         if value.startswith("{%") or value.endswith("%}"):
-            return expression(code, type=of(STRING))
-        return Expr(code, value, type=of(STRING))
+            return expression(code, type=of(STRING), defined=True)
+        return Expr(code, value, type=of(STRING), defined=True)
     if isinstance(value, bool):
-        return Expr(json.dumps(value), value, type=of(BOOLEAN), boolean=True)
+        return Expr(
+            json.dumps(value), value, type=of(BOOLEAN), boolean=True, defined=True
+        )
     if value is None:
-        return Expr("null", None, type=of(NULL))
+        return Expr("null", None, type=of(NULL), defined=True)
     assert isinstance(value, (int, float))
     if not math.isfinite(value):
         raise ValueError("JSON has no infinite numbers")
     precedence = UNARY if value < 0 else ATOM
-    return Expr(json.dumps(value), value, precedence=precedence, type=of(NUMBER))
+    return Expr(
+        json.dumps(value), value, precedence=precedence, type=of(NUMBER), defined=True
+    )
 
 
 def string(value: str) -> str:
@@ -326,6 +338,7 @@ def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> E
         type,
         then.boolean and otherwise.boolean,
         volatile=changes([test, then, otherwise]),
+        defined=then.defined and otherwise.defined,
     )
 
 
@@ -395,6 +408,7 @@ def block(bindings: list[tuple[str, Expr]], body: Expr) -> Expr:
         body.type,
         body.boolean,
         volatile=changes([*values, body]),
+        defined=body.defined,
     )
 
 
