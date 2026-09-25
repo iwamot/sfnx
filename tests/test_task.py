@@ -544,6 +544,22 @@ def test_accepted_resources(resource, arguments):
             "invoke needs FunctionName in the arguments",
         ),
         (
+            'r = task("arn:aws:states:::aws-sdk:rds:describeDBInstances", {"DBInstanceIdentifier": "d"})',
+            "describeDBInstances has no argument DBInstanceIdentifier; did you mean DbInstanceIdentifier?",
+        ),
+        (
+            'r = task("arn:aws:states:::aws-sdk:dynamodb:putItem", {"TableName": "t", "Item": {"k": {"BOOL": True}}})',
+            "putItem has no field BOOL here; did you mean Bool?",
+        ),
+        (
+            'r = task("arn:aws:states:::aws-sdk:ecs:runTask", {"TaskDefinition": "t", "NetworkConfiguration": {"awsvpcConfiguration": {"Subnets": ["s"]}}})',
+            "runTask has no field awsvpcConfiguration here; did you mean AwsvpcConfiguration?",
+        ),
+        (
+            'r = task("arn:aws:states:::aws-sdk:ec2:describeInstances", {"Filters": [{**input["filter"], "Valuez": ["v"]}]})',
+            "describeInstances has no field Valuez here; did you mean Values?",
+        ),
+        (
             'r = task("arn:aws:states:::http:invoke", {"ApiEndpoint": "https://e", "Method": "GET"})',
             "an HTTP Task needs a connection",
         ),

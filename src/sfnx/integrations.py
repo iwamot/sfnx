@@ -3,6 +3,8 @@
 import difflib
 import keyword
 import re
+import string
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
 
@@ -95,7 +97,8 @@ class ResourceError(ValueError):
 class Integration:
     """name is the base of the state name for a task() on a line of its own.
     required and allowed are Arguments keys; allowed is None when the keys
-    cannot be checked. result is the type of $states.result."""
+    cannot be checked. arguments is the type of the Arguments, whose fields
+    are the keys at each level, and result the type of $states.result."""
 
     kind: str
     name: str
@@ -103,6 +106,7 @@ class Integration:
     required: frozenset[str] = frozenset()
     allowed: frozenset[str] | None = None
     result: Type | None = None
+    arguments: Type | None = None
 
 
 def integration(resource: str) -> Integration:
@@ -121,9 +125,10 @@ def integration(resource: str) -> Integration:
             "sdk",
             action,
             pattern,
-            required(operation),
-            arguments(operation),
-            shape_type(operation.output_shape, 0) if not pattern else None,
+            required(operation, sdk_member),
+            arguments(operation, sdk_member),
+            shape_type(operation.output_shape, 0, sdk_member) if not pattern else None,
+            shape_type(operation.input_shape, 0, sdk_member),
         )
     if HTTP.fullmatch(resource):
         return Integration(
@@ -143,14 +148,15 @@ def integration(resource: str) -> Integration:
             # apigateway:invoke, have nothing in botocore to check against.
             return Integration("optimized", action, pattern)
         operation = model.operation_model(operations[action])
-        result = shape_type(operation.output_shape, 0) if not pattern else None
+        result = shape_type(operation.output_shape, 0, pascal) if not pattern else None
         return Integration(
             "optimized",
             action,
             pattern,
-            required(operation),
-            arguments(operation),
+            required(operation, pascal),
+            arguments(operation, pascal),
             result,
+            shape_type(operation.input_shape, 0, pascal),
         )
     if match := ACTIVITY.fullmatch(resource):
         return Integration("activity", match.group(1))
@@ -338,41 +344,63 @@ def find_operation(service: str, model: ServiceModel, action: str) -> OperationM
 
 
 def pascal(member: str) -> str:
+    """A member's name in an optimized integration: botocore's, with its first
+    letter capitalized (awsvpcConfiguration is AwsvpcConfiguration, and BOOL
+    stays BOOL; measured)."""
     return member[0].upper() + member[1:]
 
 
-def required(operation: OperationModel) -> frozenset[str]:
+def sdk_member(member: str) -> str:
+    """A member's name in an SDK integration, arguments and results alike: the
+    AWS SDK for Java v2's, which lowercases the capitals the name starts with,
+    all but the last of them when a lowercase letter follows, with its first
+    letter capitalized. DBInstanceIdentifier is DbInstanceIdentifier, ACL is
+    Acl, BOOL is Bool, and MultiAZ stays MultiAZ (measured)."""
+    run = len(member) - len(member.lstrip(string.ascii_uppercase))
+    if run == len(member):
+        lowered = member.lower()
+    elif run > 1 and member[run].islower():
+        lowered = member[: run - 1].lower() + member[run - 1 :]
+    else:
+        lowered = member[:run].lower() + member[run:]
+    return lowered[0].upper() + lowered[1:]
+
+
+def required(operation: OperationModel, spell: Callable[[str], str]) -> frozenset[str]:
     """Required Arguments keys, idempotency tokens included: Step Functions
     does not fill them in as the SDKs do."""
     shape = operation.input_shape
     if shape is None:
         return frozenset()
-    return frozenset(pascal(name) for name in shape.required_members)
+    return frozenset(spell(name) for name in shape.required_members)
 
 
-def arguments(operation: OperationModel) -> frozenset[str]:
+def arguments(operation: OperationModel, spell: Callable[[str], str]) -> frozenset[str]:
     """Arguments keys, which Step Functions writes in PascalCase."""
     shape = operation.input_shape
-    return frozenset(pascal(name) for name in shape.members) if shape else frozenset()
+    return frozenset(spell(name) for name in shape.members) if shape else frozenset()
 
 
-def shape_type(shape: Shape | None, depth: int) -> Type | None:
-    """The JSON type of a botocore shape. Blobs and timestamps are left unknown,
-    and recursive shapes stop after a few levels."""
+def shape_type(
+    shape: Shape | None, depth: int, spell: Callable[[str], str]
+) -> Type | None:
+    """The JSON type of a botocore shape, its members spelled as the
+    integration spells them. Blobs and timestamps are left unknown, and
+    recursive shapes stop after a few levels."""
     if shape is None or depth > 6:
         return None
     if isinstance(shape, StructureShape):
         return Type(
             frozenset({OBJECT}),
             fields=tuple(
-                (pascal(name), shape_type(member, depth + 1))
+                (spell(name), shape_type(member, depth + 1, spell))
                 for name, member in shape.members.items()
             ),
         )
     if isinstance(shape, ListShape):
-        return of(ARRAY, items=shape_type(shape.member, depth + 1))
+        return of(ARRAY, items=shape_type(shape.member, depth + 1, spell))
     if isinstance(shape, MapShape):
-        return of(OBJECT, values=shape_type(shape.value, depth + 1))
+        return of(OBJECT, values=shape_type(shape.value, depth + 1, spell))
     kind = {
         "string": STRING,
         "integer": NUMBER,
