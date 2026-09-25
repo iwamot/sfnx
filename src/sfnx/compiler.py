@@ -1197,7 +1197,9 @@ class Scope:
         result = self.following()
         if result is not None and all(read in self.folded for read in reads):
             substituted = {**result.values, **{r: self.folded[r] for r in reads}}
-            self.folded[name] = self.read_as(value_node, substituted)
+            folded = self.read_result(Result({}, substituted, [], None), value_node)
+            if folded is not None:
+                self.folded[name] = folded
         error = self.catching()
         if error is not None and all(read in self.caught for read in reads):
             error_output = expression("$states.errorOutput", type=ERROR_OUTPUT)
@@ -1411,23 +1413,47 @@ class Scope:
     def read_result(self, result: Result, value_node: ast.expr) -> Expr | None:
         """A value as the Assign or the Output of the state just added reads
         it: the variables the state assigns as what they take, and the others
-        as they were before it. None for a value that makes a state."""
+        as they were before it. None for one that reads a value that changes
+        on evaluation more than once: each reading would evaluate it again,
+        where Python reads the one value the variable holds."""
+        value = self.read_with(result.values, value_node)
+        changing = [name for name, v in result.values.items() if v.volatile]
+        if changing:
+            # Each changing value is read as a mark, counted where it lands.
+            marks = {
+                name: replace(
+                    result.values[name],
+                    code=f"$sfnx_read_{i}_",
+                    template=f"{{% $sfnx_read_{i}_ %}}",
+                    volatile=0,
+                )
+                for i, name in enumerate(changing)
+            }
+            marked = self.read_with({**result.values, **marks}, value_node)
+            written = json.dumps(marked.template)
+            if any(written.count(mark.code) > 1 for mark in marks.values()):
+                return None
+        return value
+
+    def read_with(self, values: dict[str, Expr], value_node: ast.expr) -> Expr:
+        """A value that makes no state, with the variables in values read as
+        the expressions they take, and the others as they are."""
         before = dict(self.bindings)
         # Each variable reads as what it takes, with the type it was bound
         # with, which a declaration can give.
         self.bindings.update(
             {
                 name: replace(value, type=before[name].type)
-                for name, value in result.values.items()
+                for name, value in values.items()
             }
         )
-        self.reread_arguments(set(result.values), before)
+        self.reread_arguments(set(values), before)
         try:
-            value, call = self.translator.statement_value(value_node)
+            value, _ = self.translator.statement_value(value_node)
         finally:
             self.bindings.clear()
             self.bindings.update(before)
-        return value if call is None else None
+        return value
 
     def reread_arguments(self, changed: set[str], before: dict[str, Expr]) -> None:
         """A parameter of a function called directly reads the argument as it

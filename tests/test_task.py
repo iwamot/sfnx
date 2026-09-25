@@ -217,6 +217,38 @@ def test_the_time_and_a_random_value_go_in_the_assign_of_a_task(value, code):
     }
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        R + ")\nn = str(uuid.uuid4())\nreturn [n, n]",
+        R + ')\nn = str(uuid.uuid4())\nreturn {"a": n, "b": [n]}',
+        R + ")\nn = str(uuid.uuid4())\npair = [n, n]\nreturn pair",
+        R + ")\nn = str(datetime.now())\nreturn [n, n]",
+        R + ")\nn = str(uuid.uuid4())\nreturn pair(n)",
+    ],
+)
+def test_a_value_that_changes_read_twice_after_a_task_is_read_as_its_variable(body):
+    """Each reading of the expression would evaluate it again, so what reads
+    the value more than once reads the variable the Task's Assign gives it."""
+    imports = (
+        "import uuid\nfrom datetime import datetime\n\n"
+        "from sfnx import state_machine, task\n\n\n"
+        "def pair(t):\n    return [t, t]"
+    )
+    compiled = definition(body, imports)
+    assert "n" in compiled["States"]["r"]["Assign"]
+    tasks = {"r": lambda arguments: {}}
+    result = asl.run(compiled, {}, tasks)
+    first, *others = result.values() if isinstance(result, dict) else result
+    assert others in ([first], [[first]])
+
+
+def test_a_value_that_changes_read_once_after_a_task_is_its_output():
+    body = R + ')\nn = str(uuid.uuid4())\nreturn {"n": n}'
+    compiled = definition(body, "import uuid\n\nfrom sfnx import state_machine, task")
+    assert compiled["States"]["r"]["Output"] == {"n": "{% $uuid() %}"}
+
+
 def test_a_loop_tried_again_after_a_task_leaves_the_task_as_it_was():
     """The loop widens the type of r and compiles again from the Task."""
     compiled = states(R + ')\nfor i in range(3):\n    r = "s"\nreturn r')
