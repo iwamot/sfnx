@@ -75,7 +75,8 @@ def test_what_follows_a_loop_goes_in_its_choice():
     # A break joins the Default after the loop, so each takes it.
     compiled = states(body)
     assert compiled["for"]["Assign"] == {"done": "{% $n * 2 %}"}
-    assert compiled["if"]["Choices"][0]["Assign"] == {"done": "{% $n * 2 %}"}
+    # The if the body starts with is a rule of the loop's Choice.
+    assert compiled["for"]["Choices"][0]["Assign"] == {"done": "{% $n * 2 %}"}
     assert run(body, {"xs": [1, 2]}) == [2]
 
 
@@ -165,7 +166,7 @@ def test_continue_and_the_body_each_take_the_increment():
     body = 'items: list[float] = input["items"]\nfor item in items:\n    if item < 0:\n        continue\n    wait(item)\nreturn 1'
     compiled = states(body)
     increment = {"item_index": "{% $item_index + 1 %}"}
-    rule = compiled["if"]["Choices"][0]
+    rule = compiled["for"]["Choices"][0]
     assert (rule["Assign"], rule["Next"]) == (increment, "for")
     assert (compiled["wait"]["Assign"], compiled["wait"]["Next"]) == (increment, "for")
     assert run(body, {"items": [-1, 0]}) == 1
@@ -263,12 +264,13 @@ def test_loop_variables_do_not_clash():
     body = 'value_index = 5\na: list = input["a"]\nfor value in a:\n    for value in a:\n        wait(1)\nreturn value_index'
     compiled = states(body)
     conditions = [
-        s["Choices"][0]["Condition"] for s in compiled.values() if s["Type"] == "Choice"
+        rule["Condition"]
+        for s in compiled.values()
+        if s["Type"] == "Choice"
+        for rule in s["Choices"]
     ]
-    assert conditions == [
-        "{% $value_index_2 < $count($a) %}",
-        "{% $value_index_3 < $count($a) %}",
-    ]
+    assert "{% $value_index_2 < $count($a) %}" in conditions
+    assert "{% $value_index_3 < $count($a) %}" in conditions
 
 
 def test_types_widen_around_the_loop():

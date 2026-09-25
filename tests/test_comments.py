@@ -84,7 +84,6 @@ return total
         "receipt": "the total\nand the count\ncharge it",
         "item_index": None,
         "for": "each item",
-        "if": "leave early",
         "status": "poll\nuntil done",
         "if_2": None,
         # The return after the try reads a variable, which cannot fail, so it
@@ -94,10 +93,11 @@ return total
     }
     assert list(compiled["States"]["for"])[:2] == ["Type", "Comment"]
     # The body's first assignment goes in the rule, with its comment, and the
-    # increment in the Choice of the if, whose Default alone leads on.
-    assert compiled["States"]["for"]["Choices"][0]["Comment"] == "add it"
-    assert compiled["States"]["if"]["Default"] == "for"
-    assert compiled["States"]["if"]["Assign"] == {"item_index": "{% $item_index + 1 %}"}
+    # if right after it is rules of the loop's Choice, which take the comments
+    # of both; the one that goes on takes the increment.
+    rules = compiled["States"]["for"]["Choices"]
+    assert [rule["Comment"] for rule in rules] == ["add it\nleave early"] * 2
+    assert rules[1]["Assign"]["item_index"] == "{% $item_index + 1 %}"
 
 
 def test_docstrings_describe_branches_and_processors():

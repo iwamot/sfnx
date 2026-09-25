@@ -125,20 +125,34 @@ def test_each_state_names_the_source_it_comes_from():
             ],
         ),
         "for": ([], [(header, None)]),
-        # The two paths that go on join at count, so each takes it.
-        "if": (
+        # The if the body starts with is rules of the loop's Choice, and so
+        # is the while its break leads to; each rule spans the if too.
+        "for[0]": (
             [],
             [
                 ('if order["amount"] > 100:', None),
                 ('elif order["amount"] < 0:', None),
                 ("count = count + 1", None),
                 (header, "loop step"),
+                ('total = total + order["amount"]', None),
             ],
         ),
-        "if[0]": (
+        "for[1]": (
             [],
             [
-                ('total = total + order["amount"]', None),
+                ('if order["amount"] > 100:', None),
+                ('elif order["amount"] < 0:', None),
+                ("count = count + 1", None),
+                (header, "loop step"),
+                ("while total > 1000:", None),
+                ("total = total - 1000", None),
+            ],
+        ),
+        "for[3]": (
+            [],
+            [
+                ('if order["amount"] > 100:', None),
+                ('elif order["amount"] < 0:', None),
                 ("count = count + 1", None),
                 (header, "loop step"),
             ],
@@ -230,6 +244,7 @@ def count(input):
     (definition,) = definitions(source, "app.py", located=True).values()
     header = "for row in rows[1:]:"
     counting = "for i in range(len(kept)):"
+    test = 'if (\n            row["n"] > 0\n            and row == {"a": 1}\n        ):'
     assert located(source, definition) == {
         "rows": (
             [],
@@ -241,19 +256,28 @@ def count(input):
         ),
         # The second loop starts in the first one's Choice, which only its
         # Default leads on from, and each body's first assignments go in the
-        # rule that leads there.
-        "for": ([], [(header, None), (counting, "loop start")]),
-        "for[0]": ([], [(header, "loop variables")]),
-        "if": (
+        # rule that leads there. The if the first body starts with and the
+        # second loop's test are rules of that Choice, each spanning both.
+        "for": ([], [(header, None), (counting, "loop start"), (counting, None)]),
+        "for[0]": (
             [],
             [
-                (
-                    'if (\n            row["n"] > 0\n            and row == {"a": 1}\n        ):',
-                    None,
-                )
+                (header, "loop variables"),
+                (test, None),
+                ('row = row["next"]', None),
+                ("flagged = True", None),
             ],
         ),
-        "if[0]": ([], [('row = row["next"]', None), ("flagged = True", None)]),
+        "for[1]": ([], [(header, "loop variables"), (test, None)]),
+        "for[2]": (
+            [],
+            [
+                (header, None),
+                (counting, "loop start"),
+                ("kept = kept + [i]", None),
+                (counting, "loop step"),
+            ],
+        ),
         "kept": ([], [("kept = kept + [row]", None), (header, "loop step")]),
         "for_2": ([], [(counting, None)]),
         "for_2[0]": ([], [("kept = kept + [i]", None), (counting, "loop step")]),
