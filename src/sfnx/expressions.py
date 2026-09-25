@@ -101,6 +101,9 @@ FUNCTIONS = frozenset(
 VOLATILE = frozenset({"millis", "now", "random", "uuid"})
 # How a value may change when it is evaluated again: as the time or a random
 # value does, or as a jsonata() expression may, whose text is not read.
+# The functions and operators that fail for no value given them.
+TOTAL = frozenset({"exists", "type", "not", "boolean", "count"})
+TOTAL_OPERATORS = frozenset({"=", "!=", "in", "and", "or"})
 CHANGES = 1
 OPAQUE = 2
 
@@ -119,7 +122,10 @@ class Expr:
     CHANGES, or OPAQUE where a jsonata() expression is in it, 0 otherwise.
     defined says the code never gives undefined, which fails an Assign or an
     Output but passes through a test such as $type() without failing: a
-    literal, a variable, which no Assign leaves undefined, and d.get().
+    literal, a variable, which no Assign leaves undefined, and d.get(). total
+    says evaluating the code fails for no value: a literal, a variable, a path
+    step, $exists(), $type(), $not(), $boolean(), $count(), =, !=, in, and
+    and or, conditionals and blocks of them.
     """
 
     code: str
@@ -131,6 +137,7 @@ class Expr:
     constructor: bool = False
     volatile: int = 0
     defined: bool = False
+    total: bool = False
 
 
 def expression(
@@ -142,6 +149,7 @@ def expression(
     constructor: bool = False,
     volatile: int = 0,
     defined: bool = False,
+    total: bool = False,
 ) -> Expr:
     return Expr(
         code,
@@ -153,6 +161,7 @@ def expression(
         constructor,
         volatile,
         defined,
+        total,
     )
 
 
@@ -189,7 +198,11 @@ def spelling(name: str, spelled: Mapping[str, str]) -> str:
 
 def variable(name: str, spelled: Mapping[str, str], type: Type | None = None) -> Expr:
     return expression(
-        "$" + spelling(name, spelled), frozenset({name}), type=type, defined=True
+        "$" + spelling(name, spelled),
+        frozenset({name}),
+        type=type,
+        defined=True,
+        total=True,
     )
 
 
@@ -200,20 +213,30 @@ def literal(value: object) -> Expr:
     if isinstance(value, str):
         code = string(value)
         if value.startswith("{%") or value.endswith("%}"):
-            return expression(code, type=of(STRING), defined=True)
-        return Expr(code, value, type=of(STRING), defined=True)
+            return expression(code, type=of(STRING), defined=True, total=True)
+        return Expr(code, value, type=of(STRING), defined=True, total=True)
     if isinstance(value, bool):
         return Expr(
-            json.dumps(value), value, type=of(BOOLEAN), boolean=True, defined=True
+            json.dumps(value),
+            value,
+            type=of(BOOLEAN),
+            boolean=True,
+            defined=True,
+            total=True,
         )
     if value is None:
-        return Expr("null", None, type=of(NULL), defined=True)
+        return Expr("null", None, type=of(NULL), defined=True, total=True)
     assert isinstance(value, (int, float))
     if not math.isfinite(value):
         raise ValueError("JSON has no infinite numbers")
     precedence = UNARY if value < 0 else ATOM
     return Expr(
-        json.dumps(value), value, precedence=precedence, type=of(NUMBER), defined=True
+        json.dumps(value),
+        value,
+        precedence=precedence,
+        type=of(NUMBER),
+        defined=True,
+        total=True,
     )
 
 
@@ -248,6 +271,7 @@ def array(items: list[Expr]) -> Expr:
         type=Type(frozenset({ARRAY}), item_type, empty=not items),
         constructor=True,
         volatile=changes(items),
+        total=all(item.total for item in items),
     )
 
 
@@ -300,7 +324,12 @@ def call(
     code = f"${function}(" + ", ".join(a.code for a in arguments) + ")"
     volatile = max(CHANGES if function in VOLATILE else 0, changes(arguments))
     return expression(
-        code, uses(arguments), type=type, boolean=boolean, volatile=volatile
+        code,
+        uses(arguments),
+        type=type,
+        boolean=boolean,
+        volatile=volatile,
+        total=function in TOTAL and all(a.total for a in arguments),
     )
 
 
@@ -326,6 +355,7 @@ def binary(
         type,
         boolean,
         volatile=changes([left, right]),
+        total=operator in TOTAL_OPERATORS and left.total and right.total,
     )
 
 
@@ -339,6 +369,7 @@ def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> E
         then.boolean and otherwise.boolean,
         volatile=changes([test, then, otherwise]),
         defined=then.defined and otherwise.defined,
+        total=test.total and then.total and otherwise.total,
     )
 
 
@@ -409,6 +440,7 @@ def block(bindings: list[tuple[str, Expr]], body: Expr) -> Expr:
         body.boolean,
         volatile=changes([*values, body]),
         defined=body.defined,
+        total=body.total and all(value.total for value in values),
     )
 
 
@@ -431,6 +463,7 @@ def field(value: Expr, key: str) -> Expr:
         value.variables,
         type=values,
         volatile=value.volatile,
+        total=value.total,
     )
 
 

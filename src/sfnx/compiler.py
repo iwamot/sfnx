@@ -339,6 +339,9 @@ class Scope:
         # Names the bodies of functions called directly assigned here, which a
         # later call may use again.
         self.expanded: set[str] = set()
+        # The Pass and Succeed states whose every value neither fails nor is
+        # undefined, which a Task before them may hold whatever reads them.
+        self.failsafe: set[str] = set()
         # The comparisons of a variable with a value written in the source,
         # the tests a Choice decided by known values can drop, by variable.
         self.flags: dict[str, list[ast.Compare]] = {}
@@ -445,6 +448,8 @@ class Scope:
         added = self.insert(first, state, node, origins)
         self.enclosing[added] = self.within()
         values = list(pending.values())
+        if all(v.defined and v.total for v in values):
+            self.failsafe.add(added)
         if (
             opening
             and not any(v.volatile for v in values)
@@ -1395,6 +1400,8 @@ class Scope:
             state = {"Type": "Succeed", "Output": value.template}
             added = self.add("return", state, node, origins)
             self.enclosing[added] = self.within()
+            if value.defined and value.total:
+                self.failsafe.add(added)
             return
         # A Task at the end ends the machine itself; its output is the result
         # unless the return makes something of it.
@@ -1565,7 +1572,7 @@ class Scope:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
         fold_start(definition, scope.starting)
-        fold_into_catching_tasks(definition, scope.enclosing)
+        fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
         thread_choices(definition)
         merge_choices(definition)
         share_states(definition)
@@ -3194,7 +3201,9 @@ SAME_CONTEXT = re.compile(r"\$states\.context\.(Execution|StateMachine|Map)\b")
 
 
 def fold_into_catching_tasks(
-    definition: dict[str, object], enclosing: dict[str, tuple[list[Handler], ...]]
+    definition: dict[str, object],
+    enclosing: dict[str, tuple[list[Handler], ...]],
+    failsafe: set[str],
 ) -> None:
     """The Pass or the Succeed right after a Task with a Catch, in the Task's
     Assign or as its Output, as a hand-writer assigns and returns in the Task
@@ -3204,12 +3213,16 @@ def fold_into_catching_tasks(
     Task, whose Catch is theirs, and the Task retries nothing on `States.ALL`
     or `States.QueryEvaluationError`, which would call it again. A statement
     after the try, which only the Task leads to when every except clause
-    ends, is not in the try's reach.
+    ends, is not in the try's reach, unless the state is failsafe (below),
+    which gives the Catch nothing to take; a catcher of the Task may lead to
+    such a Succeed too, which stays for the catcher.
 
     A failure in the Task's Assign loses all of it, the Task's result
     included, where Python keeps what was assigned before the failing
     statement, so no way on from a catcher may read a variable the Task or
-    the Pass assigns. The state reads the variables the Task assigns as the
+    the Pass assigns, unless the state is failsafe: nothing in it fails or is
+    undefined, so a failure of the Assign is the Task's own, as in Python.
+    The state reads the variables the Task assigns as the
     expressions the Task assigns them, and nothing else of `$states` than the
     context the two share."""
     states = definition["States"]
@@ -3230,13 +3243,21 @@ def fold_into_catching_tasks(
                 or "Catch" not in task
                 or "Output" in task
                 or after is None
-                or leading[after] != [name]
-                or not same_tries(enclosing.get(after, ()), enclosing[name])
+                or set(leading[after]) != {name}
+                or not (
+                    after in failsafe
+                    or same_tries(enclosing.get(after, ()), enclosing[name])
+                )
                 or retries_evaluation(task)
             ):
                 continue
             following = states[after]
             kind = following["Type"]
+            # A catcher that leads there too still needs the state; a Succeed
+            # stays for it, where a Pass would have to be written twice.
+            shared = leading[after].count(name) > 1
+            if shared and kind != "Succeed":
+                continue
             fields = set(following) - {"Type", "Comment"}
             if not (
                 (kind == "Pass" and fields == {"Assign", "Next"})
@@ -3254,20 +3275,23 @@ def fold_into_catching_tasks(
             texts = [t for code in codes for t in re.findall(QUOTED, code)]
             if any(re.search(rf"\${n}(?!\w)", t) for t in texts for n in own):
                 continue
-            found = {n: assigned_value(own[n]) for n in reads & own.keys()}
+            found = {n: assigned_value(v) for n, v in own.items() if n in reads}
             values = {n: v for n, v in found.items() if v is not None}
             if len(values) < len(found) or not all(
                 reads_as(following, n, v) for n, v in values.items()
             ):
                 continue
             assigning = {*own, *following.get("Assign", {})}
-            if caught_reads(definition, task) & assigning:
+            if after not in failsafe and caught_reads(definition, task) & assigning:
                 continue
-            moved = copy.deepcopy(following)
-            for n, value in values.items():
-                substitute(moved, n, value)
+            moved = {
+                key: value if key == "Comment" else read_through(value, values)
+                for key, value in following.items()
+            }
             if kind == "Pass":
-                task["Assign"] = {**own, **moved["Assign"]}
+                assign = moved["Assign"]
+                assert isinstance(assign, dict)
+                task["Assign"] = {**own, **assign}
                 task["Next"] = moved["Next"]
             else:
                 del task["Next"]
@@ -3276,7 +3300,8 @@ def fold_into_catching_tasks(
             comment = joined_comments(task.get("Comment"), following.get("Comment"))
             if comment is not None:
                 task["Comment"] = comment
-            del states[after]
+            if not shared:
+                del states[after]
             folded = True
             break
 
@@ -3289,6 +3314,44 @@ def same_tries(
     return len(first) == len(second) and all(
         a is b for a, b in zip(first, second, strict=True)
     )
+
+
+def read_through(template: object, values: dict[str, Expr]) -> object:
+    """A template that reads each variable as the value a state before it
+    assigns, as the Assign of that state evaluates it: a value read once, or
+    a path, in its place, and a longer one read more than once bound to the
+    variable's name first, so that it is written and evaluated once, as a
+    hand-writer binds it. Where a value put in place or another bound one
+    reads such a name, which it means from before the state, each is put in
+    place instead."""
+    if isinstance(template, dict):
+        return {k: read_through(v, values) for k, v in template.items()}
+    if isinstance(template, list):
+        return [read_through(v, values) for v in template]
+    if not (isinstance(template, str) and template.startswith("{%")):
+        return template
+    code = template[2:-2].strip()
+    reads = {n: len(re.findall(rf"\${n}(?!\w)", code)) for n in values}
+    bound = [n for n, v in values.items() if reads[n] > 1 and v.precedence < ATOM]
+    placed = {n: v for n, v in values.items() if n not in bound and reads[n]}
+    if any(v.variables & set(bound) for v in placed.values()) or any(
+        values[n].variables & (set(bound) - {n}) for n in bound
+    ):
+        placed = {n: v for n, v in values.items() if reads[n]}
+        bound = []
+    if not bound and len(placed) == 1 and code == f"${next(iter(placed))}":
+        return next(iter(placed.values())).template
+    if placed:
+        # All at once: a value put in place may read the name of another from
+        # before the state, which is not to be put in place again.
+        names = "|".join(map(re.escape, placed))
+        code = re.sub(
+            rf"\$({names})(?!\w)", lambda m: operand(placed[m[1]], ATOM), code
+        )
+    if bound:
+        bindings = "".join(f"${n} := {values[n].code}; " for n in bound)
+        code = f"({bindings}{code})"
+    return "{% " + code + " %}"
 
 
 def assigned_value(template: object) -> Expr | None:
@@ -3977,7 +4040,7 @@ def compile_machine(
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
     fold_start(definition, scope.starting)
-    fold_into_catching_tasks(definition, scope.enclosing)
+    fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
     thread_choices(definition)
     merge_choices(definition)
     share_states(definition)
