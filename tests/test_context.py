@@ -68,6 +68,18 @@ def test_the_task_token_in_a_callback():
     }
 
 
+@pytest.mark.parametrize("pattern", [".sync", ".sync:2"])
+def test_the_task_token_in_a_sync_task(pattern):
+    # A .sync Task has a token too, which a child can send back (measured).
+    states = output(
+        'r = task("arn:aws:states:::states:startExecution' + pattern + '", '
+        '{"StateMachineArn": "c", "Input": {"token": context["Task"]["Token"]}})\nreturn r'
+    )
+    assert states["r"]["Arguments"]["Input"] == {
+        "token": "{% $states.context.Task.Token %}"
+    }
+
+
 @pytest.mark.parametrize(
     "body, message",
     [
@@ -81,7 +93,7 @@ def test_the_task_token_in_a_callback():
         ),
         (
             'return context["Task"]["Token"]',
-            "the task token exists only in the arguments of a .waitForTaskToken task",
+            "the task token exists only in the arguments of a .waitForTaskToken, .sync or .sync:2 task",
         ),
         (
             'r = task("arn:aws:states:::lambda:invoke", {"FunctionName": "f", "Payload": context["Task"]["Token"]})',
@@ -105,7 +117,7 @@ def test_the_task_token_in_a_callback():
         ),
         (
             'return context.get("Task")',
-            "the task token exists only in the arguments of a .waitForTaskToken task",
+            "the task token exists only in the arguments of a .waitForTaskToken, .sync or .sync:2 task",
         ),
     ],
 )

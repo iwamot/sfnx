@@ -32,6 +32,9 @@ except ModuleNotFoundError as exc:
 
 EXCEEDED = "The specified tolerated failure threshold was exceeded"
 MAP_RUN = "arn:aws:states:us-east-1:123456789012:mapRun:machine"
+# The ends of a Resource whose Task has a token in the Context Object; a
+# request-response Task has none (measured).
+TOKENED = (".waitForTaskToken", ".sync", ".sync:2")
 
 
 class Failure(Exception):
@@ -900,13 +903,13 @@ def entered(
 ) -> dict[str, object]:
     """The Context Object in a state. State.RetryCount exists only in the
     states that retry (measured in a Task and a Map), and Task.Token only in a
-    .waitForTaskToken Task."""
+    .waitForTaskToken, .sync or .sync:2 Task (measured)."""
     about: dict[str, object] = {"EnteredTime": "2026-01-01T00:00:00Z", "Name": name}
     if state["Type"] in {"Task", "Parallel", "Map"}:
         about["RetryCount"] = retries
     entered = {**context, "State": about}
     resource = state.get("Resource")
-    if isinstance(resource, str) and resource.endswith(".waitForTaskToken"):
+    if isinstance(resource, str) and resource.endswith(TOKENED):
         entered["Task"] = {"Token": "token"}
     return entered
 
