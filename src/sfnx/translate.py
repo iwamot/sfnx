@@ -233,6 +233,37 @@ JSONATA_FUNCTIONS = frozenset(
     ]
 )
 
+# The functions that give another value each time they are evaluated, and
+# $eval, whose text is not known.
+UNSETTLED = frozenset(["random", "uuid", "now", "millis", "eval"])
+
+
+def settled(written: str, bound: set[str], variables: set[str]) -> bool:
+    """Whether JSONata written by hand reads only the names jsonata() binds
+    for it and gives the same value wherever it is evaluated: every $name in
+    it calls a function, is a function that does not change, or is bound by
+    the call or inside the text, under a name no variable has, as a lambda's
+    parameter or a block's := does. `$` and `$$` read the input, and
+    $states the state it is in. A $ in a string or a regular expression reads
+    as a name, which only keeps the expression unsettled."""
+    if re.search(r"\$(?![^\W\d])", written):
+        return False
+    inside = set(re.findall(r"\$(\w+)\s*:=", written)) | {
+        name
+        for parameters in re.findall(r"function\s*\(([^)]*)\)", written)
+        for name in re.findall(r"\$(\w+)", parameters)
+    }
+    for found in re.finditer(r"\$([^\W\d]\w*)(\s*\()?", written):
+        name = found[1]
+        if name in UNSETTLED or name == "states":
+            return False
+        if found[2] or name in JSONATA_FUNCTIONS or name in bound:
+            continue
+        if name not in inside or name in variables:
+            return False
+    return True
+
+
 # How the built-in functions for numbers are written.
 NUMBER_FUNCTIONS = {
     "abs": "abs(x)",
@@ -2579,14 +2610,20 @@ class Translator:
             values.append(value)
         written = held.value
         reads = self.variables(written, bound)
-        # The text is not parsed, so what it calls is unknown: it may call
-        # $random under that name, or under one it binds the function to.
+        # The text is not parsed, so what it reads and calls is unknown unless
+        # every name in it is one the call binds, a function or a name it binds
+        # itself: it may call $random under that name, or under one it binds
+        # the function to.
+        volatile = OPAQUE
+        if settled(written, set(bound), {self.spelling(n) for n in self.bindings}):
+            reads = frozenset()
+            volatile = changes(values)
         if not bindings:
-            return expression(written, reads, precedence=WRITTEN, volatile=OPAQUE)
+            return expression(written, reads, precedence=WRITTEN, volatile=volatile)
         return expression(
             "(" + "".join(bindings) + written + ")",
             uses(values) | reads,
-            volatile=OPAQUE,
+            volatile=volatile,
         )
 
     def variables(self, written: str, bound: list[str]) -> frozenset[str]:

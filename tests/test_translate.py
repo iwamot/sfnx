@@ -1642,9 +1642,8 @@ def changing_definition(body: str) -> dict:
             "return (random.random() + 1) % 2",
             "($v := ($random() + 1); $v - 2 * $floor($v / 2))",
         ),
-        # The expression jsonata() takes is not parsed, so it counts as
-        # changing however the call is written, or bound to a name first, and
-        # even when it calls nothing.
+        # A jsonata() expression that calls a function that changes counts as
+        # changing however the call is written, or bound to a name first.
         (
             "return jsonata('$random()') % 2",
             "($v := ($random()); $v - 2 * $floor($v / 2))",
@@ -1657,7 +1656,6 @@ def changing_definition(body: str) -> dict:
             "return jsonata('($f := $random; $f())') % 2",
             "($v := (($f := $random; $f())); $v - 2 * $floor($v / 2))",
         ),
-        ("return jsonata('1 + 1') % 2", "($v := (1 + 1); $v - 2 * $floor($v / 2))"),
         (
             "return jsonata('$random() + $n', n=a) % 2",
             "($v := ($n := $a; $random() + $n); $v - 2 * $floor($v / 2))",

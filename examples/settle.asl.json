@@ -19,13 +19,17 @@
     },
     "if": {
       "Type": "Choice",
+      "Comment": "Totals per currency are a grouping, which is written out in JSONata.",
       "Choices": [
         {
           "Condition": "{% $count($charges) = 0 %}",
           "Next": "return"
         }
       ],
-      "Default": "totals"
+      "Assign": {
+        "totals": "{% ($xs := $charges; $merge($map($distinct($xs.currency), function($c) { {$c: $sum($xs[currency = $c].amount)} }))) %}"
+      },
+      "Default": "return_2"
     },
     "return": {
       "Type": "Succeed",
@@ -34,14 +38,6 @@
         "charges": 0,
         "totals": {}
       }
-    },
-    "totals": {
-      "Type": "Pass",
-      "Comment": "Totals per currency are a grouping, which is written out in JSONata.",
-      "Assign": {
-        "totals": "{% ($xs := $charges; $merge($map($distinct($xs.currency), function($c) { {$c: $sum($xs[currency = $c].amount)} }))) %}"
-      },
-      "Next": "return_2"
     },
     "return_2": {
       "Type": "Succeed",
