@@ -420,7 +420,7 @@ class Scope:
             result is not None
             and not self.opening
             and folded.keys() == pending.keys()
-            and self.may_fold(result.state)
+            and (self.may_fold(result.state) or all_written(list(folded.values())))
             and self.holds_still(list(folded.values()), result.state)
         ):
             self.result = self.fold(result, folded, origins, remarks)
@@ -503,7 +503,7 @@ class Scope:
             assign = container.get("Assign", {})
             assert isinstance(assign, dict)
             if (
-                not self.can_hold(container, key)
+                not self.can_hold(container, key, values)
                 or (names | reads) & assign.keys()
                 or not self.holds_still(values, container)
             ):
@@ -518,17 +518,20 @@ class Scope:
             self.describe(holder, origins, remarks)
         return True
 
-    def can_hold(self, container: dict[str, object], key: str) -> bool:
+    def can_hold(
+        self, container: dict[str, object], key: str, values: list[Expr]
+    ) -> bool:
         """Whether the Assign of what a transition belongs to runs only on the
         way along it: a Choice rule, a catcher, a Choice's own Assign for its
-        Default, and a Pass, a Wait or a state that may take what follows it."""
+        Default, and a Pass, a Wait or a state that may take what follows it,
+        as any state may take values written in the source, which cannot fail."""
         if "Type" not in container:
             return True
         kind = container["Type"]
         if kind == "Choice":
             return key == "Default"
         if kind in {"Task", "Parallel", "Map"}:
-            return self.may_fold(container)
+            return self.may_fold(container) or all_written(values)
         return kind in {"Pass", "Wait"}
 
     def describe(
@@ -3240,6 +3243,12 @@ def merge_choices(definition: dict[str, object]) -> None:
             del states[second]
             merged = True
             break
+
+
+def all_written(values: list[Expr]) -> bool:
+    """Whether every value is written out in the source, which neither a Catch
+    nor a retrier has a failure of to take in the Assign that holds it."""
+    return all(written(value.template) for value in values)
 
 
 def written(template: object) -> bool:
