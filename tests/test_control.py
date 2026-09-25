@@ -6,7 +6,13 @@ import textwrap
 import pytest
 
 from sfnx import testing
-from sfnx.compiler import always_reads, compile_source, definitions
+from sfnx.compiler import (
+    always_reads,
+    compile_source,
+    definitions,
+    grouped,
+    read_as_values,
+)
 from sfnx.diagnostics import CompileError
 from sfnx.locations import PREFIX
 from tests import asl, truthy
@@ -731,11 +737,146 @@ def test_an_if_right_after_an_if_that_ends_is_one_choice():
     assert asl.run(definition(body), {"a": False, "b": False, "y": 3}) == 3
 
 
-def test_an_if_that_reads_what_the_first_assigns_keeps_its_choice():
+def test_an_if_that_reads_what_the_first_assigns_reads_it_as_its_expression():
+    """The first Choice evaluates its Default's Assign with the variables and
+    the input its tests read, so the second's tests read the expression."""
     body = 'if input["a"]:\n    return 1\ny = input["y"]\nif y:\n    return 2\nreturn 3'
     states = definition(body)["States"]
-    assert states["if_2"]["Type"] == "Choice"
-    assert asl.run(definition(body), {"a": False, "y": True}) == 2
+    assert "if_2" not in states
+    assert states["if"]["Choices"][1]["Condition"] == (
+        f"{{% ($y := {INPUT}.y; $type($y) = 'array' ? $count($y) > 0 : $boolean($y)) %}}"
+    )
+    assert states["if"]["Choices"][1]["Assign"] == {"y": f"{{% {INPUT}.y %}}"}
+    for a, y, expected in [(True, True, 1), (False, True, 2), (False, False, 3)]:
+        assert asl.run(definition(body), {"a": a, "y": y}) == expected
+
+
+def test_a_value_that_changes_is_not_read_again_in_the_next_choice():
+    body = (
+        'if input["a"]:\n    return 1\ny = random.random()\nif y > 0.5:\n'
+        "    return 2\nreturn 3"
+    )
+    ((_, compiled),) = compile_source("import random\n" + source(body)).items()
+    assert compiled["States"]["if_2"]["Type"] == "Choice"
+
+
+@pytest.mark.parametrize(
+    "body, inputs",
+    [
+        # An if that starts the body of an if: a rule `a and b`, then `a`.
+        (
+            'if input["a"]:\n    if input["b"]:\n        return 1\n    return 2\nreturn 3',
+            [{"a": a, "b": b} for a in (True, False) for b in (True, False)],
+        ),
+        # The second reads what the rule assigns.
+        (
+            (
+                'if input["a"]:\n    x = input["n"] + 1\n    if x > 2:\n        return x\n'
+                "    return 0\nreturn -1"
+            ),
+            [{"a": a, "n": n} for a in (True, False) for n in (1, 5)],
+        ),
+        # A value written out with an expression in it.
+        (
+            (
+                'if input["z"]:\n    return 0\ny = {"a": input["a"]}\nif y["a"] > 1:\n'
+                "    return y\nreturn 1"
+            ),
+            [{"z": z, "a": a} for z in (True, False) for a in (1, 5)],
+        ),
+        # A loop's test after an if.
+        (
+            (
+                'n = 0\nif input["z"]:\n    return 0\nwhile n < input["k"]:\n    n = n + 1\n'
+                "return n"
+            ),
+            [{"z": z, "k": k} for z in (True, False) for k in (0, 3)],
+        ),
+    ],
+)
+def test_a_choice_takes_in_the_choice_a_rule_leads_to(body, inputs):
+    compiled = definition(body)["States"]
+    for execution_input in inputs:
+        env = {"input": execution_input}
+        exec("def f(input):\n" + textwrap.indent(body, "    "), env)
+        assert asl.run(definition(body), execution_input) == env["f"](execution_input)
+    choices = [s for s in compiled.values() if s["Type"] == "Choice"]
+    assert any(len(s["Choices"]) > 1 for s in choices)
+
+
+def test_a_choice_that_leads_back_to_itself_is_taken_in_once():
+    body = 'n = 0\nif input["z"]:\n    return 0\nwhile n < 3:\n    n = n + 1\nreturn n'
+    compiled = definition(body)["States"]
+    assert compiled["if"]["Choices"][1]["Next"] == "while"
+    assert compiled["while"]["Choices"][0]["Next"] == "while"
+    assert asl.run(definition(body), {"z": False}) == 3
+
+
+@pytest.mark.parametrize(
+    "condition, values, read",
+    [
+        # Read once, the expression; more than once, bound once in a block.
+        ("$a > 1", {"a": "{% $x.a %}"}, "$x.a > 1"),
+        ("$a", {"a": True}, "true"),
+        (
+            "$a > 1 and $a < 5",
+            {"a": "{% $x + 1 %}"},
+            "($a := $x + 1; $a > 1 and $a < 5)",
+        ),
+        # A block would bind a before b, which reads the a from before.
+        (
+            "$a > $b and $a < 5 and $b < 5",
+            {"a": "{% $x %}", "b": "{% $a + 1 %}"},
+            "$x > ($a + 1) and $x < 5 and ($a + 1) < 5",
+        ),
+        (
+            "$a.k = 1",
+            {"a": {"k": "{% $x %}", "l": [1, "s"]}},
+            '({"k": $x, "l": [1, "s"]}).k = 1',
+        ),
+        # What names its state, changes when evaluated, or binds a name read.
+        ("$states.context.State.Name = 'x' and $a", {"a": "{% $x %}"}, None),
+        ("$a > 1", {"a": "{% $random() %}"}, None),
+        ("($a := 1; $a > $b)", {"a": "{% $x %}", "b": "{% $y %}"}, None),
+    ],
+)
+def test_a_choice_reads_what_the_transition_assigns(condition, values, read):
+    choice = {
+        "Type": "Choice",
+        "Choices": [
+            {
+                "Condition": f"{{% {condition} %}}",
+                "Next": "n",
+                "Assign": {"c": "{% $a %}"},
+            }
+        ],
+        "Default": "d",
+    }
+    found = read_as_values(choice, values)
+    if read is None:
+        assert found is None
+        return
+    assert found is not None
+    rules, default, own = found
+    assert rules[0]["Condition"] == f"{{% {read} %}}"
+    assert rules[0]["Assign"] == {"c": values["a"]}
+    assert (default, own) == ("d", {})
+
+
+@pytest.mark.parametrize(
+    "code, group",
+    [
+        ("$x.a", "$x.a"),
+        ("$count($x)", "$count($x)"),
+        ("'s'", "'s'"),
+        ("($v := 1; $v)", "($v := 1; $v)"),
+        ("($a) + ($b)", "(($a) + ($b))"),
+        ("('(' & $a)", "(('(' & $a))"),
+        ("$a + 1", "($a + 1)"),
+    ],
+)
+def test_a_value_read_in_place_of_a_variable_is_grouped_where_it_must_be(code, group):
+    assert grouped(code) == group
 
 
 FLAGGED = (

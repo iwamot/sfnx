@@ -57,9 +57,16 @@
         {
           "Condition": "{% $status = 'FAILED' %}",
           "Next": "raise"
+        },
+        {
+          "Condition": "{% ($polls + 1) < 20 %}",
+          "Next": "wait",
+          "Assign": {
+            "polls": "{% $polls + 1 %}"
+          }
         }
       ],
-      "Default": "while",
+      "Default": "raise_2",
       "Assign": {
         "polls": "{% $polls + 1 %}"
       }

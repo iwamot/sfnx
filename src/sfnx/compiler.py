@@ -6,6 +6,7 @@ import itertools
 import json
 import re
 import symtable
+from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from importlib.util import decode_source
@@ -1663,6 +1664,7 @@ class Scope:
         fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
         thread_choices(definition)
         merge_choices(definition)
+        take_in_choices(definition)
         share_states(definition)
         end_before_returns(definition)
         docstring = ast.get_docstring(function)
@@ -3763,6 +3765,248 @@ def merge_choices(definition: dict[str, object]) -> None:
             break
 
 
+# What gives another value each time it is evaluated, which a Choice's test
+# would evaluate apart from the Assign that keeps it, and what names the
+# state it is read in.
+CHANGING = re.compile(r"\$(random|uuid|now|millis|eval)\s*\(")
+STATE_CONTEXT = re.compile(r"\$states\.context\.State\b")
+
+
+def take_in_choices(definition: dict[str, object]) -> None:
+    """A transition of a Choice that leads straight to another Choice takes in
+    that one's tests, as a hand-writer lists the tests of `if a:` and the `if
+    b:` right inside it, or right after it, in one Choice: a rule `c` becomes
+    a rule `c and b` for each rule `b` of the second, in its order, and a
+    rule `c` to the second's Default; a Default takes the second's rules after
+    the first's own. The second's tests and Assign read what the transition
+    assigns as the expressions it assigns them, which the first evaluates
+    with the same variables and input as its Assign, and the transition's
+    Assign goes on each way out, so a value that fails still fails the
+    Choice. JSONata's `and` evaluates no more once one side is false
+    (measured), so a test reached only through `c` is not evaluated
+    otherwise. Not where such an expression gives another value each time
+    it is evaluated, where the second reads the state it is in, or binds a
+    name it would read. The second stays for the other ways into it."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    done: set[tuple[str, str]] = set()
+    taken = True
+    while taken:
+        taken = False
+        for name, first in states.items():
+            if first["Type"] != "Choice":
+                continue
+            rules = first["Choices"]
+            assert isinstance(rules, list)
+            for index, rule in enumerate([*rules, first]):
+                key = "Next" if rule is not first else "Default"
+                target = rule[key]
+                second = states[target]
+                if target == name or second["Type"] != "Choice":
+                    continue
+                # A Choice that leads back to itself through Choices alone
+                # would be taken in again each time, as a loop unrolled
+                # without end, so it is taken in once into each Choice.
+                if (name, target) in done:
+                    continue
+                values = rule.get("Assign", {})
+                assert isinstance(values, dict)
+                read = read_as_values(second, values)
+                if read is None:
+                    continue
+                later_rules, later_default, own = read
+                if circles(states, target):
+                    done.add((name, target))
+                # Each way out describes the transition it takes the place
+                # of, whose Assign it takes, as merge_choices does.
+                leading = rule.get("Comment") if rule is not first or values else None
+                if rule is not first:
+                    leading = joined_comments(leading, second.get("Comment"))
+                ways = [
+                    commented_with(
+                        {**later, "Assign": {**values, **assigns(later)}},
+                        leading,
+                    )
+                    for later in later_rules
+                ]
+                if rule is first:
+                    first["Choices"] = [*rules, *ways]
+                    first["Default"] = later_default
+                    if values or own:
+                        first["Assign"] = {**values, **own}
+                else:
+                    test = rule["Condition"]
+                    ways = [
+                        {**way, "Condition": both(test, way["Condition"])}
+                        for way in ways
+                    ]
+                    rest = {**rule, "Next": later_default}
+                    if values or own:
+                        rest["Assign"] = {**values, **own}
+                    rest = commented_with(rest, second.get("Comment"), after=True)
+                    first["Choices"] = [
+                        *rules[:index],
+                        *ways,
+                        rest,
+                        *rules[index + 1 :],
+                    ]
+                for way in [*first["Choices"], first]:
+                    if not way.get("Assign"):
+                        way.pop("Assign", None)
+                if rule is first:
+                    comment = joined_comments(
+                        first.get("Comment"), second.get("Comment")
+                    )
+                    if comment is not None:
+                        first["Comment"] = comment
+                taken = True
+                break
+            if taken:
+                break
+        drop_unreachable(definition)
+
+
+def assigns(holder: dict[str, object]) -> dict[str, object]:
+    """What a state or a rule assigns."""
+    assign = holder.get("Assign", {})
+    assert isinstance(assign, dict)
+    return assign
+
+
+def circles(states: dict[str, dict[str, object]], start: str) -> bool:
+    """Whether a Choice leads back to itself through Choices alone."""
+    seen: set[str] = set()
+    pending = [start]
+    while pending:
+        state = states[pending.pop()]
+        rules = state["Choices"]
+        assert isinstance(rules, list)
+        for holder in [*rules, state]:
+            target = holder["Next"] if holder is not state else holder["Default"]
+            assert isinstance(target, str)
+            if target == start:
+                return True
+            if target not in seen and states[target]["Type"] == "Choice":
+                seen.add(target)
+                pending.append(target)
+    return False
+
+
+def commented_with(
+    holder: dict[str, object], comment: object, after: bool = False
+) -> dict[str, object]:
+    """A rule with another comment joined to its own, before it or after."""
+    own = holder.get("Comment")
+    joined = joined_comments(own, comment) if after else joined_comments(comment, own)
+    if joined is None:
+        return holder
+    return {**holder, "Comment": joined}
+
+
+def read_as_values(
+    choice: dict[str, object], values: dict[str, object]
+) -> tuple[list[dict[str, object]], str, dict[str, object]] | None:
+    """A Choice's rules, Default and own Assign, reading the variables values
+    assigns as the expressions they take, or None where that is not how the
+    Choice would read them."""
+    codes = expressions_in(choice)
+    reads = {read for code in codes for read in VARIABLE.findall(code)}
+    used = {n: template_code(v) for n, v in values.items() if n in reads}
+    if any(STATE_CONTEXT.search(code) for code in codes) or any(
+        CHANGING.search(code) for code in used.values()
+    ):
+        return None
+    names = {*used, *(r for code in used.values() for r in VARIABLE.findall(code))}
+    if any(
+        re.search(rf"\$({bound})\s*:=|function\s*\([^)]*\$({bound})\b", code)
+        for code in codes
+        for bound in map(re.escape, names)
+    ):
+        return None
+    pattern = re.compile(r"\$(" + "|".join(map(re.escape, used)) + r")(?!\w)")
+
+    def replaced(item: object, test: bool = False) -> object:
+        if isinstance(item, dict):
+            return {
+                k: v if k == "Comment" else replaced(v, k == "Condition")
+                for k, v in item.items()
+            }
+        if isinstance(item, list):
+            return [replaced(v) for v in item]
+        if not (used and isinstance(item, str) and item.startswith("{%")):
+            return item
+        code = item[2:-2].strip()
+        # An Assign value that is only the variable is the value as written;
+        # a Condition stays an expression.
+        whole = re.fullmatch(r"\$(\w+)", code)
+        if whole and whole[1] in used and not test:
+            return values[whole[1]]
+        counts = Counter(m[1] for m in pattern.finditer(code))
+        # A value read more than once is bound once in a block, as a
+        # hand-writer binds a long one, where the values bound before it
+        # would not hide a name it reads.
+        once = [n for n in used if counts[n] > 1]
+        bound = {r for n in once for r in VARIABLE.findall(used[n])}
+        if not once or bound & set(once):
+            return "{% " + pattern.sub(lambda m: grouped(used[m[1]]), code) + " %}"
+        inline = [n for n in used if counts[n] == 1]
+        if inline:
+            single = re.compile(r"\$(" + "|".join(map(re.escape, inline)) + r")(?!\w)")
+            code = single.sub(lambda m: grouped(used[m[1]]), code)
+        bindings = "".join(f"${n} := {used[n]}; " for n in once)
+        return "{% (" + bindings + code + ") %}"
+
+    rules = replaced(choice["Choices"])
+    default = choice["Default"]
+    own = replaced(choice.get("Assign", {}))
+    assert isinstance(rules, list) and isinstance(default, str)
+    assert isinstance(own, dict)
+    return rules, default, own
+
+
+def template_code(template: object) -> str:
+    """The JSONata of an Assign value: an expression as it is, and a value
+    written out as the JSON it is, with the expressions in it."""
+    if isinstance(template, dict):
+        pairs = (f"{json.dumps(k)}: {template_code(v)}" for k, v in template.items())
+        return "{" + ", ".join(pairs) + "}"
+    if isinstance(template, list):
+        return "[" + ", ".join(template_code(v) for v in template) + "]"
+    if isinstance(template, str) and template.startswith("{%"):
+        return template[2:-2].strip()
+    return json.dumps(template)
+
+
+def grouped(code: str) -> str:
+    """Code to read in place of a variable: a path or a literal as it is, and
+    anything else in parentheses."""
+    if re.fullmatch(r"\$?[\w.]+(\([^()]*\))?|'[^'\\]*'", code) or enclosed(code):
+        return code
+    return f"({code})"
+
+
+def enclosed(code: str) -> bool:
+    """Whether code is one parenthesized group, such as a block."""
+    depth = 0
+    for position, character in enumerate(code):
+        depth += {"(": 1, ")": -1}.get(character, 0)
+        if depth == 0:
+            return position == len(code) - 1 and code.startswith("(")
+    return False
+
+
+def both(first: object, second: object) -> str:
+    """The test of two Condition templates, the first before the second, each
+    in parentheses where it has an operator that binds looser than `and`."""
+    assert isinstance(first, str) and isinstance(second, str)
+    tests = []
+    for condition in (first, second):
+        code = condition[2:-2].strip()
+        loose = re.search(r"\bor\b|\?|:=", code) and not enclosed(code)
+        tests.append(f"({code})" if loose else code)
+    return "{% " + " and ".join(tests) + " %}"
+
+
 def all_written(values: list[Expr]) -> bool:
     """Whether every value is written out in the source, which neither a Catch
     nor a retrier has a failure of to take in the Assign that holds it."""
@@ -4144,6 +4388,7 @@ def compile_machine(
     fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
     thread_choices(definition)
     merge_choices(definition)
+    take_in_choices(definition)
     share_states(definition)
     end_before_returns(definition)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
