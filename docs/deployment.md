@@ -113,7 +113,7 @@ test "$result" = OK
 
 The call succeeds for a definition that fails validation too: its `result` is `OK` or `FAIL`, and the `diagnostics` say why. Test the result rather than the call's exit status or the text of the diagnostics. A call that fails, such as one without credentials, stops the script as well.
 
-`OK` says Step Functions accepts the definition. It does not say an execution succeeds, that the role has the permissions the tasks need, or what the services answer.
+`OK` says Step Functions accepts the definition, which includes that it supports each service and action the Tasks call in that region: sfnx checks them against botocore, which has some that Step Functions does not, such as `sts:assumeRole`. It does not say an execution succeeds, that the role has the permissions the tasks need, or what the services answer.
 
 `TestState` runs one state with a given input and role, which is the quickest way to see a Task's real result or an expression's value.
 
