@@ -668,7 +668,9 @@ inline_map(each, input["items"])
     assert processor["each.invoke"]["End"] is True
 
 
-def test_a_task_that_catches_keeps_the_succeed_after_it():
+def test_a_task_that_catches_ends_itself_and_its_catcher_at_the_succeed():
+    # The return after the try is a value written in the source, which the
+    # Task's Output cannot fail on; the catcher still needs the Succeed.
     body = f"""
 try:
     task("{LAMBDA}", {{"FunctionName": "f"}})
@@ -676,8 +678,28 @@ except Exception:
     pass
 """
     compiled = states(body)
-    assert compiled["invoke"]["Next"] == "return"
+    assert compiled["invoke"]["Output"] is None and compiled["invoke"]["End"] is True
+    assert compiled["invoke"]["Catch"][0]["Next"] == "return"
     assert compiled["return"] == {"Type": "Succeed", "Output": None}
+
+
+def test_a_task_an_if_runs_ends_on_the_return_after_the_if():
+    body = f'if input["a"]:\n    task("{LAMBDA}", {{"FunctionName": "f"}})\n# done\nreturn {{"ok": True}}'
+    compiled = definition(body)
+    task_state = compiled["States"]["invoke"]
+    assert task_state["Output"] == {"ok": True} and task_state["End"] is True
+    assert task_state["Comment"] == "done"
+    assert compiled["States"]["if"]["Default"] == "return"
+    for a in (True, False):
+        tasks = {"invoke": lambda arguments: {}}
+        assert asl.run(compiled, {"a": a}, tasks) == {"ok": True}
+
+
+def test_a_return_that_reads_a_value_keeps_the_task_going_on_to_it():
+    # Moved into the Task, a failing Output would be the Catch's to take.
+    body = f'try:\n    task("{LAMBDA}", {{"FunctionName": "f"}})\nexcept Exception:\n    pass\nreturn input["r"]'
+    compiled = states(body)
+    assert compiled["invoke"]["Next"] == "return" and "Output" not in compiled["invoke"]
 
 
 @pytest.mark.parametrize(

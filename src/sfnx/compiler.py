@@ -1499,6 +1499,7 @@ class Scope:
         thread_choices(definition)
         merge_choices(definition)
         share_states(definition)
+        end_before_returns(definition)
         docstring = ast.get_docstring(function)
         if docstring:
             definition = {"Comment": docstring, **definition}
@@ -3372,6 +3373,42 @@ def share_states(definition: dict[str, object]) -> None:
                         holder[key] = shared[holder[key]]
 
 
+def end_before_returns(definition: dict[str, object]) -> None:
+    """A Task, a Parallel or a Map that goes on to a Succeed returning a value
+    written in the source ends the machine or the branch itself, with that
+    value as its Output, as it does when the return follows it alone. The
+    Succeed stays for the other ways to it, such as a catcher or a Choice's
+    Default after a try or an if, and goes when none is left. The Output
+    has no expression, so it cannot fail where the Succeed would not."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    for state in states.values():
+        after = states.get(state.get("Next"))
+        if (
+            state["Type"] not in {"Task", "Parallel", "Map"}
+            or "Output" in state
+            or after is None
+            or after["Type"] != "Succeed"
+            or "{%" in json.dumps(after["Output"])
+        ):
+            continue
+        del state["Next"]
+        state["Output"] = after["Output"]
+        state["End"] = True
+        comment = joined_comments(state.get("Comment"), after.get("Comment"))
+        if comment is not None:
+            state["Comment"] = comment
+    reached = {
+        holder.get(key)
+        for state in states.values()
+        for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]
+        for key in ("Next", "Default")
+    }
+    for name in [n for n, s in states.items() if s["Type"] == "Succeed"]:
+        if name not in reached and name != definition["StartAt"]:
+            del states[name]
+
+
 def same_states(states: dict[str, dict[str, object]]) -> dict[str, str]:
     """Each state that is the same as one before it, and that one, whose
     Comment takes the spans of both."""
@@ -3575,6 +3612,7 @@ def compile_machine(
     thread_choices(definition)
     merge_choices(definition)
     share_states(definition)
+    end_before_returns(definition)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
 
