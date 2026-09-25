@@ -3313,9 +3313,10 @@ def fold_into_catching_tasks(
 
     A failure in the Assign loses all of it, the state's result included,
     where Python keeps what was assigned before the failing statement, so no
-    way on from a catcher may read a variable the state or the Pass assigns,
-    unless the Pass or the Succeed is failsafe: nothing in it fails or is
-    undefined, so a failure of the Assign is the state's own, as in Python.
+    way on from a catcher may read a variable assigned before a statement
+    that may fail, unless the Pass or the Succeed is failsafe: nothing in it
+    fails or is undefined, so a failure of the Assign is the state's own, as
+    in Python.
     It reads the variables the state assigns as the expressions the state
     assigns them, and nothing else of `$states` than the context the two
     share, and after a Parallel or a Map neither the time nor a random value,
@@ -3380,8 +3381,8 @@ def fold_into_catching_tasks(
                 reads_as(following, n, v) for n, v in values.items()
             ):
                 continue
-            assigning = {*own, *following.get("Assign", {})}
-            if after not in failsafe and caught_reads(definition, task) & assigning:
+            exposed = assigned_before_failures(own, following)
+            if after not in failsafe and caught_reads(definition, task) & exposed:
                 continue
             moved = {
                 key: value if key == "Comment" else read_through(value, values)
@@ -3403,6 +3404,25 @@ def fold_into_catching_tasks(
                 del states[after]
             folded = True
             break
+
+
+def assigned_before_failures(
+    own: dict[str, object], following: dict[str, object]
+) -> set[str]:
+    """The variables Python has assigned when a statement that may fail
+    fails: the state's own assignments and the Pass's, in the order they are
+    written, before each that holds an expression, and all of them before a
+    return that does. A value written in the source does not fail."""
+    written_out = [*own.items(), *assigns(following).items()]
+    if "Output" in following:
+        written_out.append(("", following["Output"]))
+    seen: set[str] = set()
+    exposed: set[str] = set()
+    for name, value in written_out:
+        if not written(value):
+            exposed |= seen
+        seen.add(name)
+    return exposed
 
 
 def same_tries(
