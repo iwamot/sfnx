@@ -95,14 +95,39 @@ def test_a_read_of_a_value_that_changes_starts_a_new_state():
 
 def test_reassignment_starts_a_new_state_with_a_serial_name():
     """The first value is still evaluated, as Python evaluates it."""
-    definition = compile_one(machine('x = 1\nx = input["x"]\nreturn [x]'))
+    definition = compile_one(machine('x = input["w"]\nx = input["x"]\nreturn [x]'))
     assert list(definition["States"]) == ["x", "x_2", "return"]
     assert definition["States"]["x"]["Next"] == "x_2"
 
 
+@pytest.mark.parametrize(
+    "first",
+    ["3", 'input["x"].get("k", 1)', "y"],
+)
+def test_a_first_value_that_cannot_fail_is_replaced_in_the_same_state(first):
+    """A first value that neither fails nor is undefined has nothing for
+    Python to evaluate, so the new value takes its place."""
+    body = f'y = 2\nn = {first}\ns = "a"\nn = 0\nreturn [n, s, y]'
+    definition = compile_one(machine(body))
+    assert list(definition["States"]) == ["return"]
+    assert definition["States"]["return"]["Output"] == [0, "a", 2]
+
+
+@pytest.mark.parametrize(
+    "first",
+    ['input["x"]', '10 / input.get("d", 1)', "random.random()"],
+)
+def test_a_first_value_that_can_fail_or_change_keeps_its_state(first):
+    body = f'n = {first}\ns = "a"\nn = 0\nreturn [n, s]'
+    definition = compile_one("import random\n" + machine(body))
+    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
+
+
 def test_serial_names_skip_names_in_use():
     definition = compile_one(
-        machine('x = 1\nx = input["x"]\nx_2 = x\nx_2 = input["y"]\nreturn [x, x_2]')
+        machine(
+            'x = input["w"]\nx = input["x"]\nx_2 = x\nx_2 = input["y"]\nreturn [x, x_2]'
+        )
     )
     assert list(definition["States"]) == ["x", "x_2", "x_2_2", "return"]
 
@@ -221,7 +246,7 @@ def test_asl_matches_python(body, execution_input):
         (machine("return input.x"), 'read a key with x["key"]', "6:12"),
         (machine("x" * 81 + " = 1"), "at most 80 characters", "6:5"),
         (
-            machine("x" * 80 + " = 1\n" + "x" * 80 + ' = input["x"]'),
+            machine("x" * 80 + ' = input["w"]\n' + "x" * 80 + ' = input["x"]'),
             "longer than 80",
             "7:5",
         ),

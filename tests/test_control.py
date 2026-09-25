@@ -1051,10 +1051,14 @@ def test_an_if_whose_branch_makes_a_state_keeps_its_choice():
             False,
             2,
         ),
-        # It is read only where JSONata may not evaluate it, or not at all.
-        ('input["a"].get("b")', "x = 0 if input['b'] else x", False, 0),
-        ('input["a"].get("b")', 'x = input.get("c", x)', False, 5),
-        ('input["a"].get("b")', "x = 1", False, 1),
+        # The first can neither fail nor be undefined, so there is nothing to
+        # evaluate: the new value takes its place wherever it reads the first.
+        ('input["a"].get("b")', "x = 0 if input['b'] else x", True, 0),
+        ('input["a"].get("b")', 'x = input.get("c", x)', True, 5),
+        ('input["a"].get("b")', "x = 1", True, 1),
+        # One that can fail keeps its state where the new value does not
+        # always read it, so a missing key still fails.
+        ('input["a"]["b"]', "x = 1", False, 1),
     ],
 )
 def test_a_name_assigned_again(first, second, merged, result):
