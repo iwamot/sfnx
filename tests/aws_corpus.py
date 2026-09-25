@@ -5,13 +5,14 @@ this is invoked.
     uv run python -m tests.aws_corpus --out results.json [--select ID ...]
         [--category NAME ...] [--role-arn ARN] [--region REGION]
 
-A definition of one state goes through TestState, which creates nothing and
-needs no role. Any other definition is created as an Express state machine
-named sfnx-corpus-<run>-<case>, started with StartSyncExecution and deleted,
-which needs --role-arn, a role Step Functions can assume; without it those
-cases are written as not-run. A state machine left behind by a failure is
-reported, and the run ends by listing every sfnx-corpus- machine still in the
-region, from this run or an earlier one.
+A definition of one state other than a Map or a Parallel goes through
+TestState, which creates nothing and needs no role. Any other definition is
+created as an Express state machine named sfnx-corpus-<run>-<case>, started
+with StartSyncExecution and deleted, which needs --role-arn, a role Step
+Functions can assume; without it those cases are written as not-run. A state
+machine left behind by a failure is reported, and the run ends by listing
+every sfnx-corpus- machine still in the region, from this run or an earlier
+one.
 
 The exit status is 0 when every case passed, 1 when any case is a mismatch,
 an api-error or not-run, and 2 when the run could not start."""

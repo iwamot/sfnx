@@ -1,5 +1,8 @@
 """The corpus run locally, and the judgments the AWS runner shares with it."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 from tests import asl, corpus
@@ -26,6 +29,12 @@ def test_ids_are_unique():
     assert len(ids) == len(set(ids))
 
 
+def test_ids_fit_in_the_name_of_a_state_machine():
+    """tests/aws_corpus.py names a machine sfnx-corpus-<run>-<id>, with a run
+    of 8 characters, and Step Functions takes at most 80."""
+    assert max(len(case.id) for case in CASES) <= 80 - len("sfnx-corpus-12345678-")
+
+
 def test_every_category_has_a_case():
     assert {case.category for case in CASES} == {
         "truth",
@@ -40,7 +49,41 @@ def test_every_category_has_a_case():
         "times",
         "volatile",
         "catch",
+        "retry",
+        "choice",
     }
+
+
+BACKED = [case for case in CASES if case.backs]
+DESIGN = (Path(__file__).parent.parent / "docs" / "design.md").read_text()
+
+
+@pytest.mark.parametrize("case", BACKED, ids=[case.id for case in BACKED])
+def test_the_design_names_a_case_where_it_states_what_the_case_backs(case):
+    """The phrase occurs once, and the first citation after it, in the same
+    paragraph, names the case."""
+    assert DESIGN.count(case.backs) == 1
+    rest = DESIGN[DESIGN.index(case.backs) :].split("\n")[0]
+    citation = re.search(r"corpus: ([^)]*)\)", rest)
+    assert citation is not None
+    assert f"`{case.id}`" in citation[1]
+
+
+def test_the_design_names_only_cases_that_back_it():
+    named = {
+        name
+        for names in re.findall(r"corpus: ([^)]*)\)", DESIGN)
+        for name in re.findall(r"`([^`]*)`", names)
+    }
+    assert named == {case.id for case in BACKED}
+
+
+SHAPED = [case for case in CASES if case.states]
+
+
+@pytest.mark.parametrize("case", SHAPED, ids=[case.id for case in SHAPED])
+def test_the_definition_has_the_states_the_case_relies_on(case):
+    assert corpus.state_types(corpus.compiled(case)) == case.states
 
 
 @pytest.mark.parametrize("case", CASES, ids=[case.id for case in CASES])
@@ -131,6 +174,9 @@ def test_the_replacement_reaches_no_other_run():
         ("two numbers in [0, 1)", [0.5], False),
         ("two numbers in [0, 1)", [False, 0.5], False),
         ("two numbers in [0, 1)", "ab", False),
+        ("two equal numbers in [0, 1)", [0.5, 0.5], True),
+        ("two equal numbers in [0, 1)", [0.5, 0.25], False),
+        ("two equal numbers in [0, 1)", [1, 1], False),
     ],
 )
 def test_conditions(name, value, expected):
@@ -162,6 +208,7 @@ def test_select():
         "volatile-modulo-once",
         "volatile-short-circuit",
         "volatile-separate-calls",
+        "volatile-read-twice-keeps-its-state",
     ]
     assert corpus.select(CASES, [], []) == list(CASES)
     with pytest.raises(ValueError, match="no such case or category: nope, truth-one"):
@@ -173,6 +220,11 @@ def test_route_of():
     several = corpus.compiled(next(c for c in CASES if c.id == "comprehension-of-one"))
     assert corpus.route_of(single) == "test-state"
     assert corpus.route_of(several) == "execution"
+    map_alone = corpus.compiled(
+        next(c for c in CASES if c.id == "map-retry-evaluates-the-items-again")
+    )
+    assert corpus.state_types(map_alone) == ("Map",)
+    assert corpus.route_of(map_alone) == "execution"
 
 
 def test_the_outcome_of_a_response():
