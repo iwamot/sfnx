@@ -570,8 +570,9 @@ def test_functions_are_replaced_for_the_run_only():
 
 def test_a_choice_without_a_match_or_a_default_fails():
     choice = machine(
-        {"Type": "Choice", "Choices": [{"Condition": "{% false %}", "Next": "s"}]}
+        {"Type": "Choice", "Choices": [{"Condition": "{% false %}", "Next": "t"}]}
     )
+    choice["States"]["t"] = {"Type": "Succeed"}
     assert testing.run(choice, {}).error == "States.NoChoiceMatched"
 
 
@@ -758,7 +759,7 @@ def test_a_succeed_or_a_fail_that_runs_otherwise_in_jsonpath_is_rejected(end):
 
 
 # What ValidateStateMachineDefinition rejects and accepts (measured).
-TASK = {"Type": "Task", "Resource": LAMBDA}
+TASK = {"Type": "Task", "Resource": LAMBDA, "Arguments": {"FunctionName": "f"}}
 DONE = {"Type": "Succeed"}
 
 
@@ -795,6 +796,25 @@ def choice(rule: dict, default: str, **fields: object) -> dict:
         "Default": default,
         **fields,
     }
+
+
+PASS = {"Type": "Pass"}
+
+
+def processing(**named: dict) -> dict:
+    """A Map whose processor has these states, starting at the first."""
+    processor = {"StartAt": next(iter(named)), "States": named}
+    return ends({"Type": "Map", "Items": [1], "ItemProcessor": processor})
+
+
+def labelled(label: str, name: str) -> dict:
+    """A distributed Map of a Label, whose processor has one state."""
+    processor = {
+        "ProcessorConfig": {"Mode": "DISTRIBUTED", "ExecutionType": "STANDARD"},
+        "StartAt": name,
+        "States": {name: DONE},
+    }
+    return {"Type": "Map", "Items": [1], "Label": label, "ItemProcessor": processor}
 
 
 def output(code: object, state: dict | None = None) -> dict:
@@ -962,6 +982,36 @@ def mapped(mode: str) -> dict:
         ),
         (mapped("INLINE"), "b: x is assigned"),
         (mapped("DISTRIBUTED"), "b: x is assigned"),
+        # A state no state goes to, however far what it goes to leads.
+        (states("a", a=ends(PASS), b=DONE), "b: no state goes to it"),
+        (states("a", a=ends(PASS), b=pass_to("a")), "b: no state goes to it"),
+        (states("a", a=ends(PASS), b=pass_to("c"), c=DONE), "b: no state goes to it"),
+        (states("a", a=processing(x=DONE, y=DONE)), "y: no state goes to it"),
+        # No state ends anything.
+        (states("a", a=pass_to("a")), "States: no state ends the execution"),
+        (
+            states("a", a=choice({"Next": "b"}, "a"), b=pass_to("a")),
+            "States: no state ends the execution",
+        ),
+        # A name or a Label used twice, in branches and Maps too.
+        (
+            states("p", p={**fan(), "Next": "b"}, b=DONE),
+            "b: another state has this name",
+        ),
+        (
+            states(
+                "p",
+                p=ends({"Type": "Parallel", "Branches": [assigning(), assigning()]}),
+            ),
+            "b: another state has this name",
+        ),
+        (states("a", a=processing(a=DONE)), "a: another state has this name"),
+        (
+            states(
+                "m", m={**labelled("L", "x"), "Next": "n"}, n=ends(labelled("L", "y"))
+            ),
+            "n: another Map has the Label L",
+        ),
     ],
 )
 def test_what_step_functions_rejects_is_rejected_before_it_runs(definition, message):
@@ -1047,10 +1097,35 @@ def test_what_step_functions_rejects_is_rejected_before_it_runs(definition, mess
             "p",
             p=ends({"Type": "Parallel", "Branches": [assigning("b"), assigning("c")]}),
         ),
+        # States that only states nothing goes to go to, or that go to
+        # themselves, are not reported.
+        states("a", a=ends(PASS), b=pass_to("c"), c=pass_to("b")),
+        states("a", a=ends(PASS), z=pass_to("z")),
+        # A state only a catcher or a Default goes to.
+        states("a", a=choice({"Next": "b"}, "c"), b=DONE, c=DONE),
+        # A Label may be a state's name.
+        states("L", L=ends(labelled("L", "x"))),
     ],
 )
 def test_what_step_functions_accepts_runs(definition):
     testing.run(definition, {}, lambda call: {})
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        # The end may be in a branch, and a branch needs none of its own.
+        states(
+            "p",
+            p={**fan(), "Next": "q"},
+            q=choice({"Next": "q"}, "p"),
+        ),
+        states("a", a=processing(x=pass_to("x"))),
+    ],
+)
+def test_what_step_functions_accepts_runs_even_where_it_cannot_end(definition):
+    with pytest.raises(AssertionError, match="did not end within 10,000 states"):
+        testing.run(definition, {}, lambda call: {})
 
 
 def test_a_definition_whose_every_state_sets_jsonata_runs():
@@ -1264,8 +1339,9 @@ def test_an_inline_map_fails_on_items_that_are_not_an_array(items):
 
 def test_a_condition_that_is_not_a_boolean_fails():
     choice = machine(
-        {"Type": "Choice", "Choices": [{"Condition": "{% 1 %}", "Next": "s"}]}
+        {"Type": "Choice", "Choices": [{"Condition": "{% 1 %}", "Next": "t"}]}
     )
+    choice["States"]["t"] = {"Type": "Succeed"}
     execution = testing.run(choice, {})
     assert (execution.error, execution.cause) == (
         "States.QueryEvaluationError",
@@ -1274,8 +1350,18 @@ def test_a_condition_that_is_not_a_boolean_fails():
 
 
 def test_a_definition_that_never_ends_stops():
+    """It has a state that ends it, as Step Functions requires, which the
+    Choice never goes to."""
+    looping = machine(
+        {
+            "Type": "Choice",
+            "Choices": [{"Condition": "{% false %}", "Next": "t"}],
+            "Default": "s",
+        }
+    )
+    looping["States"]["t"] = {"Type": "Succeed"}
     with pytest.raises(AssertionError, match="did not end within 10,000 states"):
-        testing.run(machine({"Type": "Pass", "Next": "s"}), {})
+        testing.run(looping, {})
 
 
 def test_an_item_reader_is_a_call_and_iterations_are_entered_states():
@@ -1406,15 +1492,17 @@ def test_a_catcher_outputs_from_the_error_the_input_and_the_old_variables():
 
 
 def test_the_arguments_of_a_parallel_are_the_input_of_every_branch():
-    branch = {
-        "StartAt": "b",
-        "States": {"b": {"Type": "Succeed", "Output": "{% $states.input %}"}},
-    }
+    def branch(name: str) -> dict:
+        return {
+            "StartAt": name,
+            "States": {name: {"Type": "Succeed", "Output": "{% $states.input %}"}},
+        }
+
     parallel = machine(
         {
             "Type": "Parallel",
             "Arguments": {"a": "{% $states.input.x %}"},
-            "Branches": [branch, branch],
+            "Branches": [branch("b"), branch("c")],
             "End": True,
         }
     )
