@@ -229,13 +229,13 @@ def test_unpacking_keeps_a_value_that_changes():
 def test_unpacking_keeps_a_changing_value_after_what_it_reads():
     # The value the names take reads an assignment of its own, which Assign
     # evaluates with the values from before the state, so it waits for it.
-    body = 'n = input["n"]\na, b = jsonata("[$m, $m]", m=n)\nreturn [a, b]'
+    body = 'n = input["n"]\na, b = jsonata("[$m, $random()]", m=n)\nreturn [a, b]'
     (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
     assert list(compiled["States"]) == ["n", "a_items", "a", "return"]
     assert compiled["States"]["a_items"]["Assign"] == {
-        "a_items": "{% ($m := $n; [$m, $m]) %}"
+        "a_items": "{% ($m := $n; [$m, $random()]) %}"
     }
-    assert asl.run(compiled, {"n": 7}) == [7, 7]
+    assert asl.run(compiled, {"n": 7})[0] == 7
 
 
 def test_evaluation():

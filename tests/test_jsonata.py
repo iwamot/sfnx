@@ -5,6 +5,7 @@ import pytest
 import sfnx
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
+from sfnx.translate import settled
 from tests import asl
 
 INPUT = "$states.context.Execution.Input"
@@ -163,3 +164,54 @@ def test_jsonata_without_import():
 def test_jsonata_does_not_run_in_python():
     with pytest.raises(NotImplementedError, match="runs in Step Functions"):
         sfnx.jsonata("1")
+
+
+@pytest.mark.parametrize(
+    "written, bound, variables, expected",
+    [
+        # Only the names the call binds, and functions called or passed.
+        ("$replace($s, /-|:|\\s/, '')", {"s"}, set(), True),
+        ("$map($xs, $string)", {"xs"}, set(), True),
+        ("$uppercase ($s)", {"s"}, set(), True),
+        # Names the text binds itself, under names no variable has.
+        ("$map($xs, function($v) { $v + 1 })", {"xs"}, set(), True),
+        ("($t := $s & 'x'; $t)", {"s"}, set(), True),
+        ("($t := 1; $t)", set(), {"t"}, False),
+        # A variable read by its name, the input, and the state.
+        ("$x + 1", set(), {"x"}, False),
+        ("$ + 1", set(), set(), False),
+        ("$$.a", set(), set(), False),
+        ("$states.input.a", set(), set(), False),
+        # What gives another value each time, called or bound to a name.
+        ("$random()", set(), set(), False),
+        ("($f := $millis; $f())", set(), set(), False),
+        ("$eval($s)", {"s"}, set(), False),
+        # A $ in a regular expression or a string reads as a name.
+        ("/^a$/i($s)", {"s"}, set(), False),
+        ("'$x' & $s", {"s"}, set(), False),
+    ],
+)
+def test_an_expression_that_reads_only_its_values_is_settled(
+    written, bound, variables, expected
+):
+    assert settled(written, bound, variables) is expected
+
+
+def test_a_settled_expression_goes_where_other_values_go():
+    """It is not read again elsewhere, so it needs no Pass of its own, and
+    one read twice is written twice, as any value that does not change."""
+    body = (
+        'if input["a"]:\n    return 0\n'
+        'up = jsonata("$uppercase($s)", s=input["s"])\nreturn [up, up]'
+    )
+    compiled = definition(body)["States"]
+    assert list(compiled) == ["if", "return", "return_2"]
+    assert asl.run(definition(body), {"a": False, "s": "x"}) == ["X", "X"]
+
+
+def test_an_unsettled_expression_keeps_its_pass():
+    body = 'if input["a"]:\n    return 0\nr = jsonata("$random()")\nreturn [r, r]'
+    compiled = definition(body)["States"]
+    assert compiled["r"]["Type"] == "Pass"
+    first, second = asl.run(definition(body), {"a": False})
+    assert first == second
