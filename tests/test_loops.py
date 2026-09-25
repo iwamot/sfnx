@@ -746,3 +746,19 @@ def test_while_true_after_a_task_keeps_its_first_assignment():
         "return k"
     )
     assert run(body, {}, {"n": lambda arguments: {"n": 3}}) == 4
+
+
+@pytest.mark.parametrize(
+    "loop, counter",
+    [
+        ("for x in [1, 2]:", "x_index"),
+        ("for i in range(3):", "i"),
+    ],
+)
+def test_the_pass_that_moves_a_loop_on_is_named_next(loop, counter):
+    """The counter names the Pass that starts the loop, so the one that only
+    moves it on is named after that instead of the counter again."""
+    body = f'{loop}\n    task("{PUBLISH}", {{"Message": "m"}})\nreturn 1'
+    compiled = states(body)
+    assert list(compiled) == [counter, "for", "publish", "next", "return"]
+    assert list(compiled["next"]["Assign"]) == [counter]

@@ -144,14 +144,14 @@ The definition has the states a person would write by hand, named after what the
           "Next": "raise"
         }
       ],
-      "Next": "item_index"
+      "Next": "next"
     },
     "raise": {
       "Type": "Fail",
       "Error": "OutOfStock",
       "Cause": "{% $items[$item_index].sku & ' is out of stock' %}"
     },
-    "item_index": {
+    "next": {
       "Type": "Pass",
       "Assign": {
         "item_index": "{% $item_index + 1 %}"

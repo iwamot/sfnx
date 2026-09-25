@@ -416,7 +416,10 @@ class Scope:
             return
         assert self.pending_node is not None
         pending = self.pending
-        first = next(iter(pending))
+        # A Pass that only moves a loop on is named after that, as its counter
+        # already names the Pass that starts the loop.
+        stepping = all(o.role == "loop step" for o in self.pending_origins)
+        first = "next" if stepping else next(iter(pending))
         assign = {self.spelling(k): value.template for k, value in pending.items()}
         node = self.pending_node
         origins = self.pending_origins
