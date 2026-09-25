@@ -13,7 +13,7 @@ import re
 import time
 import urllib.parse
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -214,6 +214,7 @@ def check(definition: Mapping[str, object]) -> None:
     assert isinstance(language, str)
     check_states(definition, language)
     check_valid(definition, frozenset())
+    check_whole(definition)
 
 
 def either_language(state: Mapping[str, object]) -> bool:
@@ -297,12 +298,49 @@ RESULT_STATES = frozenset({"Task", "Parallel", "Map"})
 NESTED = frozenset({"Comment", "Choices", "Catch", "Branches", "ItemProcessor"})
 
 
+def check_whole(definition: Mapping[str, object]) -> None:
+    """What Step Functions rejects across the whole definition, branches and
+    Map processors included (measured): two states of one name, two Maps of
+    one Label, and no state that ends anything, where a Succeed or a Fail in
+    a branch counts."""
+    names: set[str] = set()
+    labels: set[object] = set()
+    ends = False
+    for name, state in every_state(definition):
+        if name in names:
+            raise InvalidDefinition(f"{name}: another state has this name")
+        names.add(name)
+        if "Label" in state:
+            if state["Label"] in labels:
+                raise InvalidDefinition(
+                    f"{name}: another Map has the Label {state['Label']}"
+                )
+            labels.add(state["Label"])
+        ends = ends or state.get("End") is True or state["Type"] in {"Succeed", "Fail"}
+    if not ends:
+        raise InvalidDefinition("States: no state ends the execution")
+
+
+def every_state(
+    machine: Mapping[str, object],
+) -> Iterator[tuple[str, dict[str, object]]]:
+    """Each state of a definition, and of its branches and Map processors."""
+    states = machine["States"]
+    assert isinstance(states, dict)
+    for name, state in states.items():
+        yield name, state
+        for inner in [*state.get("Branches", []), state.get("ItemProcessor")]:
+            if inner is not None:
+                yield from every_state(inner)
+
+
 def check_valid(machine: Mapping[str, object], outer: frozenset[str]) -> None:
     """What Step Functions rejects in a definition, in the states of the
     machine or of one branch: a transition to a state that is not among them,
-    an expression that does not parse or reads a field $states lacks there,
-    and an Assign of a name in outer, the variables assigned on the way into
-    the branch (measured)."""
+    a state other than the first that no state goes to, an expression that
+    does not parse or reads a field $states lacks there, and an Assign of a
+    name in outer, the variables assigned on the way into the branch
+    (measured)."""
     states = machine["States"]
     assert isinstance(states, dict)
     if machine["StartAt"] not in states:
@@ -311,6 +349,12 @@ def check_valid(machine: Mapping[str, object], outer: frozenset[str]) -> None:
         for target, _ in transitions(state):
             if target not in states:
                 raise InvalidDefinition(f"{name}: there is no state {target} to go to")
+    # Step Functions reports a state no state leads to, not one only states
+    # that nothing leads to lead to (measured).
+    entered = {target for state in states.values() for target, _ in transitions(state)}
+    for name in states:
+        if name != machine["StartAt"] and name not in entered:
+            raise InvalidDefinition(f"{name}: no state goes to it")
     for name, state in states.items():
         read = STATES_FIELDS | ({"result"} if state["Type"] in RESULT_STATES else set())
         for key, template in state.items():
