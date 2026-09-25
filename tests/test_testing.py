@@ -579,14 +579,14 @@ def test_a_choice_without_a_match_or_a_default_fails():
     "definition, message",
     [
         (
-            {"StartAt": "s", "States": {"s": {"Type": "Succeed"}}},
+            {"StartAt": "s", "States": {"s": {"Type": "Pass", "End": True}}},
             "s: the state is in JSONPath, as the definition does not set QueryLanguage",
         ),
         (
             {
                 "QueryLanguage": "JSONPath",
                 "StartAt": "s",
-                "States": {"s": {"Type": "Succeed"}},
+                "States": {"s": {"Type": "Pass", "End": True}},
             },
             "s: the state is in JSONPath",
         ),
@@ -609,7 +609,7 @@ def test_a_choice_without_a_match_or_a_default_fails():
             "p: the state is in JSONPath",
         ),
         (
-            machine({"Type": "Succeed", "QueryLanguage": "JSONPath"}),
+            machine({"Type": "Pass", "QueryLanguage": "JSONPath", "End": True}),
             "s: QueryLanguage JSONPath is not run",
         ),
         (machine({"Type": "Activity"}), "s: the state type Activity is not run"),
@@ -702,6 +702,59 @@ def test_what_the_runner_does_not_interpret_is_rejected_before_it_runs(
 ):
     with pytest.raises(testing.Unsupported, match=message):
         testing.run(definition, {})
+
+
+def jsonpath_end(end: dict) -> dict:
+    """A JSONata Pass that leads to an end in the definition's JSONPath."""
+    return {
+        "StartAt": "p",
+        "States": {
+            "p": {
+                "Type": "Pass",
+                "QueryLanguage": "JSONata",
+                "Output": {"a": 1},
+                "Next": "e",
+            },
+            "e": end,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "end, output, error",
+    [
+        ({"Type": "Succeed"}, {"a": 1}, None),
+        (
+            {"Type": "Succeed", "Comment": "done", "QueryLanguage": "JSONPath"},
+            {"a": 1},
+            None,
+        ),
+        ({"Type": "Fail", "Error": "Failed", "Cause": "no"}, None, ("Failed", "no")),
+        ({"Type": "Fail"}, None, ("", "")),
+    ],
+)
+def test_a_succeed_or_a_fail_that_runs_the_same_in_jsonpath_runs(end, output, error):
+    """Neither has a field JSONPath reads otherwise, so it does what it
+    would in JSONata."""
+    execution = testing.run(jsonpath_end(end), {})
+    if error is None:
+        assert execution.output == output
+    else:
+        assert (execution.error, execution.cause) == error
+
+
+@pytest.mark.parametrize(
+    "end",
+    [
+        {"Type": "Succeed", "OutputPath": "$.a"},
+        {"Type": "Fail", "CausePath": "$.a"},
+        # JSONPath takes the text as it is, where JSONata evaluates it.
+        {"Type": "Fail", "Error": "Failed", "Cause": "{% 'no' %}"},
+    ],
+)
+def test_a_succeed_or_a_fail_that_runs_otherwise_in_jsonpath_is_rejected(end):
+    with pytest.raises(testing.Unsupported, match="e: the state is in JSONPath"):
+        testing.run(jsonpath_end(end), {})
 
 
 # What ValidateStateMachineDefinition rejects and accepts (measured).
