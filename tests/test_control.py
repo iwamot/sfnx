@@ -227,7 +227,11 @@ def test_assignments_after_a_wait_are_its_assign():
 )
 def test_what_a_wait_assigns(body, joined, passes):
     imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context, jsonata\n"
-    (compiled,) = compile_source(imports + source(body + "\nreturn 1")).values()
+    # The Wait after them takes what is pending, which a return alone would
+    # write into its Output instead.
+    (compiled,) = compile_source(
+        imports + source(body + "\nwait(0)\nreturn 1")
+    ).values()
     states = compiled["States"]
     assert states["wait"].get("Assign") == joined
     assert [n for n, s in states.items() if s["Type"] == "Pass"] == passes
@@ -291,7 +295,11 @@ def test_what_a_wait_assigns(body, joined, passes):
 )
 def test_what_a_choice_assigns(body, rule, default, passes):
     imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context, jsonata\n"
-    (compiled,) = compile_source(imports + source(body + "\nreturn 1")).values()
+    # The Wait after them takes what is pending, which a return alone would
+    # write into its Output instead.
+    (compiled,) = compile_source(
+        imports + source(body + "\nwait(0)\nreturn 1")
+    ).values()
     states = compiled["States"]
     assert states["if"]["Choices"][0].get("Assign") == rule
     assert states["if"].get("Assign") == default
@@ -313,7 +321,7 @@ def test_the_comments_of_a_branch_go_with_its_assignments():
 
 def test_the_comments_of_an_if_that_only_assigns_go_with_its_assignment():
     body = '# sizes\nif input["a"]:\n    # big\n    x = 1\nelse:\n    # small\n    x = 2\nreturn x'
-    assert definition(body)["States"]["x"]["Comment"] == "sizes\nbig\nsmall"
+    assert definition(body)["States"]["return"]["Comment"] == "sizes\nbig\nsmall"
 
 
 @pytest.mark.parametrize(

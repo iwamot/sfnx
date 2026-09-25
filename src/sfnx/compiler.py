@@ -674,7 +674,10 @@ class Scope:
         elif isinstance(node, ast.Return):
             if node.value is None:
                 self.end_without_value(node, [self.here()])
-            elif not self.end_with_result(node.value):
+            elif not (
+                self.return_pending(node.value, node)
+                or self.end_with_result(node.value)
+            ):
                 self.finish(*self.translator.statement_value(node.value), node)
         elif (
             isinstance(node, ast.If)
@@ -1269,8 +1272,52 @@ class Scope:
         return None is: the state before it ends the machine or the branch
         when it can, and a Succeed does otherwise."""
         none = ast.copy_location(ast.Constant(None), node)
-        if not self.end_with_result(none, origins):
+        if not (
+            self.return_pending(none, node, origins)
+            or self.end_with_result(none, origins)
+        ):
             self.finish(literal(None), None, node, origins)
+
+    def return_pending(
+        self,
+        value_node: ast.expr,
+        node: ast.AST,
+        origins: list[Origin] | None = None,
+    ) -> bool:
+        """A return right after assignments that wait for a Pass, with no Task,
+        Parallel or Map before them to hold them, as a Succeed whose Output
+        reads each as its expression, as a hand-writer returns what they
+        compute: nothing reads them after the return, so the Pass goes.
+        Python evaluates each even when the return does not read it, so each
+        neither fails nor is undefined, unless the return is that variable
+        itself, whose Output fails where the Pass would. A value that changes
+        on evaluation, or that reads the state it is in, keeps the Pass."""
+        pending = self.pending
+        if not pending or self.following() is not None:
+            return False
+        if any(self.makes_state(n) for n in ast.walk(value_node)):
+            return False
+        whole = value_node.id if isinstance(value_node, ast.Name) else None
+        if not all(
+            (value.defined and value.total) or name == whole
+            for name, value in pending.items()
+        ):
+            return False
+        values = list(pending.values())
+        if any(v.volatile for v in values) or not self.holds_still(values, {}):
+            return False
+        value = self.read_as(value_node, dict(pending))
+        if value.variables & pending.keys():
+            return False
+        remarks = [*self.pending_remarks, self.remark]
+        located = [*self.pending_origins, *(origins or [self.here()])]
+        self.pending = {}
+        self.pending_node = None
+        self.pending_origins = []
+        self.pending_remarks = []
+        self.remark = "\n".join(r for r in remarks if r) or None
+        self.finish(value, None, node, located)
+        return True
 
     def end_with_result(
         self, value_node: ast.expr, origins: list[Origin] | None = None
@@ -4014,8 +4061,12 @@ def compile_machine(
     # The execution input reads the same from every state, while $states.input
     # becomes the result after a Task, Parallel or Map.
     bindings = {
+        # The input is there in every state, and reading it fails for nothing.
         a.arg: expression(
-            "$states.context.Execution.Input", type=annotate(a.annotation, context)
+            "$states.context.Execution.Input",
+            type=annotate(a.annotation, context),
+            defined=True,
+            total=True,
         )
         for a in arguments.args
     }
