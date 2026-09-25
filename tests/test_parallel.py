@@ -98,7 +98,16 @@ def test_retry_and_catch():
     state = states(body)["r"]
     assert state["Retry"] == [{"ErrorEquals": ["States.Timeout"]}]
     assert state["Catch"][0]["ErrorEquals"] == ["Declined"]
-    assert list(state) == ["Type", "Branches", "Retry", "Catch", "Assign", "Next"]
+    # The return after the try reads a variable, which cannot fail.
+    assert list(state) == [
+        "Type",
+        "Branches",
+        "Retry",
+        "Catch",
+        "Assign",
+        "Output",
+        "End",
+    ]
 
 
 def test_a_module_function_sees_none_of_the_machine():
@@ -362,3 +371,30 @@ def test_decorated_branch(tmp_path):
         CompileError, match="a function for parallel takes no decorators"
     ):
         states("return parallel(f)", "\n\n@staticmethod\ndef f():\n    return 1\n")
+
+
+@pytest.mark.parametrize(
+    "statement, kept",
+    [
+        # A Parallel's Catch takes a failure of its Assign (measured), as the
+        # except clause takes a failure of the statement.
+        ('n = r[0]["to"]', False),
+        # When a Parallel's Assign reads a random value is not measured.
+        ('n = [r[0]["to"], str(uuid.uuid4())][0]', True),
+    ],
+)
+def test_an_assignment_after_a_parallel_inside_try(statement, kept):
+    body = (
+        EMAIL_AUDIT
+        + f"try:\n    r = parallel(email, audit)\n    {statement}\n"
+        + 'except Exception:\n    return "caught"\nwait(1)\nreturn n'
+    )
+    header = "import uuid\nfrom sfnx import wait\n"
+    (compiled,) = compile_source(header + source(body)).values()
+    states = compiled["States"]
+    assert (
+        any(s["Type"] == "Pass" and "n" in s["Assign"] for s in states.values()) == kept
+    )
+    tasks = {"audit.entry": lambda arguments: {"MessageId": "m"}}
+    order = {"order": {"email": "e", "id": "i"}}
+    assert asl.run(compiled, order, tasks) == "e"

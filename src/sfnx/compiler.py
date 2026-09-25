@@ -18,6 +18,7 @@ from sfnx.expressions import (
     ATOM,
     COMPARE,
     OPAQUE,
+    VOLATILE,
     WRITTEN,
     Expr,
     array,
@@ -3243,6 +3244,8 @@ def retries_evaluation(state: dict[str, object]) -> bool:
 PATH = re.compile(r"\$[^\W\d]\w*(?:\.\w+)*")
 # A JSONata string literal, in single or double quotes.
 QUOTED = r"'(?:[^'\\]|\\.)*'" + r'|"(?:[^"\\]|\\.)*"'
+# A call of a function that gives another value when evaluated again.
+TIMED = re.compile(r"\$(" + "|".join(sorted(VOLATILE)) + r")\(")
 # The context a Task and the state after it read alike.
 SAME_CONTEXT = re.compile(r"\$states\.context\.(Execution|StateMachine|Map)\b")
 
@@ -3252,26 +3255,29 @@ def fold_into_catching_tasks(
     enclosing: dict[str, tuple[list[Handler], ...]],
     failsafe: set[str],
 ) -> None:
-    """The Pass or the Succeed right after a Task with a Catch, in the Task's
-    Assign or as its Output, as a hand-writer assigns and returns in the Task
-    whose failures the Catch takes: inside a try, Python's except takes a
-    failure of those statements too, which the separate state lets end the
-    execution. Only the Task leads to it, it is in the same try bodies as the
-    Task, whose Catch is theirs, and the Task retries nothing on `States.ALL`
-    or `States.QueryEvaluationError`, which would call it again. A statement
-    after the try, which only the Task leads to when every except clause
-    ends, is not in the try's reach, unless the state is failsafe (below),
-    which gives the Catch nothing to take; a catcher of the Task may lead to
-    such a Succeed too, which stays for the catcher.
+    """The Pass or the Succeed right after a Task, a Parallel or a Map with a
+    Catch, in the state's Assign or as its Output, as a hand-writer assigns
+    and returns in the state whose failures the Catch takes: a failure of the
+    Assign or the Output of each of the three is caught (measured), and
+    inside a try, Python's except takes a failure of those statements too,
+    which the separate state lets end the execution. Only the state leads to
+    it, it is in the same try bodies as the state, whose Catch is theirs, and
+    the state retries nothing on `States.ALL` or
+    `States.QueryEvaluationError`, which would run it again. A statement
+    after the try, which only the state leads to when every except clause
+    ends, is not in the try's reach, unless it is failsafe (below), which
+    gives the Catch nothing to take; a catcher of the state may lead to such
+    a Succeed too, which stays for the catcher.
 
-    A failure in the Task's Assign loses all of it, the Task's result
-    included, where Python keeps what was assigned before the failing
-    statement, so no way on from a catcher may read a variable the Task or
-    the Pass assigns, unless the state is failsafe: nothing in it fails or is
-    undefined, so a failure of the Assign is the Task's own, as in Python.
-    The state reads the variables the Task assigns as the
-    expressions the Task assigns them, and nothing else of `$states` than the
-    context the two share."""
+    A failure in the Assign loses all of it, the state's result included,
+    where Python keeps what was assigned before the failing statement, so no
+    way on from a catcher may read a variable the state or the Pass assigns,
+    unless the Pass or the Succeed is failsafe: nothing in it fails or is
+    undefined, so a failure of the Assign is the state's own, as in Python.
+    It reads the variables the state assigns as the expressions the state
+    assigns them, and nothing else of `$states` than the context the two
+    share, and after a Parallel or a Map neither the time nor a random value,
+    whose reading there is not measured."""
     states = definition["States"]
     assert isinstance(states, dict)
     folded = True
@@ -3286,7 +3292,7 @@ def fold_into_catching_tasks(
         for name, task in states.items():
             after = task.get("Next")
             if (
-                task["Type"] != "Task"
+                task["Type"] not in {"Task", "Parallel", "Map"}
                 or "Catch" not in task
                 or "Output" in task
                 or after is None
@@ -3313,6 +3319,10 @@ def fold_into_catching_tasks(
                 continue
             codes = expressions_in({k: v for k, v in following.items() if k != "Next"})
             if any("$states" in SAME_CONTEXT.sub("", code) for code in codes):
+                continue
+            # When a Parallel's or a Map's Assign reads the time or a random
+            # value is not measured, where a Task's is when it ends.
+            if task["Type"] != "Task" and any(TIMED.search(c) for c in codes):
                 continue
             own = task.get("Assign", {})
             assert isinstance(own, dict)
