@@ -7,8 +7,9 @@ import sfnx
 from sfnx import aws
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
-from sfnx.integrations import ResourceError, operation_resource
+from sfnx.integrations import ResourceError, operation_resource, sdk_member
 
+INPUT = "$states.context.Execution.Input"
 ACTIVITY = "arn:aws:states:us-east-1:123456789012:activity:review"
 
 
@@ -361,3 +362,51 @@ def test_at_run_time_tasks_are_not_run():
 def test_at_run_time_private_names_are_not_operations():
     assert not hasattr(aws.sdk.dynamodb, "_operation")
     assert not hasattr(aws.optimized, "_services")
+
+
+@pytest.mark.parametrize(
+    "member, spelled",
+    [
+        # What Step Functions takes in an SDK integration (TestState;
+        # measured), and what it rejects: the botocore spelling.
+        ("DBInstanceIdentifier", "DbInstanceIdentifier"),
+        ("CACertificateIdentifier", "CaCertificateIdentifier"),
+        ("ACL", "Acl"),
+        ("SSEKMSKeyId", "SsekmsKeyId"),
+        ("SSECustomerKeyMD5", "SseCustomerKeyMD5"),
+        ("BOOL", "Bool"),
+        ("SS", "Ss"),
+        ("S", "S"),
+        ("MultiAZ", "MultiAZ"),
+        ("QueueOwnerAWSAccountId", "QueueOwnerAWSAccountId"),
+        ("S3Bucket", "S3Bucket"),
+        ("awsvpcConfiguration", "AwsvpcConfiguration"),
+        ("restApiId", "RestApiId"),
+        ("TableName", "TableName"),
+    ],
+)
+def test_sdk_member(member, spelled):
+    assert sdk_member(member) == spelled
+
+
+def test_sdk_arguments_are_spelled_as_step_functions_spells_them():
+    _, state = only(
+        'return aws.sdk.rds.describe_db_instances(DbInstanceIdentifier=input["id"])'
+    )
+    assert state["Arguments"] == {"DbInstanceIdentifier": f"{{% {INPUT}.id %}}"}
+
+
+def test_sdk_results_are_spelled_as_step_functions_spells_them():
+    # The fields of the result have the type botocore gives them.
+    _, state = only(
+        'r = aws.sdk.rds.describe_db_instances()\nreturn len(r["DbInstances"])'
+    )
+    assert state["Output"] == "{% $count($states.result.DbInstances) %}"
+
+
+def test_optimized_arguments_keep_botocore_spelling():
+    # An optimized integration takes BOOL, and rejects Bool (measured).
+    _, state = only(
+        'aws.optimized.dynamodb.put_item(TableName="t", Item={"k": {"BOOL": True}})'
+    )
+    assert state["Arguments"]["Item"] == {"k": {"BOOL": True}}

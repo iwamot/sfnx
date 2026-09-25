@@ -4,7 +4,7 @@ import ast
 import datetime
 import difflib
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 
@@ -3562,9 +3562,10 @@ def check_arguments(node: ast.expr, called: Integration) -> None:
         assert isinstance(key, ast.Constant) and isinstance(key.value, str)
         keys[key.value] = value
         if called.allowed is not None and key.value not in called.allowed:
-            close = difflib.get_close_matches(key.value, sorted(called.allowed), n=1)
-            hint = f"; did you mean {close[0]}?" if close else ""
+            hint = spelled(key.value, called.allowed)
             raise CompileError(f"{called.name} has no argument {key.value}{hint}", key)
+        if called.arguments is not None:
+            check_fields(value, called.arguments.field(key.value), called)
     if None in node.keys:
         return
     missing = called.required - keys.keys()
@@ -3584,6 +3585,44 @@ def check_arguments(node: ast.expr, called: Integration) -> None:
             raise CompileError(
                 f"Method is one of {', '.join(sorted(HTTP_METHODS))}", method
             )
+
+
+def check_fields(node: ast.expr, expected: Type | None, called: Integration) -> None:
+    """The keys of the literal dicts in an argument against the fields its
+    shape has at each level, as Step Functions rejects a key it does not
+    know. A value written some other way is left to Step Functions."""
+    if expected is None:
+        return
+    if isinstance(node, ast.List) and expected.items is not None:
+        for item in node.elts:
+            check_fields(item, expected.items, called)
+    if not isinstance(node, ast.Dict):
+        return
+    # Translated, a key is a literal string, or None for a dict ** unpacks.
+    for key, value in zip(node.keys, node.values, strict=True):
+        if key is None:
+            continue
+        assert isinstance(key, ast.Constant) and isinstance(key.value, str)
+        if expected.fields is None:
+            check_fields(value, expected.values, called)
+            continue
+        fields = dict(expected.fields)
+        if key.value not in fields:
+            hint = spelled(key.value, fields)
+            raise CompileError(
+                f"{called.name} has no field {key.value} here{hint}", key
+            )
+        check_fields(value, fields[key.value], called)
+
+
+def spelled(key: str, known: Iterable[str]) -> str:
+    """A hint for a key an integration does not have: the one it has that
+    differs only in case, such as DbInstanceIdentifier for botocore's
+    DBInstanceIdentifier, or else the closest."""
+    names = sorted(known)
+    same = [name for name in names if name.lower() == key.lower()]
+    close = same or difflib.get_close_matches(key, names, n=1)
+    return f"; did you mean {close[0]}?" if close else ""
 
 
 def check_seconds(node: ast.Call, name: str, value: Expr) -> None:
