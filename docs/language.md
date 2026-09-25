@@ -262,7 +262,7 @@ done = task("${ResourceArn}", {"Id": input["id"]})
 - SDK integrations are checked against botocore: the service, the operation, argument names and the required arguments. Service names follow the AWS SDK for Java (`sfn`, `eventbridge`, `cloudwatchlogs`); botocore's names that differ (`logs`) are rejected with the name to write. Whether Step Functions supports a service or action that botocore has is not checked, nor are the types of argument values; ValidateStateMachineDefinition checks those it can, such as a number written as a Lambda `Payload`.
 - Optimized integrations are checked for argument names and required arguments when botocore has the action, and which pattern an action supports is not checked. HTTP Tasks need `ApiEndpoint`, `Method` and a connection. Activity and Lambda function ARNs, and ARNs containing `${...}`, are passed as written.
 - Arguments that unpack a dict with `**` are checked only for the argument names written out; the required arguments and what an HTTP Task needs are left to Step Functions when the Task runs.
-- A `.waitForTaskToken` Task must pass `context["Task"]["Token"]` in its arguments, the only place it can be read.
+- A `.waitForTaskToken` Task must pass `context["Task"]["Token"]` in its arguments. A `.sync` or `.sync:2` Task may pass it too, and its arguments are the only other place it can be read: a request-response Task has no token.
 - sfnx ships no type stubs for the operations of `aws`, so a type checker takes any operation and any argument; the compiler checks them. An operation's result has the type an annotation on the assignment declares, as `task()`'s does.
 
 ## Parallel and maps

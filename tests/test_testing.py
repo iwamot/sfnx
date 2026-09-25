@@ -311,13 +311,21 @@ def test_the_context_object():
         succeed = {"Type": "Succeed", "Output": f"{{% $states.context.{path} %}}"}
         with pytest.raises(asl.Failure, match="undefined"):
             asl.run(machine(succeed), {})
-    callback = {
-        "Type": "Task",
-        "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-        "Arguments": "{% $states.context.Task.Token %}",
-        "End": True,
-    }
-    assert asl.run(machine(callback), {}, {"s": lambda token: token}) == "token"
+    # A callback Task and a .sync one have a token; a request-response one
+    # has none (measured).
+    for resource, token in [
+        ("sqs:sendMessage.waitForTaskToken", True),
+        ("states:startExecution.sync", True),
+        ("states:startExecution.sync:2", True),
+        ("states:startExecution", False),
+    ]:
+        task = {
+            "Type": "Task",
+            "Resource": f"arn:aws:states:::{resource}",
+            "Arguments": "{% $exists($states.context.Task.Token) %}",
+            "End": True,
+        }
+        assert asl.run(machine(task), {}, {"s": lambda read: read}) is token
 
 
 @pytest.mark.parametrize(

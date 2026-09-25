@@ -110,6 +110,9 @@ WRAPPER = expression(r'/^\{"v":|\}$/')
 
 MAX_SECONDS = 99_999_999
 TASK_OPTIONS = ("timeout", "heartbeat", "role")
+# The patterns whose Task has a token in the Context Object: a callback's, and
+# a .sync Task's, which a request-response Task lacks (measured).
+TOKENED = frozenset({".waitForTaskToken", ".sync", ".sync:2"})
 # The names sfnx exports that a workflow calls or reads, so that one used
 # without an import is told apart from an unknown name.
 EXPORTS = frozenset(
@@ -3239,7 +3242,8 @@ class Translator:
         arguments = None
         callback = called.pattern == ".waitForTaskToken"
         if arguments_node is not None:
-            self.token_readable, self.token_read = callback, False
+            self.token_readable = called.pattern in TOKENED
+            self.token_read = False
             try:
                 arguments = self.expr(arguments_node)
             finally:
@@ -3313,7 +3317,7 @@ class Translator:
             if not self.token_readable:
                 raise CompileError(
                     "the task token exists only in the arguments of a "
-                    ".waitForTaskToken task",
+                    ".waitForTaskToken, .sync or .sync:2 task",
                     key,
                 )
             self.token_read = True

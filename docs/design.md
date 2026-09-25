@@ -75,7 +75,7 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 **Lists keep their shape.** JSONata's array constructor merges the items of an array value unless the item is itself written as an array constructor, so `[xs]` of a list would lose a level. An item known to be a list is wrapped once more (`[[$xs]]`), and one that may be a list is tested when it runs. `xs += [...]` is rejected because Python extends the list in place, which other names for it see, and a JSON value is a copy.
 
-**The Context Object is read by subscript**, like the input, with the keys ASL uses. The fields readable only in some places are diagnosed: `Task.Token` outside a `.waitForTaskToken` Task's arguments, and `Map.Item` everywhere.
+**The Context Object is read by subscript**, like the input, with the keys ASL uses. The fields readable only in some places are diagnosed: `Task.Token` outside the arguments of a `.waitForTaskToken`, `.sync` or `.sync:2` Task, and `Map.Item` everywhere. A `.sync` and a `.sync:2` Task have a token in their `Arguments` and `Assign`, where a request-response Task has none, though ValidateStateMachineDefinition takes a read of it in any Task and rejects one only in a Pass (measured).
 
 ## What the compiler relies on
 
