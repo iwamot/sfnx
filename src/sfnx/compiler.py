@@ -1421,12 +1421,26 @@ class Scope:
                 for name, value in result.values.items()
             }
         )
+        self.reread_arguments(set(result.values), before)
         try:
             value, call = self.translator.statement_value(value_node)
         finally:
             self.bindings.clear()
             self.bindings.update(before)
         return value if call is None else None
+
+    def reread_arguments(self, changed: set[str], before: dict[str, Expr]) -> None:
+        """A parameter of a function called directly reads the argument as it
+        was translated at the call, so one whose argument reads a variable that
+        now reads as another expression is translated again, outer calls
+        first, as its value is where the body reads it."""
+        for name, written in self.translator.arguments.items():
+            reads = {n.id for n in ast.walk(written) if isinstance(n, ast.Name)}
+            if not reads & changed:
+                continue
+            value = self.translator.expr(written)
+            self.bindings[name] = replace(value, type=before[name].type)
+            changed.add(name)
 
     def read_as(self, value_node: ast.expr, values: dict[str, Expr]) -> Expr:
         """A value that makes no state, with the variables in values read as
