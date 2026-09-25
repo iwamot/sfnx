@@ -2884,7 +2884,8 @@ class Translator:
             chosen = conditional(
                 present, value, default, union(value.type, default.type)
             )
-        return block(bindings, chosen)
+        # Where the key is missing, the default: never undefined unless it is.
+        return replace(block(bindings, chosen), defined=default.defined)
 
     def listed(self, node: ast.expr, name: str = "list") -> Expr:
         """list(x): the keys of a dict, the characters of a string, or a list

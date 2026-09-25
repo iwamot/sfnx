@@ -320,7 +320,9 @@ def test_a_comprehension_variable_is_not_an_assignment_of_the_loop():
 def test_a_loop_after_other_states_is_tried_again_from_the_same_point():
     body = 'wait(1)\nxs: list[float] = input["xs"]\nacc = None\nfor x in xs:\n    if acc is None:\n        acc = x\n    else:\n        acc = acc + x\nreturn acc'
     compiled = states(body)
-    assert list(compiled) == ["wait", "for", "if", "return"]
+    # The if that only assigns acc is a conditional expression in the loop's
+    # Choice rule.
+    assert list(compiled) == ["wait", "for", "return"]
     # The Wait takes the assignments before the loop once, not once per attempt.
     assert list(compiled["wait"]["Assign"]) == ["xs", "acc", "x_index"]
     assert compiled["wait"]["Next"] == "for"

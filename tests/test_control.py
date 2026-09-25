@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 import textwrap
@@ -5,7 +6,7 @@ import textwrap
 import pytest
 
 from sfnx import testing
-from sfnx.compiler import compile_source, definitions
+from sfnx.compiler import always_reads, compile_source, definitions
 from sfnx.diagnostics import CompileError
 from sfnx.locations import PREFIX
 from tests import asl, truthy
@@ -24,7 +25,10 @@ def definition(body: str) -> dict:
 
 
 def test_choice_example():
-    body = 'if input["amount"] > 1000:\n    fee = 100\nelse:\n    fee = 10\nreturn fee'
+    body = (
+        'if input["amount"] > 1000:\n    fee = 100\n    tier = "big"\n'
+        'else:\n    fee = 10\n    tier = "small"\nreturn fee'
+    )
     assert definition(body) == {
         "QueryLanguage": "JSONata",
         "StartAt": "if",
@@ -36,11 +40,11 @@ def test_choice_example():
                 "Choices": [
                     {
                         "Condition": f"{{% {INPUT}.amount > 1000 %}}",
-                        "Assign": {"fee": 100},
+                        "Assign": {"fee": 100, "tier": "big"},
                         "Next": "return",
                     }
                 ],
-                "Assign": {"fee": 10},
+                "Assign": {"fee": 10, "tier": "small"},
                 "Default": "return",
             },
             "return": {"Type": "Succeed", "Output": "{% $fee %}"},
@@ -75,7 +79,7 @@ def test_elif_adds_rules_to_one_choice():
 
 
 def test_if_without_else_defaults_to_what_follows():
-    body = 'x = 1\nif input["a"]:\n    x = 2\nreturn x'
+    body = 'x = 1\nif input["a"]:\n    x = 2\n    y = 3\nreturn x'
     states = definition(body)["States"]
     assert states["if"]["Default"] == "return"
     assert states["if"]["Choices"][0]["Next"] == "return"
@@ -275,8 +279,8 @@ def test_what_a_wait_assigns(body, joined, passes):
         # The time and a random value read the same in the Choice.
         ('if input["a"]:\n    x = str(uuid.uuid4())', {"x": "{% $uuid() %}"}, None, []),
         (
-            'if input["a"]:\n    x = 1\nelse:\n    x = str(datetime.now())',
-            {"x": 1},
+            'if input["a"]:\n    x = 1\n    y = 2\nelse:\n    x = str(datetime.now())',
+            {"x": 1, "y": 2},
             {"x": "{% $now() %}"},
             [],
         ),
@@ -301,10 +305,15 @@ def test_a_choice_runs_the_assign_of_the_branch_taken():
 
 
 def test_the_comments_of_a_branch_go_with_its_assignments():
-    body = '# sizes\nif input["a"]:\n    # big\n    x = 1\nelse:\n    # small\n    x = 2\nreturn x'
+    body = '# sizes\nif input["a"]:\n    # big\n    x = 1\n    y = 1\nelse:\n    # small\n    x = 2\nreturn x'
     choice = definition(body)["States"]["if"]
     assert choice["Comment"] == "sizes\nsmall"
     assert choice["Choices"][0]["Comment"] == "big"
+
+
+def test_the_comments_of_an_if_that_only_assigns_go_with_its_assignment():
+    body = '# sizes\nif input["a"]:\n    # big\n    x = 1\nelse:\n    # small\n    x = 2\nreturn x'
+    assert definition(body)["States"]["x"]["Comment"] == "sizes\nbig\nsmall"
 
 
 @pytest.mark.parametrize(
@@ -824,3 +833,126 @@ def test_a_path_past_a_choice_takes_the_assignments_of_its_default(note, choices
         asl.run(compiled, given, {"found": lambda arguments: {"blocked": False}})
         == "finished"
     )
+
+
+@pytest.mark.parametrize(
+    "body, choices, runs",
+    [
+        # Each branch assigns the one variable: one conditional expression.
+        (
+            'if input["a"] > 2:\n    x = "big"\nelif input["a"] > 1:\n    x = "some"\nelse:\n    x = "none"',
+            0,
+            [({"a": 3}, "big"), ({"a": 2}, "some"), ({"a": 0}, "none")],
+        ),
+        # Without else, the variable keeps the value it had.
+        (
+            'x = input["x"]\nif x is None:\n    x = 0',
+            0,
+            [({"x": None}, 0), ({"x": 5}, 5)],
+        ),
+        # A variable that has no value on the other path keeps the Choice.
+        ('if input["a"]:\n    x = 1\nelse:\n    return 0', 1, [({"a": 1}, 1)]),
+        # So does a branch that does more than assign it.
+        (
+            'x = 0\nif input["a"]:\n    x = 1\n    y = 2',
+            1,
+            [({"a": 1}, 1), ({"a": 0}, 0)],
+        ),
+        # A flag given a value written in the source and tested later keeps
+        # its Choice, for the later test to be decided on each path.
+        (
+            'x = "no"\nif input["a"]:\n    x = "yes"\nif x == "yes":\n    return 1',
+            1,
+            [({"a": 1}, 1), ({"a": 0}, "no")],
+        ),
+    ],
+)
+def test_an_if_that_only_assigns_one_variable(body, choices, runs):
+    compiled = definition(body + "\nreturn x")
+    states = compiled["States"]
+    assert [s["Type"] for s in states.values()].count("Choice") == choices
+    for execution_input, expected in runs:
+        assert asl.run(compiled, execution_input) == expected
+
+
+def test_an_if_whose_branch_makes_a_state_keeps_its_choice():
+    body = f'x = 0\nif input["a"]:\n    x = {CHARGE}\nreturn x'
+    states = flagged(body)["States"]
+    assert [s["Type"] for s in states.values()].count("Choice") == 1
+
+
+@pytest.mark.parametrize(
+    "first, second, merged, result",
+    [
+        # The new value reads the first where it is always evaluated, and the
+        # first is never undefined: it is written into the new one, and both
+        # go in one Assign.
+        (
+            'input["a"].get("b")',
+            "x = 0 if not isinstance(x, (int, float)) else x",
+            True,
+            2,
+        ),
+        ('input["a"].get("b")', "x = x + 1", True, 3),
+        # The first may be undefined, which the test reads without failing
+        # where Python fails on the missing key: it keeps its own state.
+        (
+            'input["a"]["b"]',
+            "x = 0 if not isinstance(x, (int, float)) else x",
+            False,
+            2,
+        ),
+        # It is read only where JSONata may not evaluate it, or not at all.
+        ('input["a"].get("b")', "x = 0 if input['b'] else x", False, 0),
+        ('input["a"].get("b")', 'x = input.get("c", x)', False, 5),
+        ('input["a"].get("b")', "x = 1", False, 1),
+    ],
+)
+def test_a_name_assigned_again(first, second, merged, result):
+    body = f"wait(1)\nx = {first}\n{second}\nwait(1)\nreturn x"
+    (compiled,) = compile_source(
+        "from sfnx import state_machine, wait\n\n\n@state_machine\ndef pay(input):\n"
+        + textwrap.indent(body, "    ")
+    ).values()
+    assert len(compiled["States"]) == (3 if merged else 4)
+    assert asl.run(compiled, {"a": {"b": 2}, "b": True, "c": 5}) == result
+    if first.endswith('["b"]'):
+        with pytest.raises(asl.Failure):
+            asl.run(compiled, {"a": {}})
+
+
+def test_an_if_whose_branch_calls_a_function_directly_keeps_its_choice():
+    body = (
+        "def fee(amount):\n    return amount * 2\n\n"
+        'x = 0\nif input["a"]:\n    x = fee(input["a"])\nreturn x'
+    )
+    states = definition(body)["States"]
+    assert [s["Type"] for s in states.values()].count("Choice") == 1
+
+
+@pytest.mark.parametrize(
+    "code, reads",
+    [
+        ("x", True),
+        ("y", False),
+        ("a if x else b", True),
+        ("x if a else b", False),
+        ("x or a", True),
+        ("a or x", False),
+        ("not x", True),
+        ("x < a < b", True),
+        ("a < x", True),
+        ("a < b < x", False),
+        ("x + 1", True),
+        ("1 - x", True),
+        ('x["k"]', True),
+        ("x.k", True),
+        ("isinstance(x, int)", True),
+        ("len(x)", True),
+        ("max(x, 1)", False),
+        ("d.get(k, x)", False),
+        ("[x for a in b]", False),
+    ],
+)
+def test_where_an_expression_always_reads_a_variable(code, reads):
+    assert always_reads(ast.parse(code, mode="eval").body, "x") == reads

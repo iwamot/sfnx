@@ -176,28 +176,12 @@
     "score": {
       "Type": "Pass",
       "Assign": {
-        "score": "{% $exists($agent_candidate.score) ? $agent_candidate.score : null %}"
+        "score": "{% $not($type($exists($agent_candidate.score) ? $agent_candidate.score : null) = 'number') ? 0 : $exists($agent_candidate.score) ? $agent_candidate.score : null %}",
+        "candidate": "{% $agent_candidate %}"
       },
       "Next": "if_2"
     },
     "if_2": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $not($type($score) = 'number') %}",
-          "Assign": {
-            "score": 0,
-            "candidate": "{% $agent_candidate %}"
-          },
-          "Next": "if_3"
-        }
-      ],
-      "Assign": {
-        "candidate": "{% $agent_candidate %}"
-      },
-      "Default": "if_3"
-    },
-    "if_3": {
       "Type": "Choice",
       "Choices": [
         {

@@ -217,6 +217,7 @@ def count(input):
             and row == {"a": 1}
         ):
             row = row["next"]
+            flagged = True
         kept = kept + [row]
     for i in range(len(kept)):
         kept = kept + [i]
@@ -252,7 +253,7 @@ def count(input):
                 )
             ],
         ),
-        "if[0]": ([], [('row = row["next"]', None)]),
+        "if[0]": ([], [('row = row["next"]', None), ("flagged = True", None)]),
         "kept": ([], [("kept = kept + [row]", None), (header, "loop step")]),
         "for_2": ([], [(counting, None)]),
         "for_2[0]": ([], [("kept = kept + [i]", None), (counting, "loop step")]),
@@ -303,12 +304,12 @@ def test_each_path_that_takes_an_assignment_spans_it():
 def test_a_choice_spans_what_its_rules_and_default_assign():
     source = (
         "from sfnx import state_machine\n\n\n@state_machine\ndef pay(input):\n"
-        '    if input["a"]:\n        x = 1\n    else:\n        x = 2\n    return x\n'
+        '    if input["a"]:\n        x = 1\n        y = 1\n    else:\n        x = 2\n    return x\n'
     )
     (definition,) = definitions(source, "app.py", located=True).values()
     found = located(source, definition)
     assert found["if"] == ([], [('if input["a"]:', None), ("x = 2", None)])
-    assert found["if[0]"] == ([], [("x = 1", None)])
+    assert found["if[0]"] == ([], [("x = 1", None), ("y = 1", None)])
 
 
 @pytest.mark.parametrize("filename", ['a "b".py', "a\nb.py", "dir/日本語.py"])
