@@ -275,7 +275,8 @@ def test_retry_comes_before_catch():
         "Arguments",
         "Retry",
         "Catch",
-        "Next",
+        "Output",
+        "End",
     ]
 
 
