@@ -1182,10 +1182,14 @@ class Scope:
         # evaluated, as Python evaluates it, unless the new value evaluates it
         # every time, as the test of `v = a if test(v) else v` does, and it
         # never gives undefined, which a test reads without failing where the
-        # first Assign would fail.
+        # first Assign would fail. A first value that can neither fail nor be
+        # undefined, such as one written in the source, has nothing to
+        # evaluate, so the new value takes its place.
         first = self.pending.get(name)
         if first is not None and (
-            first.volatile or not first.defined or not always_reads(value_node, name)
+            first.volatile
+            or not first.defined
+            or not (first.total or always_reads(value_node, name))
         ):
             self.flush()
         reads = sorted(value.variables & self.pending.keys())
