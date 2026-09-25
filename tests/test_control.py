@@ -764,8 +764,8 @@ def test_a_flag_known_on_each_path_sends_the_path_on_directly():
 @pytest.mark.parametrize(
     "value, test, kept, result",
     [
-        # A rule that assigns keeps the path through its Choice.
-        ('"a"', 'if flag == "a":\n    x = 1\n    return x', True, 1),
+        # The rule's assignment goes in the Task that now skips the Choice.
+        ('"a"', 'if flag == "a":\n    x = 1\n    return x', False, 1),
         ('"a"', 'if flag != "b":\n    return 1', False, 1),
         ("None", "if flag is not None:\n    return 1", False, 0),
         # JSONata's = holds for the same type only: true is not 1.
@@ -779,3 +779,48 @@ def test_what_the_known_value_decides(value, test, kept, result):
     states = compiled["States"]
     assert any(s["Type"] == "Choice" for s in states.values()) == kept
     assert asl.run(compiled, {}, {"invoke": lambda arguments: {}}) == result
+
+
+PAST_A_CHOICE = (
+    'status = "new"\nprefix = input["prefix"]\ntry:\n'
+    f"    found = {CHARGE}\n"
+    '    if found["blocked"]:\n        status = "open"\n'
+    '    else:\n        status = "done"\n'
+    'except Declined:\n    status = "open"\n'
+    'if status != "open":\n    return "finished"\n'
+    'note = f"{prefix}NOTE"\n'
+    f"{CHARGE}\nreturn note"
+)
+
+
+@pytest.mark.parametrize(
+    "note, choices",
+    [
+        # The note reads nothing the catcher or the rule assigns: both go on
+        # to the last call, and only the if on the Task's result is left.
+        ("!", 1),
+        # It reads the status they assign, which the Choice's Default would
+        # read after they assign it: the paths keep the Choice.
+        ("{status}", 2),
+    ],
+)
+def test_a_path_past_a_choice_takes_the_assignments_of_its_default(note, choices):
+    compiled = flagged(PAST_A_CHOICE.replace("NOTE", note))
+    states = compiled["States"]
+    assert [s["Type"] for s in states.values()].count("Choice") == choices
+
+    def blocked(arguments):
+        return {"blocked": True}
+
+    def declined(arguments):
+        raise asl.Failure("Declined", "")
+
+    ok = {"invoke": lambda arguments: {}}
+    written = "open" if note == "{status}" else "!"
+    given = {"prefix": "p:"}
+    assert asl.run(compiled, given, {"found": blocked, **ok}) == "p:" + written
+    assert asl.run(compiled, given, {"found": declined, **ok}) == "p:" + written
+    assert (
+        asl.run(compiled, given, {"found": lambda arguments: {"blocked": False}})
+        == "finished"
+    )
