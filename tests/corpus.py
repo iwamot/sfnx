@@ -27,7 +27,7 @@ import random
 import urllib.parse
 from datetime import datetime
 
-from sfnx import parallel, state_machine
+from sfnx import TaskFailed, context, inline_map, parallel, state_machine
 
 
 class Declined(Exception):
@@ -86,7 +86,11 @@ class Case:
     python says whether CPython gives the same value, which is the guarantee
     the case claims; on_aws, when set, is the condition the result must
     satisfy on AWS in place of the value, for a result that changes on
-    every evaluation."""
+    every evaluation. backs is a phrase of docs/design.md naming the
+    behavior the compiler relies on that the case runs, whose paragraph names
+    the case in turn, and states the types of the definition's top-level
+    states, in order, where the case runs that behavior only while the
+    compiler writes those states."""
 
     id: str
     category: str
@@ -98,6 +102,8 @@ class Case:
     random: tuple[float, ...] = ()
     calls: int = 0
     on_aws: Condition | None = None
+    backs: str = ""
+    states: tuple[str, ...] = ()
 
     @property
     def source(self) -> str:
@@ -132,11 +138,20 @@ def two_numbers_below_one(value: object) -> bool:
     )
 
 
+def two_equal_numbers_below_one(value: object) -> bool:
+    return (
+        two_numbers_below_one(value)
+        and isinstance(value, list)
+        and value[0] == value[1]
+    )
+
+
 # The conditions a result on AWS is judged by when its value cannot be fixed.
 CONDITIONS: Mapping[str, Callable[[object], bool]] = {
     "a number in [0, 0.5)": lambda v: is_number(v) and 0 <= v < 0.5,
     "false": lambda v: v is False,
     "two numbers in [0, 1)": two_numbers_below_one,
+    "two equal numbers in [0, 1)": two_equal_numbers_below_one,
 }
 
 COMPREHENSION = 'xs: list[float] = input["xs"]\nreturn [x * 2 for x in xs]'
@@ -160,6 +175,138 @@ try:
 except Declined as e:
     return {"status": status, "message": str(e)}
 return status
+"""
+
+FOLDED_INTO_A_PARALLEL = """\
+def ok():
+    return {"k": 1}
+
+try:
+    r = parallel(ok)
+    return r[0]["missing"]
+except Exception:
+    return "caught"
+"""
+FOLDED_INTO_A_MAP = """\
+def f(x):
+    return {"k": x}
+
+try:
+    rs = inline_map(f, [1])
+    return rs[0]["missing"]
+except Exception:
+    return "caught"
+"""
+CATCH_IN_A_MAP = """\
+xs: list = input["xs"]
+status = "new"
+
+def check(x):
+    if x > 1:
+        raise Declined("too big")
+    return x
+
+try:
+    ys = inline_map(check, xs)
+    status = "done"
+except Declined as e:
+    return {"status": status, "message": str(e)}
+return ys
+"""
+ASSIGNS_NOTHING = """\
+status = "old"
+
+def ok():
+    return {"k": 1}
+
+try:
+    r = parallel(ok)
+    y = r[0]["missing"]
+    status = "new"
+    return y
+except Exception:
+    return status
+"""
+READS_THE_RESULT = """\
+r = "none"
+
+def ok():
+    return {"k": 1}
+
+try:
+    r = parallel(ok)
+    y = r[0]["missing"]
+    return y
+except Exception:
+    return r
+"""
+FLAG = """\
+failed_at = None
+
+def fail():
+    raise Declined("no")
+
+try:
+    parallel(fail)
+except Declined:
+    failed_at = "payment"
+if failed_at is not None:
+    return {"failed": failed_at}
+return "ok"
+"""
+RETRY_COUNT = """\
+def f(n):
+    if n < 2:
+        raise Declined("again")
+    return n
+
+return inline_map(
+    f,
+    [context["State"]["RetryCount"]],
+    retry=[{"ErrorEquals": [Declined], "MaxAttempts": 3, "IntervalSeconds": 1}],
+)
+"""
+TASK_FAILED = """\
+def f(n):
+    return {"k": n}
+
+try:
+    rs = inline_map(
+        f,
+        [context["State"]["RetryCount"]],
+        retry=[{"ErrorEquals": [TaskFailed], "MaxAttempts": 2, "IntervalSeconds": 1}],
+    )
+    return 1 / rs[0]["k"]
+except Exception:
+    return "not retried"
+"""
+RULE_ASSIGNS = """\
+x: float = input["x"]
+if x > 1:
+    y = x + 1
+    if y > 3:
+        return "big"
+    return y
+else:
+    y = x - 1
+return y
+"""
+COUNTED_DOWN = """\
+n: float = input["n"]
+if n > 0:
+    n = n - 1
+    if n > 0:
+        return "two or more"
+    return "one"
+return "none"
+"""
+GUARDED = """\
+d: dict[str, float] = input["d"]
+if d["k"] != 0:
+    if 10 / d["k"] > 1:
+        return "big"
+    return "small"
+return "zero"
 """
 
 CASES: tuple[Case, ...] = (
@@ -631,6 +778,7 @@ CASES: tuple[Case, ...] = (
         python=False,
         calls=0,
         on_aws=Condition("false"),
+        backs="JSONata's `and` and `or` evaluate no more once the first side decides",
     ),
     Case(
         "volatile-separate-calls",
@@ -653,6 +801,176 @@ CASES: tuple[Case, ...] = (
         "a handler sees the variables from before the state that failed, not "
         "the assignments after it, and the Catch assigns the error to the "
         "outer scope where str(e) reads its cause",
+        backs="a catcher's also read `$states.errorOutput` and `$states.input`",
+    ),
+    Case(
+        "catch-takes-a-failure-folded-into-a-parallel",
+        "catch",
+        FOLDED_INTO_A_PARALLEL,
+        {},
+        Value("caught"),
+        "the return goes in the Output of the Parallel before it, whose Catch "
+        "takes the Output's failure as the except takes the KeyError",
+        backs="whose Catch takes a failure of either",
+        states=("Parallel", "Succeed"),
+    ),
+    Case(
+        "catch-takes-a-failure-folded-into-a-map",
+        "catch",
+        FOLDED_INTO_A_MAP,
+        {},
+        Value("caught"),
+        "the return goes in the Output of the Map before it, whose Catch takes "
+        "the Output's failure as the except takes the KeyError",
+        backs="whose Catch takes a failure of either",
+        states=("Map", "Succeed"),
+    ),
+    Case(
+        "catch-in-a-map-reads-the-error",
+        "catch",
+        CATCH_IN_A_MAP,
+        {"xs": [1, 2]},
+        Value({"status": "new", "message": "too big"}),
+        "a Fail in an inline Map's processor fails the Map, whose catcher "
+        "assigns the error output, and the assignment the Map holds after it "
+        "is not made",
+        backs="a catcher's also read `$states.errorOutput` and `$states.input`",
+        states=("Pass", "Map", "Succeed"),
+    ),
+    Case(
+        "failed-assign-assigns-nothing",
+        "catch",
+        ASSIGNS_NOTHING,
+        {},
+        Value("old"),
+        "status is assigned after the statement that fails, in the same Assign "
+        "of the Parallel, and a failing Assign assigns none of its variables, "
+        "so the except reads the value from before the try, as in Python",
+        backs="A failing `Assign` assigns nothing, the state's result included",
+        states=("Pass", "Parallel", "Succeed"),
+    ),
+    Case(
+        "except-reading-the-result-keeps-the-pass",
+        "catch",
+        READS_THE_RESULT,
+        {},
+        Error(QUERY_ERROR),
+        "the except reads the result, which a failing Assign would not assign, "
+        "so the statement that fails keeps its Pass, which no Catch covers; "
+        "CPython runs the except, a difference the language reference lists",
+        python=False,
+        backs="A failing `Assign` assigns nothing, the state's result included",
+        states=("Pass", "Parallel", "Pass", "Succeed", "Succeed"),
+    ),
+    Case(
+        "catch-sets-the-flag-a-choice-tests",
+        "catch",
+        FLAG,
+        {},
+        Value({"failed": "payment"}),
+        "every way to the if gives the flag a value written in the source, so "
+        "the catcher, which assigns the flag, leads straight to the return the "
+        "test would send it to, and the Choice goes",
+        backs="the test is decided there",
+        states=("Pass", "Parallel", "Succeed"),
+    ),
+    Case(
+        "map-retry-evaluates-the-items-again",
+        "retry",
+        RETRY_COUNT,
+        {},
+        Value([2]),
+        "a retry runs the whole Map state again, Items included, where "
+        "State.RetryCount counts the retries before the attempt; CPython has "
+        "no context and no retries",
+        python=False,
+        backs="the number of retries before the current attempt",
+        states=("Map",),
+    ),
+    Case(
+        "task-failed-retrier-misses-a-failing-output",
+        "retry",
+        TASK_FAILED,
+        {},
+        Value("not retried"),
+        "the return goes in the Output of the Map, whose retrier for "
+        "States.TaskFailed does not match the Output's failure, so the Catch "
+        "takes it at once instead of the Map running again with a divisor of "
+        "1; CPython has no context and no retries",
+        python=False,
+        backs="A `States.TaskFailed` retrier does not match a failing `Output`",
+        states=("Map", "Succeed"),
+    ),
+    Case(
+        "choice-rule-assigns-by-its-own-assign",
+        "choice",
+        RULE_ASSIGNS,
+        {"x": 1.5},
+        Value(2.5),
+        "the assignment that starts the if branch goes in the Choice rule, "
+        "which assigns by its own Assign and not by the state's",
+        backs="which run only when the `Default` is taken",
+        states=("Choice", "Succeed", "Succeed"),
+    ),
+    Case(
+        "choice-default-assigns-by-the-states-assign",
+        "choice",
+        RULE_ASSIGNS,
+        {"x": 0.5},
+        Value(-0.5),
+        "the assignment of the else branch goes in the Choice's own Assign, "
+        "which the Default applies",
+        backs="which run only when the `Default` is taken",
+        states=("Choice", "Succeed", "Succeed"),
+    ),
+    Case(
+        "choice-taken-in-reads-what-the-rule-assigns",
+        "choice",
+        RULE_ASSIGNS,
+        {"x": 2.5},
+        Value("big"),
+        "the inner if is taken into the outer Choice, whose test reads y as "
+        "the expression the rule assigns it",
+        backs="the same variables and the same input",
+        states=("Choice", "Succeed", "Succeed"),
+    ),
+    Case(
+        "choice-taken-in-reads-the-value-from-before",
+        "choice",
+        COUNTED_DOWN,
+        {"n": 1},
+        Value("one"),
+        "the rule assigns n again, and the test taken in reads n - 1 with the "
+        "n from before the Choice, as the rule's Assign does",
+        backs="the same variables and the same input",
+        states=("Choice", "Succeed", "Succeed", "Succeed"),
+    ),
+    Case(
+        "choice-taken-in-is-not-evaluated-past-a-false-test",
+        "choice",
+        GUARDED,
+        {"d": {"k": 0}},
+        Value("zero"),
+        "the test taken in divides by k, which fails where k is 0; it follows "
+        "the outer test with and, which evaluates no more once that is false",
+        backs="JSONata's `and` and `or` evaluate no more once the first side decides",
+        states=("Choice", "Succeed", "Succeed", "Succeed"),
+    ),
+    Case(
+        "volatile-read-twice-keeps-its-state",
+        "volatile",
+        "x = random.random()\nreturn [x, x]",
+        {},
+        Value([0.75, 0.75]),
+        "each {% %} of an Output is evaluated on its own, so a random value "
+        "read twice keeps the Pass that assigns it, and both items are the "
+        "same value",
+        python=False,
+        random=(0.75,),
+        calls=1,
+        on_aws=Condition("two equal numbers in [0, 1)"),
+        backs="each `{% %}` is evaluated on its own",
+        states=("Pass", "Succeed"),
     ),
 )
 
@@ -681,6 +999,13 @@ class Sequence:
 def compiled(case: Case) -> dict:
     (definition,) = compile_source(case.source).values()
     return definition
+
+
+def state_types(definition: Mapping[str, object]) -> tuple[str, ...]:
+    """The types of a definition's top-level states, in the order written."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    return tuple(state["Type"] for state in states.values())
 
 
 def run_locally(case: Case) -> LocalRun:
@@ -772,10 +1097,12 @@ def select(
 
 def route_of(definition: Mapping[str, object]) -> str:
     """How AWS runs a definition: a single state through TestState, which
-    needs no state machine and no role, and anything else as an execution."""
-    states = definition["States"]
-    assert isinstance(states, dict)
-    return "test-state" if len(states) == 1 else "execution"
+    needs no state machine and no role, and anything else as an execution,
+    a single Map or Parallel included, as TestState refuses those."""
+    types = state_types(definition)
+    if len(types) == 1 and types[0] not in ("Map", "Parallel"):
+        return "test-state"
+    return "execution"
 
 
 def outcome_of(response: Mapping[str, object]) -> Outcome:

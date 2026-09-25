@@ -19,8 +19,10 @@ A case is a program body, an input, what it must give and why. It also says whic
 - **`python`**: CPython gives the same value. A case where Python raises a different error, or where the result changes on every evaluation, does not claim it.
 - **`random` and `calls`**: what `$random` returns locally, in order, and how many times it is called. A call past the end of the values fails the run, so a definition that evaluates an expression twice is caught, and so is one that evaluates it when it should not.
 - **`on_aws`**: for a result that changes on every evaluation, the condition the result must satisfy in Step Functions, in place of the value. The number of calls is not measured there; a value in range is not evidence of a single evaluation, and the results file says `unmeasured`.
+- **`backs`**: for a case that runs a Step Functions behavior the compiler relies on, a phrase of [design.md](design.md) that states it. The paragraph names the case after the phrase, in parentheses after `corpus:`, and `test_corpus.py` checks both ways.
+- **`states`**: the types of the top-level states, where the case runs that behavior only while the compiler writes those states, such as a `return` in the `Output` of a Parallel. A change of the compiler that writes others fails the test, so the case is rewritten rather than left testing something else.
 
-The categories are truth of a value, numbers, `join`, `**`, lists of none, one and several items, dicts from a comprehension, `any` and `all`, missing keys and null, encoded text, times written with a picture string, volatile expressions, and a Catch with the variables it sees. Add a case by appending to `CASES`; its id must be new, and `test_corpus.py` runs it locally at once.
+The categories are truth of a value, numbers, `join`, `**`, lists of none, one and several items, dicts from a comprehension, `any` and `all`, missing keys and null, encoded text, times written with a picture string, volatile expressions, Catch on a Parallel and an inline Map with the statements the compiler folds into them, retries of an inline Map, and Choices that take in the rules of others. Add a case by appending to `CASES`; its id must be new and at most 59 characters, to fit the name of a state machine, and `test_corpus.py` runs it locally at once.
 
 ## Running on AWS
 
@@ -36,13 +38,13 @@ uv run python -m tests.aws_corpus --out results.json
 
 `--select ID ...` and `--category NAME ...` narrow the run; an id or a category that matches nothing is an error.
 
-A definition of one state goes through `TestState`, which creates nothing and needs no role. A definition of several states is created as an Express state machine named `sfnx-corpus-<run>-<case>`, started with `StartSyncExecution` and deleted. Those cases need `--role-arn`, and are written as `not-run` without it. The role is one Step Functions can assume; the corpus calls no service, so it needs no permissions of its own:
+A definition of one state other than a Map or a Parallel, which `TestState` refuses, goes through `TestState`, which creates nothing and needs no role. Any other definition is created as an Express state machine named `sfnx-corpus-<run>-<case>`, started with `StartSyncExecution` and deleted. Those cases need `--role-arn`, and are written as `not-run` without it. The role is one Step Functions can assume; the corpus calls no service, so it needs no permissions of its own:
 
 ```bash
 aws iam create-role --role-name sfnx-corpus --assume-role-policy-document '{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "states.amazonaws.com"}, "Action": "sts:AssumeRole"}]}'
 ```
 
-The caller needs `states:TestState`, `states:CreateStateMachine`, `states:StartSyncExecution`, `states:DeleteStateMachine`, `states:ListStateMachines`, `states:DescribeStateMachine` and `iam:PassRole` on the role. Both `TestState` and `StartSyncExecution` stop after five minutes; the corpus runs Pass, Succeed, Fail and Parallel states only, so a case takes well under a second. Express executions are billed by request, duration and memory.
+The caller needs `states:TestState`, `states:CreateStateMachine`, `states:StartSyncExecution`, `states:DeleteStateMachine`, `states:ListStateMachines`, `states:DescribeStateMachine` and `iam:PassRole` on the role. Both `TestState` and `StartSyncExecution` stop after five minutes; the corpus runs Pass, Choice, Succeed, Fail, Parallel and inline Map states only, so a case takes a few seconds at most, with the one-second waits of its retries. Express executions are billed by request, duration and memory.
 
 Every state machine is deleted after its execution; deletion is asynchronous, and a machine still being deleted is not reported. One that could not be deleted is reported at the end, with every `sfnx-corpus-` machine still in the region from any run, to delete by hand:
 
