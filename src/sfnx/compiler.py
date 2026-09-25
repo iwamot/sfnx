@@ -351,6 +351,9 @@ class Scope:
         # The except clauses of the try statements around the current point,
         # outermost first, and the clauses being compiled, for a bare raise.
         self.tries: list[list[Handler]] = []
+        # The try bodies each Task, Pass and Succeed is in, innermost last, for
+        # what a Task's Catch may take of the state after it.
+        self.enclosing: dict[str, tuple[list[Handler], ...]] = {}
         # States added that can report errors to except, counted.
         self.catchable = 0
         self.handling: list[Handler] = []
@@ -440,6 +443,7 @@ class Scope:
             state = commented(state, "\n".join(remarks))
         opening = not self.graph.states
         added = self.insert(first, state, node, origins)
+        self.enclosing[added] = self.within()
         values = list(pending.values())
         if (
             opening
@@ -1389,7 +1393,8 @@ class Scope:
         self.returns.append(value.type)
         if call is None:
             state = {"Type": "Succeed", "Output": value.template}
-            self.add("return", state, node, origins)
+            added = self.add("return", state, node, origins)
+            self.enclosing[added] = self.within()
             return
         # A Task at the end ends the machine itself; its output is the result
         # unless the return makes something of it.
@@ -1431,7 +1436,14 @@ class Scope:
                 break
         if catchers:
             state["Catch"] = catchers
-        return self.add(base, {**state, **fields}, node)
+        added = self.add(base, {**state, **fields}, node)
+        self.enclosing[added] = self.within()
+        return added
+
+    def within(self) -> tuple[list[Handler], ...]:
+        """The try bodies being compiled, outermost first, each as the list of
+        its clauses."""
+        return tuple(self.tries)
 
     def compose(
         self, node: ast.Call, function: str
@@ -1553,7 +1565,7 @@ class Scope:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
         fold_start(definition, scope.starting)
-        fold_into_catching_tasks(definition)
+        fold_into_catching_tasks(definition, scope.enclosing)
         thread_choices(definition)
         merge_choices(definition)
         share_states(definition)
@@ -3181,13 +3193,18 @@ QUOTED = r"'(?:[^'\\]|\\.)*'" + r'|"(?:[^"\\]|\\.)*"'
 SAME_CONTEXT = re.compile(r"\$states\.context\.(Execution|StateMachine|Map)\b")
 
 
-def fold_into_catching_tasks(definition: dict[str, object]) -> None:
+def fold_into_catching_tasks(
+    definition: dict[str, object], enclosing: dict[str, tuple[list[Handler], ...]]
+) -> None:
     """The Pass or the Succeed right after a Task with a Catch, in the Task's
     Assign or as its Output, as a hand-writer assigns and returns in the Task
     whose failures the Catch takes: inside a try, Python's except takes a
     failure of those statements too, which the separate state lets end the
-    execution. Only the Task leads to it, and the Task retries nothing on
-    `States.ALL` or `States.QueryEvaluationError`, which would call it again.
+    execution. Only the Task leads to it, it is in the same try bodies as the
+    Task, whose Catch is theirs, and the Task retries nothing on `States.ALL`
+    or `States.QueryEvaluationError`, which would call it again. A statement
+    after the try, which only the Task leads to when every except clause
+    ends, is not in the try's reach.
 
     A failure in the Task's Assign loses all of it, the Task's result
     included, where Python keeps what was assigned before the failing
@@ -3214,6 +3231,7 @@ def fold_into_catching_tasks(definition: dict[str, object]) -> None:
                 or "Output" in task
                 or after is None
                 or leading[after] != [name]
+                or not same_tries(enclosing.get(after, ()), enclosing[name])
                 or retries_evaluation(task)
             ):
                 continue
@@ -3261,6 +3279,16 @@ def fold_into_catching_tasks(definition: dict[str, object]) -> None:
             del states[after]
             folded = True
             break
+
+
+def same_tries(
+    first: tuple[list[Handler], ...], second: tuple[list[Handler], ...]
+) -> bool:
+    """Whether two states are in the same try bodies: the very same lists of
+    clauses, which two try statements with like clauses do not share."""
+    return len(first) == len(second) and all(
+        a is b for a, b in zip(first, second, strict=True)
+    )
 
 
 def assigned_value(template: object) -> Expr | None:
@@ -3949,7 +3977,7 @@ def compile_machine(
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
     fold_start(definition, scope.starting)
-    fold_into_catching_tasks(definition)
+    fold_into_catching_tasks(definition, scope.enclosing)
     thread_choices(definition)
     merge_choices(definition)
     share_states(definition)

@@ -87,9 +87,9 @@ return total
         "if": "leave early",
         "status": "poll\nuntil done",
         "if_2": None,
-        # The return inside the try is the Task's Output.
-        "invoke": "guarded\ndone",
+        "invoke": "guarded",
         "raise": "give up",
+        "return": "done",
     }
     assert list(compiled["States"]["for"])[:2] == ["Type", "Comment"]
     # The body's first assignment goes in the rule, with its comment, and the
