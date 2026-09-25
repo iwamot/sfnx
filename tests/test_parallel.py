@@ -121,12 +121,14 @@ def test_a_branch_assigns_names_of_its_own():
     """Step Functions rejects a branch that assigns a variable of the
     machine's, where Python keeps the two apart, so the branch's name is
     numbered."""
-    body = "total = 0\ndef f():\n    total = 1\n    return total\nr = parallel(f)\nreturn [total, r]"
-    assert states(body)["r"]["Branches"][0]["States"] == {
-        "f.total_2": {"Type": "Pass", "Assign": {"total_2": 1}, "Next": "f.return"},
-        "f.return": {"Type": "Succeed", "Output": "{% $total_2 %}"},
-    }
-    assert run(body, {}) == [0, [1]]
+    body = (
+        'total = 0\ndef f():\n    total = int("1")\n    return [total]\n'
+        "r = parallel(f)\nreturn [total, r]"
+    )
+    branch = states(body)["r"]["Branches"][0]["States"]
+    assert list(branch) == ["f.total_2", "f.return"]
+    assert list(branch["f.total_2"]["Assign"]) == ["total_2"]
+    assert run(body, {}) == [0, [[1]]]
     # The machine may assign the name after the branch too.
     body = (
         "def f():\n    for total in range(1):\n        pass\n    return 1\n"

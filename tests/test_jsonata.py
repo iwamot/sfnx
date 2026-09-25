@@ -34,11 +34,14 @@ def definition(body: str) -> dict:
         ),
         ('return jsonata("1 + 1") * 3', "(1 + 1) * 3"),
         (
-            'a = 1\nb = 2\nreturn jsonata("$x - $y", x=b, y=a)',
+            (
+                'a: float = input["a"]\nb: float = input["b"]\n'
+                'return jsonata("$x - $y", x=b, y=a)'
+            ),
             "($x := $b; $y := $a; $x - $y)",
         ),
         (
-            'count = 2\nreturn jsonata("$string($c)", c=count)',
+            'count: float = input["c"]\nreturn jsonata("$string($c)", c=count)',
             "($c := $count_val; $string($c))",
         ),
     ],
@@ -133,7 +136,10 @@ def test_the_parameter_of_a_comprehension_is_not_a_variable_it_reads():
             "states would hide $states in the expression",
         ),
         (
-            'a = 1\nb = 2\nreturn jsonata("$a - $b", a=b, b=a)',
+            (
+                'a: float = input["a"]\nb: float = input["b"]\n'
+                'return jsonata("$a - $b", a=b, b=a)'
+            ),
             "b reads a, which jsonata() binds before it",
         ),
     ],

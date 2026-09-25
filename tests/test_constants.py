@@ -213,8 +213,7 @@ def test_a_distributed_map_reads_a_constant_its_child_execution_cannot():
 
 def test_a_variable_of_the_machine_wins_over_a_constant():
     compiled = definition('TABLE = "outside"', 'TABLE = "inside"\nreturn TABLE')
-    assert compiled["States"]["TABLE"]["Assign"] == {"TABLE": "inside"}
-    assert compiled["States"]["return"]["Output"] == "{% $TABLE %}"
+    assert compiled["States"]["return"]["Output"] == "inside"
 
 
 def test_a_loop_variable_of_the_machine_wins_over_a_constant():

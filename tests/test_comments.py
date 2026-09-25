@@ -149,4 +149,4 @@ def test_a_string_on_its_own_line_passes_its_comment_on():
     body = (
         '# the total\n"a string used as a note"\ntotal = input["a"] + 1\nreturn total'
     )
-    assert remarks(definition(body)["States"])["total"] == "the total"
+    assert remarks(definition(body)["States"])["return"] == "the total"

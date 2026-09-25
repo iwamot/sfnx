@@ -39,18 +39,18 @@ def test_succeed_only():
     }
 
 
-def test_pass_then_succeed():
+def test_a_return_of_an_assignment_is_one_succeed():
+    """Nothing reads the variable after the return, so the Output reads its
+    expression, and fails where the Pass would."""
     definition = compile_one(machine('amount = input["amount"]\nreturn amount'))
     assert definition == {
         "QueryLanguage": "JSONata",
-        "StartAt": "amount",
+        "StartAt": "return",
         "States": {
-            "amount": {
-                "Type": "Pass",
-                "Assign": {"amount": "{% $states.context.Execution.Input.amount %}"},
-                "Next": "return",
+            "return": {
+                "Type": "Succeed",
+                "Output": "{% $states.context.Execution.Input.amount %}",
             },
-            "return": {"Type": "Succeed", "Output": "{% $amount %}"},
         },
     }
 
@@ -88,20 +88,22 @@ def test_a_read_of_a_value_that_changes_starts_a_new_state():
     assert definition["States"]["a"] == {
         "Type": "Pass",
         "Assign": {"a": "{% $random() %}"},
-        "Next": "b",
+        "Next": "return",
     }
-    assert definition["States"]["b"]["Assign"] == {"b": ["{% $a %}"]}
+    assert definition["States"]["return"]["Output"] == ["{% $a %}"]
 
 
 def test_reassignment_starts_a_new_state_with_a_serial_name():
     """The first value is still evaluated, as Python evaluates it."""
-    definition = compile_one(machine("x = 1\nx = 2\nreturn x"))
+    definition = compile_one(machine('x = 1\nx = input["x"]\nreturn [x]'))
     assert list(definition["States"]) == ["x", "x_2", "return"]
     assert definition["States"]["x"]["Next"] == "x_2"
 
 
 def test_serial_names_skip_names_in_use():
-    definition = compile_one(machine("x = 1\nx = 2\nx_2 = x\nx_2 = 3\nreturn x"))
+    definition = compile_one(
+        machine('x = 1\nx = input["x"]\nx_2 = x\nx_2 = input["y"]\nreturn [x, x_2]')
+    )
     assert list(definition["States"]) == ["x", "x_2", "x_2_2", "return"]
 
 
@@ -218,7 +220,11 @@ def test_asl_matches_python(body, execution_input):
         (machine("with input:\n    pass"), "with is not supported", "6:5"),
         (machine("return input.x"), 'read a key with x["key"]', "6:12"),
         (machine("x" * 81 + " = 1"), "at most 80 characters", "6:5"),
-        (machine("x" * 80 + " = 1\n" + "x" * 80 + " = 2"), "longer than 80", "7:5"),
+        (
+            machine("x" * 80 + " = 1\n" + "x" * 80 + ' = input["x"]'),
+            "longer than 80",
+            "7:5",
+        ),
         # The spelling is checked too: a renamed name grows, as does one
         # numbered past a name the module uses.
         (
@@ -342,3 +348,21 @@ def test_relative_imports_are_not_sfnx():
 def test_names_do_not_depend_on_lines():
     source = machine('amount = input["amount"]\nreturn amount')
     assert compile_source(source) == compile_source("\n\n" + source)
+
+
+@pytest.mark.parametrize(
+    "body, states",
+    [
+        # The return reads the assignment, or leaves one that cannot fail.
+        ('x = input["a"]\nreturn x', ["return"]),
+        ('x = input.get("a")\nreturn [x]', ["return"]),
+        ("x = 1", ["return"]),
+        # Python evaluates an assignment the return does not read, which may
+        # fail, and one that changes on evaluation is evaluated once.
+        ('x = input["a"]\nreturn 1', ["x", "return"]),
+        ("x = random.random()\nreturn [x, x]", ["x", "return"]),
+    ],
+)
+def test_a_return_after_assignments(body, states):
+    definition = compile_one("import random\n" + machine(body))
+    assert list(definition["States"]) == states

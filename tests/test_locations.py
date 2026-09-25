@@ -270,9 +270,10 @@ def test_columns_count_characters():
         "    return [a, b]\n"
     )
     (definition,) = definitions(source, "app.py", located=True).values()
-    last = definition["States"]["a"]["Comment"]
+    # The return writes the assignments into its Output, and spans them too.
+    last = definition["States"]["return"]["Comment"]
     spans = json.loads(last.removeprefix(PREFIX))["spans"]
-    assert spans == [{"at": "6:5-6:16"}, {"at": "6:18-6:23"}]
+    assert spans == [{"at": "6:5-6:16"}, {"at": "6:18-6:23"}, {"at": "7:5-7:18"}]
 
 
 def test_a_wait_spans_the_assignments_it_takes():
@@ -291,14 +292,15 @@ def test_each_path_that_takes_an_assignment_spans_it():
     the span to its own."""
     source = (
         "from sfnx import state_machine\n\n\n@state_machine\ndef pay(input):\n"
-        '    if input["a"]:\n        pass\n    x = 1\n    return x\n'
+        '    if input["a"]:\n        pass\n    x = input["b"]\n    return [x]\n'
     )
     (definition,) = definitions(source, "app.py", located=True).values()
     choice = definition["States"]["if"]
     for holder in [choice["Choices"][0], choice]:
         spans = json.loads(holder["Comment"].split("\n")[-1].removeprefix(PREFIX))
-        assert {"at": "8:5-8:10"} in spans["spans"]
-    assert choice["Assign"] == choice["Choices"][0]["Assign"] == {"x": 1}
+        assert {"at": "8:5-8:19"} in spans["spans"]
+    read = "{% $states.context.Execution.Input.b %}"
+    assert choice["Assign"] == choice["Choices"][0]["Assign"] == {"x": read}
 
 
 def test_a_choice_spans_what_its_rules_and_default_assign():
