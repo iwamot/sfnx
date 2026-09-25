@@ -374,11 +374,25 @@ def test_an_expression_that_fails_in_a_task_is_caught():
     assert run(body, {}, {"x": lambda arguments: {}}) == "caught"
 
 
-def test_an_expression_that_fails_after_the_task_is_not_caught():
+def test_an_expression_that_fails_after_the_task_is_caught():
+    """The assignment goes in the Task's Assign, whose Catch takes its
+    failure, as the except clause takes it in Python."""
     body = f'try:\n    x = {CHARGE}["Payload"]\n    y = x - 1\nexcept Exception:\n    return "caught"\nreturn y'
     assert run(body, {}, {"x": lambda arguments: {"Payload": 2}}) == 1
+    assert run(body, {}, {"x": lambda arguments: {"Payload": "oops"}}) == "caught"
+
+
+def test_an_assignment_the_except_clause_reads_after_is_not_caught():
+    """A failing Assign loses the Task's result too, which Python keeps, so
+    where the except clause reads it the assignment keeps its Pass, whose
+    failure no Catch takes."""
+    body = f'x = 0\ntry:\n    x = {CHARGE}["Payload"]\n    y = x - 1\nexcept Exception:\n    return x\nreturn y'
+    assert any(
+        s["Type"] == "Pass" and "y" in s.get("Assign", {})
+        for s in states(body).values()
+    )
     with pytest.raises(asl.Failure) as failure:
-        run(body, {}, {"x": lambda arguments: {"Payload": "oops"}})
+        run(body, {}, {"x_2": lambda arguments: {"Payload": "oops"}})
     assert failure.value.error == "States.QueryEvaluationError"
 
 
@@ -565,3 +579,38 @@ def test_after_a_state_in_an_except_clause_the_error_is_its_variable():
         f"    {NOTIFY}\n    reason = str(e)\n    {NOTIFY}\n    return reason\nreturn 1"
     )
     assert states(body)["publish"]["Assign"] == {"reason": "{% $e.Cause %}"}
+
+
+@pytest.mark.parametrize(
+    "statements, kept, result",
+    [
+        # The Pass reads the Task's result as the expression the Task assigns.
+        ('x = r["Payload"] + 1', False, 3),
+        # The second assignment of limits reads the dict written in the source
+        # that the Task assigns, as that dict, and goes in the Task; the Pass
+        # of x reads the dict the Task then assigns, whose value holds an
+        # expression, and stays.
+        (
+            (
+                'limits = {"n": 1}\n    limits = {"n": limits["n"] + r["Payload"]}\n'
+                '    x = limits["n"]'
+            ),
+            True,
+            3,
+        ),
+        # It reads the name of the state it is in, which is the Task's there.
+        ('x = r["Payload"]\n    y = context["State"]["Name"]', True, 2),
+        # Its expression binds the name the Task assigns, which the Task's
+        # expression would take the place of.
+        ('x = jsonata("($r := 5; $r + 1)")', True, 6),
+        # A string in its expression spells the name, which is not a read.
+        ("x = jsonata(\"'$r'\")", True, "$r"),
+    ],
+)
+def test_what_goes_in_the_assign_of_a_task_inside_try(statements, kept, result):
+    body = f'try:\n    r = {CHARGE}\n    {statements}\nexcept Exception:\n    return "caught"\nwait(1)\nreturn x'
+    preamble = CLASSES + "from sfnx import jsonata\n"
+    (compiled,) = compile_source(source(body, preamble)).values()
+    assert any(s["Type"] == "Pass" for s in compiled["States"].values()) == kept
+    tasks = {"r": lambda arguments: {"Payload": 2}}
+    assert asl.run(compiled, {}, tasks) == result

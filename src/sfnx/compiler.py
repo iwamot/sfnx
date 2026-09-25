@@ -18,6 +18,7 @@ from sfnx.expressions import (
     ATOM,
     COMPARE,
     OPAQUE,
+    WRITTEN,
     Expr,
     array,
     binary,
@@ -1552,6 +1553,7 @@ class Scope:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
         fold_start(definition, scope.starting)
+        fold_into_catching_tasks(definition)
         thread_choices(definition)
         merge_choices(definition)
         share_states(definition)
@@ -3159,10 +3161,150 @@ def may_fold(state: dict[str, object]) -> bool:
     """Whether what follows a Task, a Parallel or a Map can go in its Assign
     or its Output: its failure there ends the execution, as the failure of a
     state after it would."""
+    return "Catch" not in state and not retries_evaluation(state)
+
+
+def retries_evaluation(state: dict[str, object]) -> bool:
+    """Whether a retrier of a state takes a failure of its Assign or its
+    Output, which would call the state again."""
     retriers = state.get("Retry", [])
     assert isinstance(retriers, list)
-    retried = {error for retrier in retriers for error in retrier["ErrorEquals"]}
-    return "Catch" not in state and not retried & RETRIED
+    return bool({e for retrier in retriers for e in retrier["ErrorEquals"]} & RETRIED)
+
+
+# A read of a variable or a path from it, which needs no parentheses where it
+# is written into another expression.
+PATH = re.compile(r"\$[^\W\d]\w*(?:\.\w+)*")
+# A JSONata string literal, in single or double quotes.
+QUOTED = r"'(?:[^'\\]|\\.)*'" + r'|"(?:[^"\\]|\\.)*"'
+# The context a Task and the state after it read alike.
+SAME_CONTEXT = re.compile(r"\$states\.context\.(Execution|StateMachine|Map)\b")
+
+
+def fold_into_catching_tasks(definition: dict[str, object]) -> None:
+    """The Pass or the Succeed right after a Task with a Catch, in the Task's
+    Assign or as its Output, as a hand-writer assigns and returns in the Task
+    whose failures the Catch takes: inside a try, Python's except takes a
+    failure of those statements too, which the separate state lets end the
+    execution. Only the Task leads to it, and the Task retries nothing on
+    `States.ALL` or `States.QueryEvaluationError`, which would call it again.
+
+    A failure in the Task's Assign loses all of it, the Task's result
+    included, where Python keeps what was assigned before the failing
+    statement, so no way on from a catcher may read a variable the Task or
+    the Pass assigns. The state reads the variables the Task assigns as the
+    expressions the Task assigns them, and nothing else of `$states` than the
+    context the two share."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    folded = True
+    while folded:
+        folded = False
+        leading: dict[str, list[str]] = {}
+        for name, state in states.items():
+            for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
+                for key in ("Next", "Default"):
+                    if key in holder:
+                        leading.setdefault(holder[key], []).append(name)
+        for name, task in states.items():
+            after = task.get("Next")
+            if (
+                task["Type"] != "Task"
+                or "Catch" not in task
+                or "Output" in task
+                or after is None
+                or leading[after] != [name]
+                or retries_evaluation(task)
+            ):
+                continue
+            following = states[after]
+            kind = following["Type"]
+            fields = set(following) - {"Type", "Comment"}
+            if not (
+                (kind == "Pass" and fields == {"Assign", "Next"})
+                or (kind == "Succeed" and fields == {"Output"})
+            ):
+                continue
+            codes = expressions_in({k: v for k, v in following.items() if k != "Next"})
+            if any("$states" in SAME_CONTEXT.sub("", code) for code in codes):
+                continue
+            own = task.get("Assign", {})
+            assert isinstance(own, dict)
+            reads = {read for code in codes for read in VARIABLE.findall(code)}
+            # A string in the code, such as one a jsonata() expression writes,
+            # is not read, and a variable written in it stays as it is.
+            texts = [t for code in codes for t in re.findall(QUOTED, code)]
+            if any(re.search(rf"\${n}(?!\w)", t) for t in texts for n in own):
+                continue
+            found = {n: assigned_value(own[n]) for n in reads & own.keys()}
+            values = {n: v for n, v in found.items() if v is not None}
+            if len(values) < len(found) or not all(
+                reads_as(following, n, v) for n, v in values.items()
+            ):
+                continue
+            assigning = {*own, *following.get("Assign", {})}
+            if caught_reads(definition, task) & assigning:
+                continue
+            moved = copy.deepcopy(following)
+            for n, value in values.items():
+                substitute(moved, n, value)
+            if kind == "Pass":
+                task["Assign"] = {**own, **moved["Assign"]}
+                task["Next"] = moved["Next"]
+            else:
+                del task["Next"]
+                task["Output"] = moved["Output"]
+                task["End"] = True
+            comment = joined_comments(task.get("Comment"), following.get("Comment"))
+            if comment is not None:
+                task["Comment"] = comment
+            del states[after]
+            folded = True
+            break
+
+
+def assigned_value(template: object) -> Expr | None:
+    """What an Assign writes for a variable, as an expression to read in its
+    place: an expression, or a value written out, whose JSON is JSONata too.
+    An object or an array with expressions among its values is no one
+    expression."""
+    if isinstance(template, str) and template.startswith("{%"):
+        code = template[2:-2].strip()
+        precedence = ATOM if PATH.fullmatch(code) else WRITTEN
+        return expression(code, frozenset(VARIABLE.findall(code)), precedence)
+    if isinstance(template, (dict, list)):
+        if not written(template):
+            return None
+        return Expr(json.dumps(template, ensure_ascii=False), template)
+    return literal(template)
+
+
+def caught_reads(definition: dict[str, object], task: dict[str, object]) -> set[str]:
+    """The variables read on any way on from the catchers of a state: in the
+    catchers' own Assign and Output, and in every state they lead to."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    catchers = task["Catch"]
+    assert isinstance(catchers, list)
+    reads = {
+        read
+        for catcher in catchers
+        for code in expressions_in({k: v for k, v in catcher.items() if k != "Next"})
+        for read in VARIABLE.findall(code)
+    }
+    pending = [catcher["Next"] for catcher in catchers]
+    seen = set(pending)
+    while pending:
+        state = states[pending.pop()]
+        reads |= {
+            read for code in expressions_in(state) for read in VARIABLE.findall(code)
+        }
+        for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
+            for key in ("Next", "Default"):
+                if key in holder and holder[key] not in seen:
+                    seen.add(holder[key])
+                    pending.append(holder[key])
+    return reads
 
 
 # A JSONata literal as the compiler writes one: a string in single or double
@@ -3807,6 +3949,7 @@ def compile_machine(
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
     fold_start(definition, scope.starting)
+    fold_into_catching_tasks(definition)
     thread_choices(definition)
     merge_choices(definition)
     share_states(definition)

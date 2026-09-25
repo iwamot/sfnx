@@ -258,11 +258,8 @@
       "Assign": {
         "written": "{% $states.result %}"
       },
-      "Next": "return"
-    },
-    "return": {
-      "Type": "Succeed",
-      "Output": "{% $written.Payload %}"
+      "Output": "{% $states.result.Payload %}",
+      "End": true
     },
     "opened": {
       "Type": "Task",
