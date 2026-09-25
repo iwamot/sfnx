@@ -3025,8 +3025,12 @@ def thread_choices(definition: dict[str, object]) -> None:
     along it, as the transition to where the Choice would send it: a flag that
     each path assigns a value written in the source, such as the stage a saga
     failed at, is tested where a hand-writer would have sent each path on to
-    its own continuation. A Choice nothing leads to any more goes. A path
-    that would take a rule or a Default with an Assign keeps the Choice."""
+    its own continuation. A Choice nothing leads to any more goes. The
+    Assign of the rule or the Default the path takes goes in the transition
+    that now skips it, where a failure ends the execution as it would in the
+    Choice (a catcher's Assign does too; measured), and where its values
+    read neither `$states`, which is another state's there, nor a name that
+    transition assigns, which they would read before it is assigned."""
     states = definition["States"]
     assert isinstance(states, dict)
     # A path sent past a Choice no longer joins the others there, so what is
@@ -3041,15 +3045,42 @@ def thread_choices(definition: dict[str, object]) -> None:
             for holder, key, known in exits(state, arriving[name]):
                 target = holder[key]
                 assert isinstance(target, str)
+                own = holder.get("Assign", {})
+                assert isinstance(own, dict)
+                # A Task's, a Parallel's or a Map's own Assign has its Catch
+                # and its retriers take a failure the Choice would not.
+                movable = holder is not state or may_fold(state)
+                taken: dict[str, object] = {}
+                comment = holder.get("Comment")
                 seen = set()
                 while states[target]["Type"] == "Choice" and target not in seen:
                     seen.add(target)
                     decided = decide(states[target], known)
                     if decided is None:
                         break
-                    target = decided
+                    following, rule = decided
+                    assign = rule.get("Assign", {})
+                    assert isinstance(assign, dict)
+                    reads = {
+                        read
+                        for code in expressions_in(assign)
+                        for read in VARIABLE.findall(code)
+                    }
+                    if assign and (
+                        not movable or "states" in reads or reads & {*own, *taken}
+                    ):
+                        break
+                    if assign:
+                        taken.update(assign)
+                        comment = joined_comments(comment, rule.get("Comment"))
+                        known = assigned(known, assign)
+                    target = following
                 if target != holder[key]:
                     holder[key] = target
+                    if taken:
+                        holder["Assign"] = {**own, **taken}
+                        if comment is not None:
+                            holder["Comment"] = comment
                     moved = True
 
 
@@ -3133,9 +3164,11 @@ def assigned(known: Known, assign: object) -> Known:
     return result
 
 
-def decide(choice: dict[str, object], known: Known) -> str | None:
-    """Where a Choice sends a path, when its tests are decided by what is
-    known and the rule or Default it takes assigns nothing."""
+def decide(
+    choice: dict[str, object], known: Known
+) -> tuple[str, dict[str, object]] | None:
+    """Where a Choice sends a path, and the rule it takes, or the Choice itself
+    for its Default, when its tests are decided by what is known."""
     rules = choice["Choices"]
     assert isinstance(rules, list)
     for rule in rules:
@@ -3143,12 +3176,10 @@ def decide(choice: dict[str, object], known: Known) -> str | None:
         if matched is None:
             return None
         if matched:
-            return None if "Assign" in rule else rule["Next"]
-    if "Assign" in choice or "Default" not in choice:
-        return None
+            return rule["Next"], rule
     default = choice["Default"]
     assert isinstance(default, str)
-    return default
+    return default, choice
 
 
 def test(condition: object, known: Known) -> bool | None:

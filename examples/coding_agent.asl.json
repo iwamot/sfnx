@@ -60,9 +60,10 @@
           "Assign": {
             "e": "{% $states.errorOutput %}",
             "failure_reason": "{% $states.errorOutput.Error %}",
-            "status": "open"
+            "status": "open",
+            "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
           },
-          "Next": "if_4"
+          "Next": "opened"
         }
       ],
       "Assign": {
@@ -76,9 +77,10 @@
         {
           "Condition": "{% ($v := $direct.blocked; $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) %}",
           "Assign": {
-            "status": "open"
+            "status": "open",
+            "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
           },
-          "Next": "if_4"
+          "Next": "opened"
         },
         {
           "Condition": "{% ($v := $direct.matched; $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) %}",
@@ -160,9 +162,10 @@
           "Assign": {
             "e": "{% $states.errorOutput %}",
             "failure_reason": "{% $states.errorOutput.Error %}",
-            "status": "open"
+            "status": "open",
+            "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
           },
-          "Next": "if_4"
+          "Next": "opened"
         }
       ],
       "Assign": {
@@ -213,19 +216,7 @@
         }
       ],
       "Assign": {
-        "status": "open"
-      },
-      "Default": "if_4"
-    },
-    "if_4": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $status != 'open' %}",
-          "Next": "written"
-        }
-      ],
-      "Assign": {
+        "status": "open",
         "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
       },
       "Default": "opened"
