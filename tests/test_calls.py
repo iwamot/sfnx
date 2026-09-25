@@ -140,7 +140,9 @@ def test_the_names_of_the_function_are_its_own():
     module = "\n\ndef bump(x: float):\n    ids = x + 1\n    return ids\n"
     body = 'ids = input["n"]\nr = bump(ids)\nreturn [ids, r]'
     compiled = states(body, module)
-    assert compiled["ids_2"]["Assign"]["ids_2"] == "{% $ids + 1 %}"
+    assert compiled["ids"]["Assign"]["ids_2"] == (
+        "{% $states.context.Execution.Input.n + 1 %}"
+    )
     assert run(body, {"n": 1}, module=module) == [1, 2]
     # A name the machine does not use stays as written.
     assert "ids" in states('r = bump(input["n"])\nreturn r', module)
@@ -184,6 +186,56 @@ def test_a_value_that_changes_on_evaluation_is_passed_once():
     assert compiled["v"]["Assign"] == {"v": "{% $uuid() %}"}
     first, second = run("return twice(str(uuid.uuid4()))", {}, module=module)
     assert first == second
+
+
+RESPOND = (
+    "\n\ndef respond(code, attributes):\n"
+    '    return {"code": code, "attributes": attributes}\n'
+    "\n\ndef wrap(value):\n"
+    "    return respond(1, value)\n"
+    "\n\ndef count(item):\n"
+    '    return item.get("n", 0)\n'
+)
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # The Task's result, which the Output reads as $states.result.
+        ('found = invoke("f", input)\nreturn count(found)', 3),
+        # An assignment that goes in the Task, which the Output reads as its
+        # expression.
+        (
+            (
+                'invoke("f", input)\nreply = {"a": input["a"]}\n'
+                'return respond(2, {**reply, "m": "ok"})'
+            ),
+            {"code": 2, "attributes": {"a": 1, "m": "ok"}},
+        ),
+        # A parameter passed on to another call.
+        (
+            'found = invoke("f", input)\nreturn wrap(found["n"])',
+            {"code": 1, "attributes": 3},
+        ),
+    ],
+)
+def test_an_argument_reads_what_the_task_before_the_return_assigns(body, expected):
+    """A return right after a Task is its Output, where an argument reads the
+    result and the assignments that went in the Task as what they take."""
+    (name,) = states(body, RESPOND)
+    tasks = {name: lambda arguments: {"Payload": {"n": 3}}}
+    assert run(body, {"a": 1}, tasks, module=RESPOND) == expected
+
+
+def test_an_argument_reads_the_time_the_task_before_the_return_reads():
+    """The time goes in the Task's Assign, which the Output reads as its
+    expression, as it does without the call."""
+    module = (
+        "\nfrom datetime import datetime\n\n\ndef stamp(t):\n    return {'at': t}\n"
+    )
+    body = 'invoke("f", input)\nnow = str(datetime.now())\nreturn stamp(now)'
+    compiled = states(body, module)
+    assert compiled["invoke"]["Output"] == {"at": "{% $now() %}"}
 
 
 def test_a_parameter_takes_its_annotation():
