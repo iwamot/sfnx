@@ -102,3 +102,15 @@ def test_the_example_does_what_the_sample_does(scenario):
     assert outcome(example(), SCENARIOS[scenario]) == outcome(
         SAMPLE, SCENARIOS[scenario]
     )
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS)
+def test_the_example_enters_no_more_states_than_the_sample(scenario):
+    """A Standard workflow is billed per state transition."""
+    functions = {"uuid": lambda: "u"}
+    answers = SCENARIOS[scenario]
+    entered = [
+        len(testing.run(d, TERM, tasks_for(*answers), functions=functions).states)
+        for d in (example(), SAMPLE)
+    ]
+    assert entered[0] <= entered[1]

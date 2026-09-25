@@ -649,3 +649,88 @@ def test_a_statement_after_a_try_is_not_in_its_reach(body):
     with pytest.raises(asl.Failure) as failure:
         run(body, {}, {"r": lambda arguments: {"Payload": {}}})
     assert failure.value.error == "States.QueryEvaluationError"
+
+
+@pytest.mark.parametrize(
+    "statement, kept, result",
+    [
+        # Nothing in it fails or is undefined: a failure of the Task's Assign
+        # is the Task's own, and the except clause may read what it assigns.
+        ('x = r.get("n")', False, 2),
+        ('x = 0 if not isinstance(r.get("n"), (int, float)) else r.get("n")', False, 2),
+        # A missing key is undefined, and a comparison may fail.
+        ('x = r["n"]', True, 2),
+        ('x = r.get("n", 0) > 1', True, True),
+    ],
+)
+def test_an_assignment_that_cannot_fail_goes_in_the_task_the_except_reads(
+    statement, kept, result
+):
+    body = (
+        f'r = None\ntry:\n    r = json.loads({CHARGE}["Payload"])\n    {statement}\n'
+        "except Exception:\n    return r\nreturn x"
+    )
+    preamble = CLASSES + "import json\n"
+    (compiled,) = compile_source(source(body, preamble)).values()
+    states = compiled["States"]
+    passes = [s for s in states.values() if s["Type"] == "Pass"]
+    assert any("x" in s["Assign"] for s in passes) == kept
+    tasks = {"r_2": lambda arguments: {"Payload": '{"n": 2}'}}
+    assert asl.run(compiled, {}, tasks) == result
+
+
+def test_a_value_read_twice_is_bound_once():
+    """The Task's value for r is longer than a path, so the assignment that
+    reads it twice binds it to r first, where it reads it once."""
+    body = (
+        f'r = None\ntry:\n    r = json.loads({CHARGE}["Payload"])\n'
+        '    x = 0 if not isinstance(r.get("n"), (int, float)) else r.get("n")\n'
+        "except Exception:\n    return r\nreturn x"
+    )
+    (compiled,) = compile_source(source(body, CLASSES + "import json\n")).values()
+    assign = next(s for s in compiled["States"].values() if s["Type"] == "Task")[
+        "Assign"
+    ]
+    assert assign["x"].startswith("{% ($r := $parse(")
+    assert assign["x"].count("$parse(") == 1
+
+
+def test_a_value_bound_once_is_not_read_by_another_put_in_place():
+    """The Task assigns n and m, and m reads the n from before the Task:
+    binding the new n where the return reads it twice would change what m
+    reads, so both are put in place."""
+    body = (
+        'n: float = input["n"]\ntry:\n'
+        f"    {CHARGE}\n    n = n + 1\n    m = n * 2\n"
+        '    return n * n + m\nexcept Exception:\n    return "caught"'
+    )
+    compiled = states(body)
+    ending = next(s for s in compiled.values() if s.get("End"))
+    assert ":=" not in ending["Output"]
+    assert run(body, {"n": 2}, {"invoke": lambda arguments: {}}) == 15
+
+
+def test_values_bound_once_do_not_read_each_other():
+    """m reads the n from before the Task, so where the return reads both
+    twice, binding them would give m the new n: both are put in place."""
+    body = (
+        'n: float = input["n"]\ntry:\n'
+        f"    {CHARGE}\n    n = n + 1\n    m = n * 2\n"
+        '    return m * m + n * n\nexcept Exception:\n    return "caught"'
+    )
+    ending = next(s for s in states(body).values() if s.get("End"))
+    assert ":=" not in ending["Output"]
+    assert run(body, {"n": 2}, {"invoke": lambda arguments: {}}) == 45
+
+
+def test_an_assignment_the_catcher_leads_to_as_well_keeps_its_pass():
+    """After an except clause that passes, the catcher leads to the
+    assignment too: it cannot fail, but it would have to be written in the
+    Task and again for the catcher, so it keeps its Pass."""
+    body = (
+        f"r = None\ntry:\n    r = {CHARGE}\nexcept Exception:\n    pass\n"
+        "x = r\nwait(1)\nreturn x"
+    )
+    compiled = states(body)
+    assert any(s["Type"] == "Pass" and "x" in s["Assign"] for s in compiled.values())
+    assert run(body, {}, {"r_2": fails("Lambda.Unknown")}) is None

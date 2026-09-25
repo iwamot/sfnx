@@ -1188,8 +1188,9 @@ class Translator:
         return block(bindings, chosen)
 
     def counted(self, value: Expr) -> Expr:
-        """An array is truthy when it holds anything, whatever the items are."""
-        return binary(
+        """An array is truthy when it holds anything, whatever the items are.
+        $count() gives a number, which > compares with 0 without failing."""
+        counted = binary(
             call("count", [value], of(NUMBER)),
             ">",
             literal(0),
@@ -1197,6 +1198,7 @@ class Translator:
             of(BOOLEAN),
             True,
         )
+        return replace(counted, total=value.total)
 
     def cast(self, value: Expr) -> Expr:
         """An operand of JSONata's and, or and $not, which cast it with
