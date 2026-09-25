@@ -2073,14 +2073,10 @@ class Scope:
             arguments = exception.args
             exception = exception.func
         error = raised(exception, self.module)
-        for handlers in self.tries:
-            for handler in handlers:
-                if error in handler.errors or handler.errors == [EVERYTHING]:
-                    raise CompileError(
-                        "a raise ends the execution with a Fail state, which except "
-                        "does not catch; handle the case with if instead",
-                        node,
-                    )
+        handler = self.catcher_of(error)
+        if handler is not None:
+            self.divert(handler, error, arguments, node)
+            return
         state: dict[str, object] = {"Type": "Fail", "Error": error}
         if arguments:
             cause = self.translator.expr(arguments[0])
@@ -2089,6 +2085,47 @@ class Scope:
             state["Cause"] = cause.template
         self.flush()
         self.add("raise", state, node)
+
+    def catcher_of(self, error: str) -> Handler | None:
+        """The except clause a raise of the error goes to, as Python picks it:
+        the innermost try first, and its clauses in order."""
+        for handlers in reversed(self.tries):
+            for handler in handlers:
+                if error in handler.errors or handler.errors == [EVERYTHING]:
+                    return handler
+        return None
+
+    def divert(
+        self, handler: Handler, error: str, arguments: list[ast.expr], node: ast.Raise
+    ) -> None:
+        """A raise the except clause around it catches, as a way into the
+        clause instead of a Fail, which no Catch takes. The clause's variable
+        holds what a catcher would assign, the Error and the Cause, which is
+        an ordinary assignment, so it goes in the Choice rule or the state
+        before it where it can."""
+        self.catchable += 1
+        if handler.variable is not None:
+            made: list[ast.expr] = []
+            cause: ast.expr = ast.Constant("")
+            if arguments:
+                cause = arguments[0]
+                known = self.translator.expr(cause).type
+                if known is None or known.kinds != {STRING}:
+                    function = ast.Name("str", ast.Load())
+                    cause = ast.Call(function, [cause], [])
+                    made += [function, cause]
+            else:
+                made.append(cause)
+            error_key, cause_key = ast.Constant("Error"), ast.Constant("Cause")
+            name = ast.Constant(error)
+            output = ast.Dict([error_key, cause_key], [name, cause])
+            target = ast.Name(handler.variable, ast.Store())
+            for new in (*made, error_key, cause_key, name, output, target):
+                ast.copy_location(new, node)
+            self.assign(target, output, None)
+        self.flush()
+        handler.flows.append(self.save())
+        self.graph.tails = []
 
     def attempt(self, node: ast.Try) -> None:
         """try as a Catch on each Task in its body. An except clause runs from
@@ -2130,7 +2167,7 @@ class Scope:
         if self.catchable == catchable:
             raise CompileError(
                 "nothing in this try reports an error to except; only task(), "
-                "parallel() and the maps do",
+                "parallel(), the maps and a raise it catches do",
                 node,
             )
         # else runs after the body, outside the reach of the except clauses.

@@ -3,6 +3,7 @@ import textwrap
 
 import pytest
 
+from sfnx import testing
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from tests import asl
@@ -449,14 +450,6 @@ def test_a_loop_inside_try_is_tried_again_with_its_catches():
             "raise ends the execution with a Fail state, which the except around it",
         ),
         (
-            f"try:\n    {NOTIFY}\n    raise Declined()\nexcept Declined:\n    pass",
-            "a raise ends the execution with a Fail state, which except does not catch",
-        ),
-        (
-            f"try:\n    {NOTIFY}\n    raise Declined()\nexcept Exception:\n    pass",
-            "which except does not catch",
-        ),
-        (
             f"try:\n    {NOTIFY}\n    x = 1\nexcept Declined:\n    return x",
             "x is not assigned here",
         ),
@@ -766,3 +759,155 @@ def test_an_assignment_the_catcher_leads_to_as_well_keeps_its_pass():
     compiled = states(body)
     assert any(s["Type"] == "Pass" and "x" in s["Assign"] for s in compiled.values())
     assert run(body, {}, {"r_2": fails("Lambda.Unknown")}) is None
+
+
+CHECKED = f"""\
+kind: str = input["kind"]
+try:
+    if kind != "zip":
+        raise Declined(f"kind {{kind}}")
+    {NOTIFY}
+    return "done"
+except Exception as e:
+    return {{"error": type(e).__name__, "cause": str(e)}}
+"""
+
+
+def test_a_raise_the_except_catches_goes_to_the_clause():
+    compiled = states(CHECKED)
+    assert all(state["Type"] != "Fail" for state in compiled.values())
+    (rule,) = compiled["if"]["Choices"]
+    assert rule["Assign"]["e"] == {
+        "Error": "Declined",
+        "Cause": f"{{% 'kind ' & {INPUT}.kind %}}",
+    }
+    assert rule["Next"] == compiled["publish"]["Catch"][0]["Next"]
+    tasks = {"publish": lambda arguments: {}}
+    assert run(CHECKED, {"kind": "csv"}, tasks) == {
+        "error": "Declined",
+        "cause": "kind csv",
+    }
+    assert run(CHECKED, {"kind": "zip"}, tasks) == "done"
+    failing = {"publish": fails("Lambda.Unknown", "boom")}
+    assert run(CHECKED, {"kind": "zip"}, failing) == {
+        "error": "Lambda.Unknown",
+        "cause": "boom",
+    }
+
+
+def test_a_raise_the_except_catches_enters_no_more_states_than_a_flag():
+    """The way to write it without a raise: a flag the if sets, and the
+    cleanup where the flag or the except leads."""
+    flagged = f"""\
+kind: str = input["kind"]
+failed = None
+if kind != "zip":
+    failed = f"kind {{kind}}"
+else:
+    try:
+        {NOTIFY}
+        return "done"
+    except Exception as e:
+        failed = str(e)
+return {{"cause": failed}}
+"""
+    raised = f"""\
+kind: str = input["kind"]
+try:
+    if kind != "zip":
+        raise Declined(f"kind {{kind}}")
+    {NOTIFY}
+    return "done"
+except Exception as e:
+    return {{"cause": str(e)}}
+"""
+    assert len(states(raised)) <= len(states(flagged))
+    for kind in ("csv", "zip"):
+        entered = [
+            len(testing.run(definition, {"kind": kind}, lambda call: {}).states)
+            for definition in (
+                *compile_source(source(raised)).values(),
+                *compile_source(source(flagged)).values(),
+            )
+        ]
+        assert entered[0] <= entered[1]
+
+
+@pytest.mark.parametrize(
+    "body, execution_input, expected",
+    [
+        # The innermost try first, and its clauses in order.
+        (
+            f'try:\n    try:\n        {NOTIFY}\n        raise Expired("late")\n    except Declined:\n        return "inner"\nexcept Expired as e:\n    return "outer " + str(e)',
+            {},
+            "outer late",
+        ),
+        (
+            f'try:\n    {NOTIFY}\n    raise Declined("no")\nexcept Expired:\n    return "expired"\nexcept Declined:\n    return "declined"\nexcept Exception:\n    return "other"',
+            {},
+            "declined",
+        ),
+        # A message that is not a string is its text, and none is empty.
+        (
+            f'try:\n    {NOTIFY}\n    raise Declined(input["n"])\nexcept Declined as e:\n    return str(e)',
+            {"n": 3},
+            "3",
+        ),
+        (
+            f"try:\n    {NOTIFY}\n    raise Declined()\nexcept Declined as e:\n    return str(e)",
+            {},
+            "",
+        ),
+        # Right after a Task, the variable goes in the Task's Assign.
+        (
+            f'try:\n    r = {NOTIFY}\n    raise Declined("after")\nexcept Declined as e:\n    return str(e)',
+            {},
+            "after",
+        ),
+        # A try whose body reports nothing but the raise.
+        (
+            'try:\n    if input["x"] > 1:\n        raise Declined("big")\n    return "small"\nexcept Declined as e:\n    return str(e)',
+            {"x": 2},
+            "big",
+        ),
+        # A raise inside a loop leaves the loop for the clause.
+        (
+            f'xs: list[float] = input["xs"]\ntotal = 0\ntry:\n    for x in xs:\n        {NOTIFY}\n        if x < 0:\n            raise Declined("negative")\n        total = total + x\nexcept Declined as e:\n    return {{"total": total, "cause": str(e)}}\nreturn {{"total": total}}',
+            {"xs": [1, 2, -1, 4]},
+            {"total": 3, "cause": "negative"},
+        ),
+    ],
+)
+def test_a_raise_the_except_catches_runs_the_clause_python_runs(
+    body, execution_input, expected
+):
+    tasks = {"publish": lambda arguments: {}, "r": lambda arguments: {}}
+    assert run(body, execution_input, tasks) == expected
+    namespace: dict[str, object] = {}
+    exec(compile(source(body).replace(NOTIFY, "None"), "<body>", "exec"), namespace)
+    main = namespace["pay"]
+    assert callable(main)
+    assert main(execution_input) == expected
+
+
+def test_a_raise_the_except_catches_without_as_assigns_nothing():
+    body = f'try:\n    {NOTIFY}\n    raise Declined("no")\nexcept Declined:\n    return "caught"'
+    compiled = states(body)
+    # The way from the Task to the clause's constant return ends on the Task.
+    assert compiled["publish"]["Output"] == "caught"
+    assert compiled["publish"]["End"] is True
+    assert "Assign" not in compiled["publish"]
+    assert all(state["Type"] != "Fail" for state in compiled.values())
+
+
+def test_a_raise_no_except_catches_is_still_a_fail():
+    body = f'try:\n    {NOTIFY}\n    raise Expired("late")\nexcept Declined:\n    return "caught"'
+    compiled = states(body)
+    assert compiled["raise"] == {"Type": "Fail", "Error": "Expired", "Cause": "late"}
+
+
+def test_a_clause_a_raise_goes_to_raises_the_same_error_again():
+    body = f'try:\n    try:\n        {NOTIFY}\n        raise Declined("no")\n    except Declined:\n        raise\nexcept Expired:\n    pass\nreturn 1'
+    with pytest.raises(asl.Failure) as failure:
+        run(body, {}, {"publish": lambda arguments: {}})
+    assert (failure.value.error, failure.value.cause) == ("Declined", "no")
