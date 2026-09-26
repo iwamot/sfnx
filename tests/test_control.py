@@ -1111,3 +1111,25 @@ def test_an_if_whose_branch_calls_a_function_directly_keeps_its_choice():
 )
 def test_where_an_expression_always_reads_a_variable(code, reads):
     assert always_reads(ast.parse(code, mode="eval").body, "x") == reads
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        # The test is decided by what the start assigns, and the way it takes
+        # assigns o again: the return reads that value, not the start's.
+        (
+            "n = 3\no: int | None = None\nif o is None:\n    o = 0\nelse:\n    n = 0\nreturn [n, o]",
+            [3, 0],
+        ),
+        ("c = 0\nwhile c < 0:\n    c = c + 1\n    return 1\nreturn 2", 2),
+        (
+            "n = 3\nfor i, x in enumerate([1, 2]):\n    n = 0\n    return [n]\nreturn [n]",
+            [0],
+        ),
+    ],
+)
+def test_a_test_of_what_the_start_assigns_is_decided_there(body, expected):
+    compiled = definition(body)
+    assert [s["Type"] for s in compiled["States"].values()] == ["Succeed"]
+    assert asl.run(compiled, {}) == expected
