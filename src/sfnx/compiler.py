@@ -2834,6 +2834,12 @@ class Scope:
     def range_loop(self, node: ast.For, target: str, assigned: set[str]) -> None:
         assert isinstance(node.iter, ast.Call)
         start, stop, step = self.translator.range_arguments(node.iter)
+        # What the loop variable starts from, which range(stop) writes as 0.
+        begins = (
+            node.iter.args[0]
+            if len(node.iter.args) > 1
+            else ast.copy_location(ast.Constant(0), node.iter)
+        )
 
         def attempt() -> tuple[Loop, dict[str, Type | None]]:
             if start.variables & self.pending.keys():
@@ -2848,7 +2854,8 @@ class Scope:
                 copy = self.fresh(f"{self.spelling(target)}_stop", node)
                 self.defer(copy, stop, node, starting(node))
                 limit = self.variable(copy, of(NUMBER))
-            if target in self.pending:
+            first = self.pending.get(target)
+            if first is not None and not replaceable(first, begins, target):
                 self.flush()
             self.defer(target, start, node, starting(node))
             self.bindings[target] = self.variable(target, of(NUMBER))
