@@ -103,6 +103,9 @@ VOLATILE = frozenset({"millis", "now", "random", "uuid"})
 # value does, or as a jsonata() expression may, whose text is not read.
 # The functions and operators that fail for no value given them.
 TOTAL = frozenset({"exists", "type", "not", "boolean", "count"})
+# Functions that give a value for any argument, undefined included: 0 and
+# false (measured).
+DEFINED = frozenset({"exists", "count"})
 # & writes any value as text, so it fails for none.
 TOTAL_OPERATORS = frozenset({"=", "!=", "in", "and", "or", "&"})
 # The integers a double holds exactly, which JSONata computes with as Python
@@ -126,11 +129,11 @@ class Expr:
     CHANGES, or OPAQUE where a jsonata() expression is in it, 0 otherwise.
     defined says the code never gives undefined, which fails an Assign or an
     Output but passes through a test such as $type() without failing: a
-    literal, a variable, which no Assign leaves undefined, d.get(), and lists
-    and dicts of such values. total says evaluating the code fails for no
-    value: a literal, a variable, a path step, $exists(), $type(), $not(),
-    $boolean(), $count(), =, !=, in, and and or, and conditionals, blocks,
-    lists and dicts of them.
+    literal, a variable, which no Assign leaves undefined, d.get(), $exists(),
+    $count(), a comprehension, and lists and dicts of such values. total says
+    evaluating the code fails for no value: a literal, a variable, a path
+    step, $exists(), $type(), $not(), $boolean(), $count(), =, !=, in, and
+    and or, and conditionals, blocks, lists, dicts and comprehensions of them.
     """
 
     code: str
@@ -361,6 +364,7 @@ def call(
         type=type,
         boolean=boolean,
         volatile=volatile,
+        defined=function in DEFINED,
         total=function in TOTAL and all(a.total for a in arguments),
     )
 

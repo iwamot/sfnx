@@ -282,6 +282,42 @@ def test_a_list_holding_an_expression_joined_stays_an_expression():
     assert output["return"]["Output"][0].startswith("{% $append(")
 
 
+# Values that neither fail nor are undefined, whatever the input holds.
+CERTAIN = 'xs: list[int] = input.get("xs", [])\n'
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "len([0 for x in [1, 2]])",
+        "len(xs)",
+        '[{"id": x} for x in xs]',
+        "[x for x in xs if x != 0]",
+        "[[x] for x in xs]",
+    ],
+)
+def test_a_value_that_cannot_fail_goes_in_the_return(value):
+    """$count gives 0 for nothing and a comprehension is a list even of
+    nothing, so where the list, the conditions and the element cannot fail,
+    the value is the return's."""
+    body = f'{CERTAIN}v = {value}\ns = "a"\nreturn [v, s]'
+    assert list(compile_one(machine(body))["States"]) == ["return"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # * and > fail for a value that is not a number.
+        "[x * 2 for x in xs]",
+        "[x for x in xs if x > 0]",
+    ],
+)
+def test_a_comprehension_that_may_fail_keeps_its_pass(value):
+    body = f'{CERTAIN}v = {value}\ns = "a"\nreturn [v, s]'
+    definition = compile_one(machine(body))
+    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
+
+
 def test_the_length_of_a_list_holding_an_expression_stays_an_expression():
     output = compile_one(machine('return [len([input["x"], 1])]'))["States"]
     assert output["return"]["Output"][0].startswith("{% $count(")
