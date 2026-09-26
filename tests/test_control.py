@@ -131,8 +131,8 @@ def test_wait(call, field):
     states = definition(f"x = 1\n{call}\nreturn x")["States"]
     assert states == {
         "x": {"Type": "Pass", "Assign": {"x": 1}, "Next": "wait"},
-        "wait": {"Type": "Wait", **field, "Next": "return"},
-        "return": {"Type": "Succeed", "Output": "{% $x %}"},
+        # The return right after the Wait is its Output, read when it is over.
+        "wait": {"Type": "Wait", **field, "Output": "{% $x %}", "End": True},
     }
 
 
@@ -166,7 +166,8 @@ def test_wait_until_a_datetime(call, timestamp):
     assert states["wait"] == {
         "Type": "Wait",
         "Timestamp": "{% " + timestamp + " %}",
-        "Next": "return",
+        "Output": 1,
+        "End": True,
     }
 
 
@@ -183,7 +184,8 @@ def test_wait_through_the_module():
     assert compiled["States"]["wait"] == {
         "Type": "Wait",
         "Seconds": 1,
-        "Next": "return",
+        "Output": None,
+        "End": True,
     }
 
 
@@ -1069,7 +1071,8 @@ def test_a_name_assigned_again(first, second, merged, result):
         "from sfnx import state_machine, wait\n\n\n@state_machine\ndef pay(input):\n"
         + textwrap.indent(body, "    ")
     ).values()
-    assert len(compiled["States"]) == (3 if merged else 4)
+    # The return right after the last Wait is its Output.
+    assert len(compiled["States"]) == (2 if merged else 3)
     assert asl.run(compiled, {"a": {"b": 2}, "b": True, "c": 5}) == result
     if first.endswith('["b"]'):
         with pytest.raises(asl.Failure):
@@ -1133,3 +1136,39 @@ def test_a_test_of_what_the_start_assigns_is_decided_there(body, expected):
     compiled = definition(body)
     assert [s["Type"] for s in compiled["States"].values()] == ["Succeed"]
     assert asl.run(compiled, {}) == expected
+
+
+@pytest.mark.parametrize(
+    "body, output",
+    [
+        ('n: int = input["n"]\nwait(1)\nreturn n + 1', "{% $n + 1 %}"),
+        ("wait(1)\nx = 2\nreturn [x, 3]", [2, 3]),
+        ('wait(1)\nx = input["x"]\nreturn x', f"{{% {INPUT}.x %}}"),
+    ],
+)
+def test_a_return_right_after_a_wait_is_its_output(body, output):
+    """The Output is evaluated when the wait is over, where Python returns."""
+    states = definition(body)["States"]
+    assert states["wait"]["Output"] == output
+    assert states["wait"]["End"] is True
+    assert "return" not in states
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # t goes in the Wait's Assign, read when it is over.
+        "wait(1)\nt = time.time()\nu = t\nreturn u",
+        # The call is a state of its own.
+        'wait(1)\nreturn task("arn:aws:states:::lambda:invoke", {"FunctionName": "f"})',
+        # The State part of the context names the state it is read in.
+        'wait(1)\nreturn context["State"]["Name"]',
+    ],
+)
+def test_a_return_after_a_wait_keeps_its_state_where_it_must(body):
+    source = (
+        "import time\nfrom sfnx import context, state_machine, task, wait\n\n\n"
+        "@state_machine\ndef pay(input):\n" + textwrap.indent(body, "    ")
+    )
+    (compiled,) = compile_source(source).values()
+    assert "End" not in compiled["States"]["wait"]

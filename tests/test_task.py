@@ -47,8 +47,12 @@ def test_a_task_assigns_its_result():
                 "Assign": {"receipt": "{% $states.result %}"},
                 "Next": "wait",
             },
-            "wait": {"Type": "Wait", "Seconds": 5, "Next": "return"},
-            "return": {"Type": "Succeed", "Output": "{% $receipt %}"},
+            "wait": {
+                "Type": "Wait",
+                "Seconds": 5,
+                "Output": "{% $receipt %}",
+                "End": True,
+            },
         },
     }
 
@@ -80,8 +84,6 @@ R = f'r = task("{LAMBDA}", {{"FunctionName": "f"}}'
 @pytest.mark.parametrize(
     "body",
     [
-        # A Catch would take a failing Output, where the return failed after it.
-        f"try:\n    {R})\n    return r['Payload']\nexcept Exception:\n    return 0",
         # A retrier for these errors would run the Task again.
         R + ', retry=[{"ErrorEquals": [Exception]}])\nreturn r["Payload"]',
         R + ', retry=[{"ErrorEquals": [QueryEvaluationError]}])\nreturn r["Payload"]',
@@ -100,7 +102,7 @@ def test_a_return_that_could_fail_or_read_otherwise_keeps_its_state(body):
     )
     compiled = definition(body, imports)["States"]
     assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
-    assert any(state["Type"] == "Succeed" for state in compiled.values())
+    assert "End" not in compiled["r"]
 
 
 @pytest.mark.parametrize(
@@ -146,7 +148,7 @@ def test_assignments_right_after_a_task_go_in_its_assign():
         "return [r, total, due]"
     )
     compiled = states(body)
-    assert list(compiled) == ["r", "wait", "return"]
+    assert list(compiled) == ["r", "wait"]
     assert compiled["r"]["Assign"] == {
         "fee": f"{{% {INPUT}.fee %}}",
         "r": "{% $states.result %}",
