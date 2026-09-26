@@ -2730,8 +2730,17 @@ class Scope:
         zero = ast.copy_location(ast.Constant(0), node)
         if first is not None and not replaceable(first, zero, counter):
             self.flush()
-        self.defer(counter, literal(0), node, starting(node))
+        self.start_loop(counter, literal(0), node)
         return self.variable(counter, of(NUMBER))
+
+    def start_loop(self, name: str, value: Expr, node: ast.For) -> None:
+        """The value a loop starts from, pending like an assignment. Right
+        after a Task, a Parallel or a Map, one that reads nothing goes in the
+        state's Assign, as an assignment of a value written in the source
+        does."""
+        if self.following() is not None and not value.variables and not value.volatile:
+            self.folded[name] = value
+        self.defer(name, value, node, starting(node))
 
     def unpacking_loop(self, node: ast.For) -> None:
         """for i, item in enumerate(items), for a, b in zip(xs, ys) and
@@ -2857,7 +2866,7 @@ class Scope:
             first = self.pending.get(target)
             if first is not None and not replaceable(first, begins, target):
                 self.flush()
-            self.defer(target, start, node, starting(node))
+            self.start_loop(target, start, node)
             self.bindings[target] = self.variable(target, of(NUMBER))
             self.partial.discard(target)
             counter = self.variable(target, of(NUMBER))
