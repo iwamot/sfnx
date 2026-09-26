@@ -18,17 +18,7 @@
         "name": "{% $states.context.Execution.Name %}",
         "polls": 0
       },
-      "Next": "while"
-    },
-    "while": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $polls < 20 %}",
-          "Next": "wait"
-        }
-      ],
-      "Default": "raise_2"
+      "Next": "wait"
     },
     "wait": {
       "Type": "Wait",

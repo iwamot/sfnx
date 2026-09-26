@@ -4,6 +4,7 @@ import ast
 import copy
 import itertools
 import json
+import operator
 import re
 import symtable
 from collections import Counter
@@ -11,6 +12,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from importlib.util import decode_source
 from pathlib import Path
+from typing import TypeGuard
 
 from sfnx.diagnostics import CompileError
 from sfnx.errors import EVERYTHING, caught, raised, retriers
@@ -3603,10 +3605,11 @@ def caught_reads(definition: dict[str, object], task: dict[str, object]) -> set[
 # quotes, a number, true, false or null.
 LITERAL = r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null"""
 # The tests a Choice rule makes of one variable that the compiler writes for
-# `x is None`, `x is not None`, `x == literal` and `x != literal`.
+# `x is None`, `x is not None`, and `==`, `!=`, `<`, `<=`, `>` and `>=` of a
+# literal.
 IS_NONE = re.compile(r"\$not\(\$exists\(\$(\w+)\) and \$\1 != null\)")
 IS_NOT_NONE = re.compile(r"\$exists\(\$(\w+)\) and \$\1 != null")
-COMPARED = re.compile(rf"\$(\w+) (=|!=) ({LITERAL})")
+COMPARED = re.compile(rf"\$(\w+) (=|!=|<=|>=|<|>) ({LITERAL})")
 # The value of each variable known where a transition is taken.
 Known = dict[str, object]
 
@@ -3785,9 +3788,27 @@ def test(condition: object, known: Known) -> bool | None:
             return not present if negated else present
     found = COMPARED.fullmatch(code)
     if found and found[1] in known:
-        equal = same(known[found[1]], json_literal(found[3]))
-        return equal if found[2] == "=" else not equal
+        value, comparison, other = known[found[1]], found[2], json_literal(found[3])
+        if comparison in ("=", "!="):
+            equal = same(value, other)
+            return equal if comparison == "=" else not equal
+        # JSONata orders strings by UTF-16 units where Python orders them by
+        # code points, so only numbers are ordered here.
+        if number(value) and number(other):
+            return ORDERS[comparison](value, other)
     return None
+
+
+def number(value: object) -> TypeGuard[int | float]:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+ORDERS: dict[str, Callable[[float, float], bool]] = {
+    "<": operator.lt,
+    "<=": operator.le,
+    ">": operator.gt,
+    ">=": operator.ge,
+}
 
 
 def json_literal(code: str) -> object:
