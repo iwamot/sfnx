@@ -122,10 +122,11 @@ class Expr:
     CHANGES, or OPAQUE where a jsonata() expression is in it, 0 otherwise.
     defined says the code never gives undefined, which fails an Assign or an
     Output but passes through a test such as $type() without failing: a
-    literal, a variable, which no Assign leaves undefined, and d.get(). total
-    says evaluating the code fails for no value: a literal, a variable, a path
-    step, $exists(), $type(), $not(), $boolean(), $count(), =, !=, in, and
-    and or, conditionals and blocks of them.
+    literal, a variable, which no Assign leaves undefined, d.get(), and lists
+    and dicts of such values. total says evaluating the code fails for no
+    value: a literal, a variable, a path step, $exists(), $type(), $not(),
+    $boolean(), $count(), =, !=, in, and and or, and conditionals, blocks,
+    lists and dicts of them.
     """
 
     code: str
@@ -271,6 +272,7 @@ def array(items: list[Expr]) -> Expr:
         type=Type(frozenset({ARRAY}), item_type, empty=not items),
         constructor=True,
         volatile=changes(items),
+        defined=all(item.defined for item in items),
         total=all(item.total for item in items),
     )
 
@@ -309,6 +311,8 @@ def obj(entries: list[tuple[str, Expr]]) -> Expr:
             fields=tuple((k, v.type) for k, v in entries),
         ),
         volatile=changes([v for _, v in entries]),
+        defined=all(v.defined for _, v in entries),
+        total=all(v.total for _, v in entries),
     )
 
 
