@@ -813,3 +813,19 @@ def test_an_enumerate_counter_takes_the_place_of_a_written_value():
     (start,) = [s for s in compiled.values() if s["Type"] == "Pass"]
     assert start["Assign"]["i"] == 0
     assert run(body, {"xs": [1, 2]}) == 1
+
+
+@pytest.mark.parametrize("stop", ["range(3)", "range(1, 3)"])
+def test_a_range_loop_takes_the_place_of_a_written_value(stop):
+    body = f"i = 5\nfor i in {stop}:\n    wait(i)\nreturn 1"
+    compiled = states(body)
+    assert [s["Type"] for s in compiled.values()].count("Pass") == 1
+    assert run(body, {}) == 1
+
+
+def test_a_range_loop_keeps_a_value_before_it_that_may_fail():
+    body = 'i = input["i"]\nfor i in range(3):\n    wait(i)\nreturn 1'
+    compiled = states(body)
+    assert [s["Type"] for s in compiled.values()].count("Pass") == 2
+    with pytest.raises(asl.Failure):
+        run(body, {})
