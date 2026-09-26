@@ -14,6 +14,7 @@ from sfnx.expressions import (
     AND,
     ATOM,
     COMPARE,
+    EXACT,
     MULTIPLY,
     OPAQUE,
     OR,
@@ -1415,6 +1416,16 @@ class Translator:
                 "divide by a value that is not zero",
                 node.right,
             )
+        a, b = written_number(left), written_number(right)
+        if (
+            symbol in {"//", "%"}
+            and type(a) is int
+            and type(b) is int
+            and max(abs(a), abs(b)) <= EXACT
+        ):
+            # Integers a double holds exactly give Python's quotient and
+            # remainder, as a hand-writer writes 1 for 3 // 2.
+            return literal(a // b if symbol == "//" else a % b)
         if symbol in {"/", "//"}:
             # The divisor is written again in the test that divided() puts
             # around the division.
