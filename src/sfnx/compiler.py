@@ -600,7 +600,19 @@ class Scope:
 
     def defer(self, name: str, value: Expr, node: ast.AST, origin: Origin) -> None:
         """A value for the Pass the pending assignments share, and where in the
-        source it comes from."""
+        source it comes from. Right after a Task, a Parallel or a Map, a value
+        that reads nothing pending and nothing the state assigns reads the same
+        in the state's Assign, so it may go there, as flush decides. An
+        assignment that reads what the state assigns records how before it
+        comes here, and that record stays."""
+        result = self.following()
+        if (
+            result is not None
+            and name not in self.folded
+            and not value.variables & (self.pending.keys() | result.values.keys())
+            and not value.volatile
+        ):
+            self.folded[name] = value
         self.pending[name] = value
         self.pending_node = self.pending_node or node
         self.pending_origins.append(origin)
@@ -1349,15 +1361,22 @@ class Scope:
         value = self.read_as(value_node, dict(pending))
         if value.variables & pending.keys():
             return False
+        located = self.take_pending(origins or [self.here()])
+        self.finish(value, None, node, located)
+        return True
+
+    def take_pending(self, origins: list[Origin]) -> list[Origin]:
+        """Clear the pending assignments for a state that ends the path in
+        their place, which carries their comments and where they come from,
+        before origins, its own."""
         remarks = [*self.pending_remarks, self.remark]
-        located = [*self.pending_origins, *(origins or [self.here()])]
+        located = [*self.pending_origins, *origins]
         self.pending = {}
         self.pending_node = None
         self.pending_origins = []
         self.pending_remarks = []
         self.remark = "\n".join(r for r in remarks if r) or None
-        self.finish(value, None, node, located)
-        return True
+        return located
 
     def end_with_result(
         self, value_node: ast.expr, origins: list[Origin] | None = None
@@ -2143,14 +2162,7 @@ class Scope:
             cause = self.read_as(message, dict(pending))
             if cause.variables & pending.keys():
                 return False
-        remarks = [*self.pending_remarks, self.remark]
-        origins = [*self.pending_origins, self.here()]
-        self.pending = {}
-        self.pending_node = None
-        self.pending_origins = []
-        self.pending_remarks = []
-        self.remark = "\n".join(r for r in remarks if r) or None
-        return cause, origins
+        return cause, self.take_pending([self.here()])
 
     def catcher_of(self, error: str) -> Handler | None:
         """The except clause a raise of the error goes to, as Python picks it:
@@ -2764,17 +2776,8 @@ class Scope:
         zero = ast.copy_location(ast.Constant(0), node)
         if first is not None and not replaceable(first, zero, counter):
             self.flush()
-        self.start_loop(counter, literal(0), node)
+        self.defer(counter, literal(0), node, starting(node))
         return self.variable(counter, of(NUMBER))
-
-    def start_loop(self, name: str, value: Expr, node: ast.For) -> None:
-        """The value a loop starts from, pending like an assignment. Right
-        after a Task, a Parallel or a Map, one that reads nothing goes in the
-        state's Assign, as an assignment of a value written in the source
-        does."""
-        if self.following() is not None and not value.variables and not value.volatile:
-            self.folded[name] = value
-        self.defer(name, value, node, starting(node))
 
     def unpacking_loop(self, node: ast.For) -> None:
         """for i, item in enumerate(items), for a, b in zip(xs, ys) and
@@ -2900,7 +2903,7 @@ class Scope:
             first = self.pending.get(target)
             if first is not None and not replaceable(first, begins, target):
                 self.flush()
-            self.start_loop(target, start, node)
+            self.defer(target, start, node, starting(node))
             self.bindings[target] = self.variable(target, of(NUMBER))
             self.partial.discard(target)
             counter = self.variable(target, of(NUMBER))
@@ -2951,10 +2954,7 @@ class Scope:
         if self.graph.reachable:
             # Only the loop assigns its counter, so the increment joins
             # whatever the body left pending, and after a Task it reads
-            # nothing the Task assigns, so it can go in the Task's Assign as
-            # an assignment right after it does.
-            if self.following() is not None:
-                self.folded[counter] = increment
+            # nothing the Task assigns.
             self.defer(counter, increment, node, Origin(node, "loop step", header=True))
             self.flush()
         body_end = self.save()
