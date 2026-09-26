@@ -170,6 +170,65 @@ def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared(before):
     assert types == ["Pass", "Pass", "Succeed"]
 
 
+@pytest.mark.parametrize(
+    "value, output",
+    [
+        ("0 + 1", 1),
+        ("2 * 3", 6),
+        ("5 - 7", -2),
+        ("-x", -3),
+        ('"a" + "b"', "ab"),
+        ("x + 1", 4),
+    ],
+)
+def test_an_operation_on_values_written_in_the_source_is_its_value(value, output):
+    definition = compile_one(machine(f"x = 3\nv = {value}\nreturn [v]"))
+    assert definition["States"] == {"return": {"Type": "Succeed", "Output": [output]}}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        # A double holds neither exactly, so JSONata's value may differ.
+        "2 ** 53 + 1",
+        "9007199254740993 - 1",
+        "1.5 + 1",
+        # The input is known only when it runs.
+        'input["x"] + 1',
+    ],
+)
+def test_an_operation_on_other_values_stays_an_expression(value):
+    output = compile_one(machine(f"return [{value}]"))["States"]["return"]["Output"]
+    assert isinstance(output[0], str) and output[0].startswith("{%")
+
+
+def test_joining_text_cannot_fail_so_it_goes_in_the_return():
+    body = 's = input.get("s", "a")\nt = s + "x"\nreturn [t]'
+    assert list(compile_one(machine(body))["States"]) == ["return"]
+
+
+@pytest.mark.parametrize(
+    "body, types",
+    [
+        # c reads a, which read as its expression would give another value.
+        ("a = random.random()\nc, d = a, 1\nreturn [c, d]", ["Pass", "Succeed"]),
+        # The text of jsonata() reads x by its name, which no expression
+        # replaces.
+        (
+            'x = 1\nc, d = jsonata("$x + 1"), 2\nreturn [c, d]',
+            ["Pass", "Pass", "Succeed"],
+        ),
+    ],
+)
+def test_an_unpacking_that_cannot_read_a_pending_value_takes_a_state(body, types):
+    header = "import random\nfrom sfnx import jsonata, state_machine\n\n\n"
+    source = (
+        header + "@state_machine\ndef pay(input):\n" + textwrap.indent(body, "    ")
+    )
+    definition = compile_one(source)
+    assert [s["Type"] for s in definition["States"].values()] == types
+
+
 def test_serial_names_skip_names_in_use():
     definition = compile_one(
         machine(

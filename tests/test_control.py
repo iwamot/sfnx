@@ -209,8 +209,9 @@ def test_assignments_after_a_wait_are_its_assign():
             {"x": "{% $states.context.Execution.Id %}"},
             [],
         ),
-        # A value reading an assignment before it reads its expression.
-        ("wait(1)\nx = 1\ny = x + 1", {"x": 1, "y": "{% 1 + 1 %}"}, []),
+        # A value reading an assignment before it reads its expression, and
+        # 1 + 1 of values written in the source is 2.
+        ("wait(1)\nx = 1\ny = x + 1", {"x": 1, "y": 2}, []),
         # Where another path joins, each path's last state takes it.
         ('if input["wait"]:\n    wait(1)\nx = 1', {"x": 1}, []),
         # The time and a random value, which the Wait reads when it ends
@@ -253,10 +254,11 @@ def test_what_a_wait_assigns(body, joined, passes):
             {"x": 3},
             [],
         ),
-        # A value reading an assignment before it reads its expression.
+        # A value reading an assignment before it reads its expression, and
+        # 1 + 1 of values written in the source is 2.
         (
             'if input["a"]:\n    x = 1\n    y = x + 1',
-            {"x": 1, "y": "{% 1 + 1 %}"},
+            {"x": 1, "y": 2},
             None,
             [],
         ),
