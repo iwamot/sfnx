@@ -128,9 +128,9 @@ def test_branches_that_all_return_end_the_function():
     ],
 )
 def test_wait(call, field):
-    states = definition(f"x = 1\n{call}\nreturn x")["States"]
+    states = definition(f'x = input["x"]\n{call}\nreturn x')["States"]
     assert states == {
-        "x": {"Type": "Pass", "Assign": {"x": 1}, "Next": "wait"},
+        "x": {"Type": "Pass", "Assign": {"x": f"{{% {INPUT}.x %}}"}, "Next": "wait"},
         # The return right after the Wait is its Output, read when it is over.
         "wait": {"Type": "Wait", **field, "Output": "{% $x %}", "End": True},
     }
@@ -190,7 +190,7 @@ def test_wait_through_the_module():
 
 
 def test_assignments_after_a_wait_are_its_assign():
-    body = "n = 0\nwait(1)\n# counted\nn = n + 1\nm = 2\nreturn n + m"
+    body = 'n = input["n"]\nwait(1)\n# counted\nn = n + 1\nm = 2\nreturn n + m'
     compiled = definition(body)
     assert compiled["States"]["wait"] == {
         "Type": "Wait",
@@ -199,7 +199,7 @@ def test_assignments_after_a_wait_are_its_assign():
         "Assign": {"n": "{% $n + 1 %}", "m": 2},
         "Next": "return",
     }
-    assert asl.run(compiled, {}) == 3
+    assert asl.run(compiled, {"n": 0}) == 3
 
 
 @pytest.mark.parametrize(

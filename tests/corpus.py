@@ -214,7 +214,7 @@ except Declined as e:
 return ys
 """
 ASSIGNS_NOTHING = """\
-status = "old"
+status = input["status"]
 
 def ok():
     return {"k": 1}
@@ -841,7 +841,7 @@ CASES: tuple[Case, ...] = (
         "failed-assign-assigns-nothing",
         "catch",
         ASSIGNS_NOTHING,
-        {},
+        {"status": "old"},
         Value("old"),
         "status is assigned after the statement that fails, in the same Assign "
         "of the Parallel, and a failing Assign assigns none of its variables, "
@@ -860,7 +860,7 @@ CASES: tuple[Case, ...] = (
         "CPython runs the except, a difference the language reference lists",
         python=False,
         backs="A failing `Assign` assigns nothing, the state's result included",
-        states=("Pass", "Parallel", "Pass", "Succeed", "Succeed"),
+        states=("Parallel", "Pass", "Succeed", "Succeed"),
     ),
     Case(
         "catch-sets-the-flag-a-choice-tests",
@@ -872,7 +872,7 @@ CASES: tuple[Case, ...] = (
         "the catcher, which assigns the flag, leads straight to the return the "
         "test would send it to, and the Choice goes",
         backs="the test is decided there",
-        states=("Pass", "Parallel", "Succeed"),
+        states=("Parallel", "Succeed"),
     ),
     Case(
         "map-retry-evaluates-the-items-again",

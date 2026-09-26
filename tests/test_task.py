@@ -1,3 +1,4 @@
+import json
 import textwrap
 
 import pytest
@@ -356,6 +357,95 @@ def test_assignments_that_start_the_machine_go_in_the_first_task():
     assert compiled["r"]["Arguments"] == {"FunctionName": "f"}
     assert compiled["r"]["Assign"] == {"fee": 10, "name": "f"}
     assert compiled["r"]["Output"] == [10, "{% $states.result %}"]
+
+
+FAN_OUT = "from sfnx import inline_map, parallel, state_machine, task, wait"
+
+
+@pytest.mark.parametrize(
+    "call, first",
+    [
+        ("wait(fee)", "wait"),
+        ("r = parallel(one, one)", "r"),
+        ("r = inline_map(double, [fee, 2])", "r"),
+    ],
+)
+def test_certain_assignments_that_start_the_machine_go_in_a_wait_parallel_or_map(
+    call, first
+):
+    """None of them can fail, so none fails after the state has run; the
+    branches and the processor read the values as written."""
+    body = (
+        "def one():\n    return fee\n\ndef double(x):\n    return x * fee\n\n"
+        f'fee = 2\nname = "f"\n{call}\nreturn [fee, name]'
+    )
+    compiled = definition(body, FAN_OUT)
+    assert compiled["StartAt"] == first
+    state = compiled["States"][first]
+    assert state["Assign"] == {"fee": 2, "name": "f"}
+    assert "$fee" not in json.dumps(compiled)
+    assert asl.run(compiled, {}, {}) == [2, "f"]
+
+
+def test_certain_assignments_that_start_the_machine_go_in_the_catchers_too():
+    body = (
+        "def one():\n    return 1\n\n"
+        "fee = 2\ntry:\n    parallel(one, one)\nexcept Exception:\n    return fee\nreturn fee"
+    )
+    compiled = definition(body, FAN_OUT)
+    state = compiled["States"][compiled["StartAt"]]
+    assert state["Type"] == "Parallel" and state["Assign"] == {"fee": 2}
+    [catcher] = state["Catch"]
+    assert catcher["Assign"]["fee"] == 2
+
+
+CATCHING_PARALLEL = (
+    'status = "old"\n'
+    'try:\n    r = parallel(ok)\n    y = r[0]["missing"]\n    status = "new"\n'
+    "    return y\nexcept Exception:\n    return status"
+)
+
+
+@pytest.mark.parametrize(
+    "body, output",
+    [
+        ('def ok():\n    return {"k": 1}\n\n' + CATCHING_PARALLEL, "old"),
+        (
+            'def ok():\n    return {"k": 1}\n\ndef branch():\n'
+            + textwrap.indent(CATCHING_PARALLEL, "    ")
+            + "\n\nreturn parallel(branch)",
+            ["old"],
+        ),
+    ],
+)
+def test_certain_start_assignments_leave_the_try_body_to_the_catching_parallel(
+    body, output
+):
+    """The statements after the Parallel in the try go in its Assign, whose
+    failure its Catch takes: the values that start the machine or a branch,
+    which its catcher assigns too, are not among what Python assigned before
+    the statement that fails."""
+    compiled = definition(body, FAN_OUT)
+    assert '"Type": "Pass"' not in json.dumps(compiled)
+    assert asl.run(compiled, {}) == output
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Moved into the Wait, a key the input lacks would fail after it.
+        'fee = input["fee"]\nwait(1)\nreturn fee',
+        # The branches run before the Parallel's Assign, and only a value
+        # written in the source reads the same in a branch or a child
+        # execution of a distributed map.
+        "def one():\n    return fee\n\nfee = input\nr = parallel(one, one)\nreturn r",
+    ],
+)
+def test_assignments_that_start_the_machine_keep_their_pass_before_a_wait_or_a_parallel(
+    body,
+):
+    compiled = definition(body, FAN_OUT)
+    assert compiled["States"][compiled["StartAt"]]["Type"] == "Pass"
 
 
 def test_through_the_module():
