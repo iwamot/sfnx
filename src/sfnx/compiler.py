@@ -32,6 +32,7 @@ from sfnx.expressions import (
     operand,
     spelling,
     variable,
+    written,
 )
 from sfnx.expressions import field as step
 from sfnx.expressions import index as index_expr
@@ -1496,11 +1497,11 @@ class Scope:
         was translated at the call, so one whose argument reads a variable that
         now reads as another expression is translated again, outer calls
         first, as its value is where the body reads it."""
-        for name, written in self.translator.arguments.items():
-            reads = {n.id for n in ast.walk(written) if isinstance(n, ast.Name)}
+        for name, argument in self.translator.arguments.items():
+            reads = {n.id for n in ast.walk(argument) if isinstance(n, ast.Name)}
             if not reads & changed:
                 continue
-            value = self.translator.expr(written)
+            value = self.translator.expr(argument)
             self.bindings[name] = replace(value, type=before[name].type)
             changed.add(name)
 
@@ -4161,15 +4162,6 @@ def all_written(values: list[Expr]) -> bool:
     return all(written(value.template) for value in values)
 
 
-def written(template: object) -> bool:
-    """Whether a template is a value written out, with no expression in it."""
-    if isinstance(template, dict):
-        return all(written(v) for v in template.values())
-    if isinstance(template, list):
-        return all(written(v) for v in template)
-    return not (isinstance(template, str) and template.startswith("{%"))
-
-
 def fold_start(
     definition: dict[str, object], starting: tuple[str, dict[str, Expr]] | None
 ) -> None:
@@ -4262,9 +4254,9 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
             return pattern.sub(lambda _: code, item)
         return item
 
-    for key, written in list(node.items()):
+    for key, field_value in list(node.items()):
         if key != "Comment":
-            node[key] = replaced(written)
+            node[key] = replaced(field_value)
 
 
 def share_states(definition: dict[str, object]) -> None:

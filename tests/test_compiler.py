@@ -229,6 +229,20 @@ def test_an_unpacking_that_cannot_read_a_pending_value_takes_a_state(body, types
     assert [s["Type"] for s in definition["States"].values()] == types
 
 
+@pytest.mark.parametrize(
+    "value, output",
+    [("len([1, 2, 3])", 3), ("len([[1], [2]])", 2), ("len([])", 0)],
+)
+def test_the_length_of_a_list_written_in_the_source_is_its_value(value, output):
+    definition = compile_one(machine(f"return [{value}]"))
+    assert definition["States"]["return"]["Output"] == [output]
+
+
+def test_the_length_of_a_list_holding_an_expression_stays_an_expression():
+    output = compile_one(machine('return [len([input["x"], 1])]'))["States"]
+    assert output["return"]["Output"][0].startswith("{% $count(")
+
+
 def test_serial_names_skip_names_in_use():
     definition = compile_one(
         machine(

@@ -861,10 +861,11 @@ def test_a_range_loop_keeps_a_value_before_it_that_may_fail():
 @pytest.mark.parametrize(
     "loop, counter, following",
     [
-        ('for x in ["a", "b"]:', "x_index", "for"),
-        # 0 < 3 is known where the Task leads on, so it goes to the body.
+        # 0 < 2 and 0 < 3 are known where the Task leads on, so it goes to
+        # the body.
+        ('for x in ["a", "b"]:', "x_index", "wait"),
         ("for i in range(3):", "i", "wait"),
-        ("for i, x in enumerate([1, 2]):", "i", "for"),
+        ("for i, x in enumerate([1, 2]):", "i", "wait"),
     ],
 )
 def test_the_start_of_a_loop_goes_in_the_task_before_it(loop, counter, following):
@@ -880,3 +881,14 @@ def test_a_start_that_reads_a_variable_keeps_its_pass_after_a_task():
     compiled = states(body)
     assert "i" not in compiled["r"]["Assign"]
     assert run(body, {}, {"r": lambda arguments: {}}) == 1
+
+
+def test_a_loop_over_a_list_written_in_the_source_goes_into_its_body():
+    """0 < 2 is known where the loop starts, so the start leads to the body,
+    and only the way back tests the index."""
+    body = 'for region in ["a", "b"]:\n    wait(1)\nreturn 1'
+    compiled = states(body)
+    (start,) = [s for s in compiled.values() if s["Type"] == "Pass"]
+    assert start["Next"] == "wait"
+    assert compiled["for"]["Choices"][0]["Condition"] == "{% $region_index < 2 %}"
+    assert run(body, {}) == 1

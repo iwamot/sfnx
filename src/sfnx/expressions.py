@@ -329,6 +329,12 @@ def call(
     function: str, arguments: list[Expr], type: Type | None, boolean: bool = False
 ) -> Expr:
     assert function in FUNCTIONS
+    if function == "count" and len(arguments) == 1:
+        items = arguments[0].template
+        if isinstance(items, list) and written(items):
+            # The length of a list written in the source, as a hand-writer
+            # writes 2 for the regions they list.
+            return literal(len(items))
     code = f"${function}(" + ", ".join(a.code for a in arguments) + ")"
     volatile = max(CHANGES if function in VOLATILE else 0, changes(arguments))
     return expression(
@@ -339,6 +345,15 @@ def call(
         volatile=volatile,
         total=function in TOTAL and all(a.total for a in arguments),
     )
+
+
+def written(template: object) -> bool:
+    """Whether a template is a value written out, with no expression in it."""
+    if isinstance(template, dict):
+        return all(written(v) for v in template.values())
+    if isinstance(template, list):
+        return all(written(v) for v in template)
+    return not (isinstance(template, str) and template.startswith("{%"))
 
 
 def binary(
