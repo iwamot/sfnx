@@ -796,3 +796,20 @@ def test_the_pass_that_moves_a_loop_on_is_named_next(loop, counter):
     compiled = states(body)
     assert list(compiled) == [counter, "for", "publish", "next", "return"]
     assert list(compiled["next"]["Assign"]) == [counter]
+
+
+def test_an_enumerate_counter_keeps_a_value_before_it_that_may_fail():
+    """Python evaluates i = input["i"] before the loop assigns i, and fails on
+    a missing key, so the value keeps its own state."""
+    body = 'i = input["i"]\nxs: list = input["xs"]\nfor i, x in enumerate(xs):\n    wait(1)\nreturn 1'
+    with pytest.raises(asl.Failure):
+        run(body, {"xs": [1]})
+    assert run(body, {"i": 7, "xs": [1]}) == 1
+
+
+def test_an_enumerate_counter_takes_the_place_of_a_written_value():
+    body = 'i = 5\nxs: list = input["xs"]\nfor i, x in enumerate(xs):\n    wait(1)\nreturn 1'
+    compiled = states(body)
+    (start,) = [s for s in compiled.values() if s["Type"] == "Pass"]
+    assert start["Assign"]["i"] == 0
+    assert run(body, {"xs": [1, 2]}) == 1

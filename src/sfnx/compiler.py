@@ -2722,9 +2722,14 @@ class Scope:
         return source
 
     def count_from_zero(self, counter: str, node: ast.For) -> Expr:
-        """The counter of a loop, assigned 0 before it. A pending value of the
-        same name is written over: the loop assigns the counter first, and it
-        ends with the loop."""
+        """The counter of a loop, assigned 0 before it. The i of enumerate is
+        the program's own name, which may have a value pending: the 0 takes
+        its place where that value leaves nothing to evaluate, and a state of
+        its own keeps one that may fail, as Python evaluates it first."""
+        first = self.pending.get(counter)
+        zero = ast.copy_location(ast.Constant(0), node)
+        if first is not None and not replaceable(first, zero, counter):
+            self.flush()
         self.defer(counter, literal(0), node, starting(node))
         return self.variable(counter, of(NUMBER))
 
