@@ -876,11 +876,21 @@ def test_the_start_of_a_loop_goes_in_the_task_before_it(loop, counter, following
     assert run(body, {}, {"r": lambda arguments: {}}) == 1
 
 
-def test_a_start_that_reads_a_variable_keeps_its_pass_after_a_task():
-    body = f'n = 2\nr = task("{PUBLISH}", {{"Message": "m"}})\nfor i in range(n, 4):\n    wait(i)\nreturn 1'
+def test_a_start_that_reads_a_variable_from_before_the_task_goes_in_it():
+    """The Task's Assign reads n as it was before the Task, which assigns no
+    n, as the Pass would."""
+    body = f'n = task("{PUBLISH}", {{"Message": "n"}})["n"]\nlast = 0\nr = task("{PUBLISH}", {{"Message": "m"}})\nfor i in range(n, 4):\n    wait(i)\n    last = i\nreturn last'
+    compiled = states(body)
+    assert compiled["r"]["Assign"]["i"] == "{% $n %}"
+    tasks = {"n": lambda arguments: {"n": 2}, "r": lambda arguments: {}}
+    assert run(body, {}, tasks) == 3
+
+
+def test_a_start_that_reads_what_the_task_assigns_keeps_its_pass():
+    body = f'r = task("{PUBLISH}", {{"Message": "m"}})\nfor i in range(r["n"], 4):\n    wait(i)\nreturn 1'
     compiled = states(body)
     assert "i" not in compiled["r"]["Assign"]
-    assert run(body, {}, {"r": lambda arguments: {}}) == 1
+    assert run(body, {}, {"r": lambda arguments: {"n": 2}}) == 1
 
 
 def test_a_loop_over_a_list_written_in_the_source_goes_into_its_body():
