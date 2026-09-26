@@ -247,6 +247,22 @@ def test_the_length_of_a_list_written_in_the_source_is_its_value(value, output):
     assert definition["States"]["return"]["Output"] == [output]
 
 
+@pytest.mark.parametrize(
+    "value, output",
+    [("len('')", 0), ('len("abc")', 3), ('len("日本")', 2), ('len("😀")', 1)],
+)
+def test_the_length_of_a_string_written_in_the_source_is_its_value(value, output):
+    """Counted in code points, as Python counts them."""
+    definition = compile_one(machine(f"return [{value}]"))
+    assert definition["States"]["return"]["Output"] == [output]
+
+
+def test_the_length_of_a_placeholder_stays_an_expression():
+    """The deployment writes another text in its place."""
+    output = compile_one(machine('return [len("${Bucket}")]'))["States"]
+    assert output["return"]["Output"][0] == "{% $length('${Bucket}') %}"
+
+
 def test_the_length_of_a_list_holding_an_expression_stays_an_expression():
     output = compile_one(machine('return [len([input["x"], 1])]'))["States"]
     assert output["return"]["Output"][0].startswith("{% $count(")

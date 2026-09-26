@@ -48,7 +48,7 @@ Most operators have one JSONata spelling. A few depend on the type of their oper
 | Needs a type | Why |
 |---|---|
 | `a + b` | `+` for numbers, `&` for strings, `$append` for lists |
-| `len(x)` | `$count` for lists, `$length` for strings, `$count($keys())` for dicts; the length itself for a list written in the source, so a `for` over one starts in its body |
+| `len(x)` | `$count` for lists, `$length` for strings, `$count($keys())` for dicts; the length itself for a list or a string written in the source, so a `for` over such a list starts in its body; a string holding a `${Name}` placeholder is measured where it runs |
 | `x in c` | `in` for lists, `$exists` for dicts, `$contains` for strings |
 | `c[k]` with a variable key | position or `$lookup` |
 | `x[a:b]` | `$substring` for strings, `$filter` by position for lists |

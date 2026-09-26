@@ -335,6 +335,13 @@ def call(
             # The length of a list written in the source, as a hand-writer
             # writes 2 for the regions they list.
             return literal(len(items))
+    if function == "length" and len(arguments) == 1:
+        text = written_scalar(arguments[0])
+        if isinstance(text, str) and "${" not in text:
+            # The length of a string written in the source, in code points
+            # as Python counts them. A ${Name} placeholder is measured where
+            # it runs, since the deployment writes another text in its place.
+            return literal(len(text))
     code = f"${function}(" + ", ".join(a.code for a in arguments) + ")"
     volatile = max(CHANGES if function in VOLATILE else 0, changes(arguments))
     return expression(
