@@ -4233,12 +4233,21 @@ def enclosed(code: str) -> bool:
     return False
 
 
-def both(first: object, second: object) -> str:
+def both(first: object, second: object) -> object:
     """The test of two Condition templates, the first before the second, each
-    in parentheses where it has an operator that binds looser than `and`."""
-    assert isinstance(first, str) and isinstance(second, str)
+    in parentheses where it has an operator that binds looser than `and`. A
+    Condition written as true or false, as `if False:` is, decides without
+    the second where it is first, as `and` evaluates no more once one side
+    is false, and is written into the test where it is second, after the
+    first, which may fail."""
+    if isinstance(first, bool):
+        return second if first else False
     tests = []
     for condition in (first, second):
+        if isinstance(condition, bool):
+            tests.append(json.dumps(condition))
+            continue
+        assert isinstance(condition, str)
         code = condition[2:-2].strip()
         loose = re.search(r"\bor\b|\?|:=", code) and not enclosed(code)
         tests.append(f"({code})" if loose else code)

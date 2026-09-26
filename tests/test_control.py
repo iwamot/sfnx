@@ -788,6 +788,28 @@ def test_a_value_that_changes_is_not_read_again_in_the_next_choice():
             ),
             [{"z": z, "a": a} for z in (True, False) for a in (1, 5)],
         ),
+        # A test written as true or false, first or second.
+        (
+            (
+                'if False:\n    if input["b"]:\n        return 1\nelif input["a"]:\n'
+                "    return 2\nreturn 3"
+            ),
+            [{"a": a, "b": b} for a in (True, False) for b in (True, False)],
+        ),
+        (
+            (
+                'if True:\n    if input["b"]:\n        return 1\nelif input["a"]:\n'
+                "    return 2\nreturn 3"
+            ),
+            [{"a": a, "b": b} for a in (True, False) for b in (True, False)],
+        ),
+        (
+            (
+                'if input["a"]:\n    if True:\n        return 1\n    return 2\n'
+                'elif input["b"]:\n    return 3\nreturn 4'
+            ),
+            [{"a": a, "b": b} for a in (True, False) for b in (True, False)],
+        ),
         # A loop's test after an if.
         (
             (
