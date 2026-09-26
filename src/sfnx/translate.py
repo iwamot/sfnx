@@ -3817,6 +3817,8 @@ def keys_of(mapping: Expr) -> Expr:
         type=of(ARRAY, items=of(STRING)),
         constructor=True,
         volatile=keys.volatile,
+        defined=True,
+        total=keys.total,
     )
 
 
