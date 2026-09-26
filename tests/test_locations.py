@@ -303,7 +303,7 @@ def test_columns_count_characters():
 def test_a_wait_spans_the_assignments_it_takes():
     source = (
         "from sfnx import state_machine, wait\n\n\n@state_machine\ndef pay(input):\n"
-        "    n = 0\n    wait(1)\n    n = n + 1\n    return n\n"
+        '    n = input["n"]\n    wait(1)\n    n = n + 1\n    return n\n'
     )
     (definition,) = definitions(source, "app.py", located=True).values()
     comment = definition["States"]["wait"]["Comment"]
