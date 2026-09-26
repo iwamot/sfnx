@@ -179,6 +179,13 @@ def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared(before):
         ("-x", -3),
         ('"a" + "b"', "ab"),
         ("x + 1", 4),
+        # Python's quotient rounds down, and its remainder takes the sign of
+        # the divisor.
+        ("7 // 2", 3),
+        ("-7 // 2", -4),
+        ("-7 % 2", 1),
+        ("7 % -2", -1),
+        ("x // 1 + 0", 3),
     ],
 )
 def test_an_operation_on_values_written_in_the_source_is_its_value(value, output):
@@ -192,7 +199,9 @@ def test_an_operation_on_values_written_in_the_source_is_its_value(value, output
         # A double holds neither exactly, so JSONata's value may differ.
         "2 ** 53 + 1",
         "9007199254740993 - 1",
+        "9007199254740993 // 1",
         "1.5 + 1",
+        "7.5 // 2",
         # The input is known only when it runs.
         'input["x"] + 1',
     ],
