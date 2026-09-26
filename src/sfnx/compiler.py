@@ -695,7 +695,8 @@ class Scope:
             if node.value is None:
                 self.end_without_value(node, [self.here()])
             elif not (
-                self.return_pending(node.value, node)
+                self.end_after_wait(node.value, node)
+                or self.return_pending(node.value, node)
                 or self.end_with_result(node.value)
             ):
                 self.finish(*self.translator.statement_value(node.value), node)
@@ -1325,10 +1326,54 @@ class Scope:
         when it can, and a Succeed does otherwise."""
         none = ast.copy_location(ast.Constant(None), node)
         if not (
-            self.return_pending(none, node, origins)
+            self.end_after_wait(none, node, origins)
+            or self.return_pending(none, node, origins)
             or self.end_with_result(none, origins)
         ):
             self.finish(literal(None), None, node, origins)
+
+    def end_after_wait(
+        self,
+        value_node: ast.expr,
+        node: ast.AST,
+        origins: list[Origin] | None = None,
+    ) -> bool:
+        """A return right after a Wait, or right after assignments that would
+        go in its Assign, as the Wait's Output and End: the Output is
+        evaluated when the wait is over (measured), where Python returns, so
+        it reads the time as the return does and fails where it would.
+        Assignments pending in between are read as their expressions, where
+        none of them can fail, be undefined or change on evaluation, or the
+        return is that variable, as for a return right after them."""
+        # The Wait carries what follows it until a flush, which assigns in it
+        # and ends the carrying, so while it carries it has no Assign.
+        carrier = self.carrier
+        if carrier is None or carrier.holder.get("Type") != "Wait":
+            return False
+        wait = carrier.holder
+        if any(self.makes_state(n) for n in ast.walk(value_node)):
+            return False
+        pending = self.pending
+        # The return of the variable itself fails in the Output where the
+        # Pass would.
+        whole = value_node.id if isinstance(value_node, ast.Name) else None
+        if not all(
+            ((v.defined and v.total) or name == whole) and not v.volatile
+            for name, v in pending.items()
+        ):
+            return False
+        value = self.read_as(value_node, dict(pending))
+        if value.variables & pending.keys() or not self.holds_still([value], wait):
+            return False
+        located = self.take_pending(origins or [self.here()])
+        self.carrier = None
+        self.graph.tails = []
+        self.returns.append(value.type)
+        self.describe_end(wait, carrier.remark, carrier.origins + located)
+        wait.pop("Next", None)
+        wait["Output"] = value.template
+        wait["End"] = True
+        return True
 
     def return_pending(
         self,
@@ -1408,18 +1453,28 @@ class Scope:
         self.graph.tails = []
         self.result = None
         self.returns.append(value.type)
-        remark = "\n".join(r for r in (result.remark, self.remark) if r) or None
-        self.remark = None
-        if self.locations is not None:
-            located = self.locations.line(result.origins + (origins or [self.here()]))
-            remark = f"{remark}\n{located}" if remark else located
-        if remark:
-            commented(state, remark)
+        self.describe_end(
+            state, result.remark, result.origins + (origins or [self.here()])
+        )
         state.pop("Assign", None)
         if value.code != "$states.result":
             state["Output"] = value.template
         state["End"] = True
         return True
+
+    def describe_end(
+        self, state: dict[str, object], remark: str | None, origins: list[Origin]
+    ) -> None:
+        """Comment a state that ends a path in place of a return with what it
+        was already described by, the return's own comment and, where
+        locations are kept, where both come from."""
+        remark = "\n".join(r for r in (remark, self.remark) if r) or None
+        self.remark = None
+        if self.locations is not None:
+            located = self.locations.line(origins)
+            remark = f"{remark}\n{located}" if remark else located
+        if remark:
+            commented(state, remark)
 
     def catching(self) -> str | None:
         """The name an except clause binds the error to, while control is

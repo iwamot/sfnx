@@ -411,3 +411,15 @@ def test_the_deployment_guide_shows_what_the_compiler_writes(capsys, monkeypatch
     shown = re.findall(r"^ *\"Comment\": \"sfnx-source: .*$", guide, re.MULTILINE)
     assert shown
     assert all(line.strip() in written for line in shown)
+
+
+def test_a_wait_that_ends_the_machine_spans_the_return():
+    source = (
+        "from sfnx import state_machine, wait\n\n\n@state_machine\ndef pay(input):\n"
+        "    # pause\n    wait(1)\n    # done\n    return 1\n"
+    )
+    (definition,) = definitions(source, "app.py", located=True).values()
+    comment = definition["States"]["wait"]["Comment"]
+    assert comment.startswith("pause\ndone\n")
+    spans = json.loads(comment.split("\n")[-1].removeprefix(PREFIX))["spans"]
+    assert spans == [{"at": "7:5-7:12"}, {"at": "9:5-9:13"}]
