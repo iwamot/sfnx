@@ -9,7 +9,7 @@ import pytest
 
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
-from sfnx.expressions import spellings
+from sfnx.expressions import array, call, expression, literal, spellings
 from tests import asl, truthiness, truthy, unpacked
 
 INPUT = "$states.context.Execution.Input"
@@ -233,8 +233,26 @@ def test_declared_type_holds_for_untyped_reassignment():
     assert output(body) == f"{{% $total + {INPUT}.c %}}"
 
 
+@pytest.mark.parametrize(
+    "first, second, defined",
+    [
+        (array([literal(1)]), expression("$a"), True),
+        (expression("$a"), array([literal(1)]), True),
+        # Both may be nothing, which $append of nothing gives.
+        (expression("$a"), expression("$b"), False),
+    ],
+)
+def test_append_is_undefined_only_of_two_values_that_may_be(first, second, defined):
+    assert call("append", [first, second], None).defined is defined
+
+
 def test_inferred_types_flow_through_variables():
-    body = 'n = len("abc")\nwords = ["a"] + input["w"]\nreturn [n + input["x"], words + [1]]'
+    # z may be undefined, so the assignments keep their Pass and the return
+    # reads the variables.
+    body = (
+        'z = input["z"]\nn = len("abc")\nwords = ["a"] + input["w"]\n'
+        "return [n + input['x'], words + [1]]"
+    )
     assert output(body) == [f"{{% $n + {INPUT}.x %}}", "{% $append($words, [1]) %}"]
 
 

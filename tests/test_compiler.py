@@ -299,6 +299,11 @@ CERTAIN = (
         # $reduce and $append fail for no value (measured).
         "len([0 for x in [1, 2] for y in [1, 2]])",
         "[[x, y] for x in xs if x != 0 for y in xs]",
+        # $append fails for no value, and gives the other of two where one
+        # is nothing (measured).
+        '["x"] + ["" for w in ["x"]]',
+        "xs + [1]",
+        "[1] + xs",
         # $keys fails for no value (measured).
         'len({"a": 1, "b": 2})',
         "len(d)",

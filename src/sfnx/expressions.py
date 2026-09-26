@@ -102,7 +102,7 @@ VOLATILE = frozenset({"millis", "now", "random", "uuid"})
 # How a value may change when it is evaluated again: as the time or a random
 # value does, or as a jsonata() expression may, whose text is not read.
 # The functions and operators that fail for no value given them.
-TOTAL = frozenset({"exists", "type", "not", "boolean", "count", "keys"})
+TOTAL = frozenset({"exists", "type", "not", "boolean", "count", "keys", "append"})
 # Functions that give a value for any argument, undefined included: 0 and
 # false (measured).
 DEFINED = frozenset({"exists", "count"})
@@ -130,11 +130,11 @@ class Expr:
     defined says the code never gives undefined, which fails an Assign or an
     Output but passes through a test such as $type() without failing: a
     literal, a variable, which no Assign leaves undefined, d.get(), $exists(),
-    $count(), a comprehension, and lists and dicts of such values. total says
-    evaluating the code fails for no value: a literal, a variable, a path
-    step, $exists(), $type(), $not(), $boolean(), $count(), $keys(), =, !=,
-    in, and and or, and conditionals, blocks, lists, dicts and comprehensions
-    of them.
+    $count(), $append() of such a value, a comprehension, and lists and dicts
+    of such values. total says evaluating the code fails for no value: a
+    literal, a variable, a path step, $exists(), $type(), $not(), $boolean(),
+    $count(), $keys(), $append(), =, !=, in, and and or, and conditionals,
+    blocks, lists, dicts and comprehensions of them.
     """
 
     code: str
@@ -365,7 +365,9 @@ def call(
         type=type,
         boolean=boolean,
         volatile=volatile,
-        defined=function in DEFINED,
+        # $append of nothing and a value gives the value (measured).
+        defined=function in DEFINED
+        or (function == "append" and any(a.defined for a in arguments)),
         total=function in TOTAL and all(a.total for a in arguments),
     )
 
