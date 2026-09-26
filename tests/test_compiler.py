@@ -123,6 +123,31 @@ def test_a_first_value_that_can_fail_or_change_keeps_its_state(first):
     assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
 
 
+@pytest.mark.parametrize(
+    "value, output",
+    [
+        ("[1, 2]", [[1, 2]]),
+        ('{"a": 1}', [{"a": 1}]),
+        ('[y, "a"]', [[2, "a"]]),
+    ],
+)
+def test_a_list_or_dict_of_values_that_are_never_undefined_goes_in_the_return(
+    value, output
+):
+    definition = compile_one(machine(f"y = 2\nv = {value}\nreturn [v]"))
+    assert list(definition["States"]) == ["return"]
+    assert definition["States"]["return"]["Output"] == output
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['[1, input["x"]]', '{"a": input["x"]}', '{"a": 10 / input.get("d", 1)}'],
+)
+def test_a_list_or_dict_that_may_be_undefined_or_fail_keeps_its_pass(value):
+    definition = compile_one(machine(f"v = {value}\nreturn [v]"))
+    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
+
+
 def test_serial_names_skip_names_in_use():
     definition = compile_one(
         machine(

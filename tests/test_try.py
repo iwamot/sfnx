@@ -580,15 +580,14 @@ def test_after_a_state_in_an_except_clause_the_error_is_its_variable():
         # The Pass reads the Task's result as the expression the Task assigns.
         ('x = r["Payload"] + 1', False, 3),
         # The second assignment of limits reads the dict written in the source
-        # that the Task assigns, as that dict, and goes in the Task; the Pass
-        # of x reads the dict the Task then assigns, whose value holds an
-        # expression, and stays.
+        # that the Task assigns, as that dict, and x reads the dict the Task
+        # then assigns, which is never undefined: all go in the Task.
         (
             (
                 'limits = {"n": 1}\n    limits = {"n": limits["n"] + r["Payload"]}\n'
                 '    x = limits["n"]'
             ),
-            True,
+            False,
             3,
         ),
         # It reads the name of the state it is in, which is the Task's there.
