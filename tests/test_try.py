@@ -910,3 +910,18 @@ def test_a_clause_a_raise_goes_to_raises_the_same_error_again():
     with pytest.raises(asl.Failure) as failure:
         run(body, {}, {"publish": lambda arguments: {}})
     assert (failure.value.error, failure.value.cause) == ("Declined", "no")
+
+
+def test_a_list_the_task_assigns_goes_on_to_a_return_after_the_try_when_written():
+    """After the try, the return reads the list the Task assigns as the list,
+    when every item is written in the source; one with an expression among
+    its items keeps the return its own."""
+    tasks = {"r": lambda arguments: {"Payload": 2}}
+    written = f'try:\n    r = {CHARGE}\n    d = [1, 2]\nexcept Exception:\n    return "caught"\nreturn [d, r]'
+    compiled = states(written)
+    assert compiled["r"]["Output"] == [[1, 2], "{% $states.result %}"]
+    assert run(written, {}, tasks) == [[1, 2], {"Payload": 2}]
+    read = f'try:\n    r = {CHARGE}\n    d = [r["Payload"], 1]\nexcept Exception:\n    return "caught"\nreturn d'
+    compiled = states(read)
+    assert "Output" not in compiled["r"]
+    assert run(read, {}, tasks) == [2, 1]

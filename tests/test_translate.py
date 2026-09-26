@@ -67,8 +67,6 @@ def output(body: str, parameter: str = "input") -> object:
             'b: float = input["b"]\nc: float = input["c"]\nreturn 1 / (b + c)',
             "$b + $c = 0 ? $error('division by zero') : 1 / ($b + $c)",
         ),
-        # Nothing is folded, so a divisor that is zero when it runs is tested.
-        ("return 1 / (2 - 2)", "2 - 2 = 0 ? $error('division by zero') : 1 / (2 - 2)"),
         ('return input["a"] ** 2', f"$power({INPUT}.a, 2)"),
         (
             'return {**input, "a": 1}',
@@ -463,6 +461,8 @@ def test_dividing_by_zero_fails_where_it_divides():
             "dividing by 0 fails every time; divide by a value that is not zero",
         ),
         ('return input["a"] % 0.0', "dividing by 0.0 fails every time"),
+        # Written in the source, 2 - 2 is 0 as the file compiles.
+        ("return 1 / (2 - 2)", "dividing by 2 - 2 fails every time"),
         ('return +input["a"]', "remove the unary +"),
         ('return ~input["a"]', "no bitwise operators"),
         ('return input["a"] | 1', "no bitwise or matrix operators"),

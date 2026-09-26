@@ -103,7 +103,11 @@ VOLATILE = frozenset({"millis", "now", "random", "uuid"})
 # value does, or as a jsonata() expression may, whose text is not read.
 # The functions and operators that fail for no value given them.
 TOTAL = frozenset({"exists", "type", "not", "boolean", "count"})
-TOTAL_OPERATORS = frozenset({"=", "!=", "in", "and", "or"})
+# & writes any value as text, so it fails for none.
+TOTAL_OPERATORS = frozenset({"=", "!=", "in", "and", "or", "&"})
+# The integers a double holds exactly, which JSONata computes with as Python
+# does.
+EXACT = 2**53
 CHANGES = 1
 OPAQUE = 2
 
@@ -348,6 +352,9 @@ def binary(
     """left operator right. JSONata operators associate to the left, so an
     equally binding right operand is parenthesized: a - (b - c). Comparisons
     parenthesize both sides, as `a < 1 = true` reads ambiguously."""
+    folded = fold(left, operator, right)
+    if folded is not None:
+        return folded
     left_precedence = precedence + 1 if precedence == COMPARE else precedence
     code = (
         f"{operand(left, left_precedence)} {operator} {operand(right, precedence + 1)}"
@@ -359,8 +366,37 @@ def binary(
         type,
         boolean,
         volatile=changes([left, right]),
+        defined=left.defined and right.defined,
         total=operator in TOTAL_OPERATORS and left.total and right.total,
     )
+
+
+def fold(left: Expr, operator: str, right: Expr) -> Expr | None:
+    """The value of an operation on values written in the source, as a
+    hand-writer writes 1 for 0 + 1: the sum, difference or product of
+    integers a double holds exactly, and the joined text of strings. None for
+    anything else, which stays an expression."""
+    a, b = written_scalar(left), written_scalar(right)
+    if operator == "&" and isinstance(a, str) and isinstance(b, str):
+        return literal(a + b)
+    if not (isinstance(a, int) and isinstance(b, int)):
+        return None
+    result = {"+": a + b, "-": a - b, "*": a * b}.get(operator)
+    if result is None or abs(result) > EXACT or max(abs(a), abs(b)) > EXACT:
+        return None
+    return literal(result)
+
+
+def written_scalar(value: Expr) -> object:
+    """The integer or the string value holds where it is written in the
+    source, or None. A boolean is not an integer here, and a string that
+    reads like a template is an expression already."""
+    template = value.template
+    if isinstance(template, bool) or not isinstance(template, (int, str)):
+        return None
+    if isinstance(template, str) and template.startswith("{%"):
+        return None
+    return template
 
 
 def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> Expr:
@@ -449,6 +485,9 @@ def block(bindings: list[tuple[str, Expr]], body: Expr) -> Expr:
 
 
 def negate(value: Expr) -> Expr:
+    number = written_scalar(value)
+    if isinstance(number, int) and abs(number) <= EXACT:
+        return literal(-number)
     if value.precedence == ATOM:
         code = "-" + value.code
     else:
