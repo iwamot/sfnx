@@ -296,6 +296,9 @@ CERTAIN = (
         '[{"id": x} for x in xs]',
         "[x for x in xs if x != 0]",
         "[[x] for x in xs]",
+        # $reduce and $append fail for no value (measured).
+        "len([0 for x in [1, 2] for y in [1, 2]])",
+        "[[x, y] for x in xs if x != 0 for y in xs]",
         # $keys fails for no value (measured).
         'len({"a": 1, "b": 2})',
         "len(d)",
@@ -318,6 +321,9 @@ def test_a_value_that_cannot_fail_goes_in_the_return(value):
         # * and > fail for a value that is not a number.
         "[x * 2 for x in xs]",
         "[x for x in xs if x > 0]",
+        "[x * y for x in xs for y in xs]",
+        "[x for x in xs if x > 0 for y in xs]",
+        "[y for x in [v * 2 for v in xs] for y in xs]",
     ],
 )
 def test_a_comprehension_that_may_fail_keeps_its_pass(value):

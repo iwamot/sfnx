@@ -749,12 +749,16 @@ class Translator:
             "reduce", [result, function([accumulator, spelled], body), array([])], None
         )
         # $reduce of nothing, where the conditions keep nothing, is nothing.
+        # $reduce and $append fail for no value (measured), so the whole fails
+        # only where the list, a condition or the inner comprehension does.
         return expression(
             "$append([], " + reduced.code + ")",
             reduced.variables,
             type=inner.type,
             constructor=True,
             volatile=reduced.volatile,
+            defined=True,
+            total=source.total and all(t.total for t in tests) and inner.total,
         )
 
     def comprehended(self, generator: ast.comprehension) -> str:
