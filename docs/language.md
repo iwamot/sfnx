@@ -97,7 +97,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | Python | JSONata |
 |---|---|
 | `a - b`, `a * b`, `a / b` | the same |
-| `24 * 60 * 60`, `7 // 2`, `"a" + "b"`, `-x` where the operands are integers or strings written in the source | the value, `86400`, `3`, `"ab"`, as a hand-writer writes it; an integer past 2^53, which a double does not hold, stays an expression |
+| `24 * 60 * 60`, `7 // 2`, `"a" + "b"`, `[1] + [2]`, `-x` where the operands are integers, strings or lists written in the source | the value, `86400`, `3`, `"ab"`, `[1, 2]`, as a hand-writer writes it; an integer past 2^53, which a double does not hold, stays an expression |
 | `a % b` | `$a - $b * $floor($a / $b)` (the sign follows the divisor, as in Python) |
 | `a // b`, `a ** b` | `$floor($a / $b)`, `$power($a, $b)` |
 | `a / b` where `b` is not written as a number | `$b = 0 ? $error('division by zero') : $a / $b`, as dividing by zero raises in Python (`//` and `%` are tested the same way) |

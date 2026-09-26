@@ -263,6 +263,25 @@ def test_the_length_of_a_placeholder_stays_an_expression():
     assert output["return"]["Output"][0] == "{% $length('${Bucket}') %}"
 
 
+@pytest.mark.parametrize(
+    "value, output",
+    [
+        ("[1] + [2]", [1, 2]),
+        ("[] + []", []),
+        ('l + [[3], {"k": "é"}]', [1, 2, [3], {"k": "é"}]),
+        ("len([1, 2] + [1, 2])", 4),
+    ],
+)
+def test_lists_written_in_the_source_joined_are_the_list(value, output):
+    definition = compile_one(machine(f"l = [1, 2]\nreturn [{value}]"))
+    assert definition["States"]["return"]["Output"] == [output]
+
+
+def test_a_list_holding_an_expression_joined_stays_an_expression():
+    output = compile_one(machine('return [[1] + [input["x"]]]'))["States"]
+    assert output["return"]["Output"][0].startswith("{% $append(")
+
+
 def test_the_length_of_a_list_holding_an_expression_stays_an_expression():
     output = compile_one(machine('return [len([input["x"], 1])]'))["States"]
     assert output["return"]["Output"][0].startswith("{% $count(")

@@ -342,6 +342,17 @@ def call(
             # as Python counts them. A ${Name} placeholder is measured where
             # it runs, since the deployment writes another text in its place.
             return literal(len(text))
+    if function == "append" and len(arguments) == 2:
+        first, second = (a.template for a in arguments)
+        if isinstance(first, list) and isinstance(second, list):
+            joined = first + second
+            if written(joined):
+                # Lists written in the source joined, as a hand-writer writes
+                # the one list; JSON is JSONata that means the same.
+                code = json.dumps(joined, ensure_ascii=False)
+                return Expr(
+                    code, joined, type=type, constructor=True, defined=True, total=True
+                )
     code = f"${function}(" + ", ".join(a.code for a in arguments) + ")"
     volatile = max(CHANGES if function in VOLATILE else 0, changes(arguments))
     return expression(
