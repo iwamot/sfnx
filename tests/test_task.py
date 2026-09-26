@@ -244,10 +244,11 @@ def test_a_value_that_changes_read_once_after_a_task_is_its_output():
 
 
 def test_a_loop_tried_again_after_a_task_leaves_the_task_as_it_was():
-    """The loop widens the type of r and compiles again from the Task."""
+    """The loop widens the type of r and compiles again from the Task, whose
+    Assign takes the loop's start once."""
     compiled = states(R + ')\nfor i in range(3):\n    r = "s"\nreturn r')
-    assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
-    assert compiled["r"]["Next"] == "i"
+    assert compiled["r"]["Assign"] == {"r": "{% $states.result %}", "i": 0}
+    assert compiled["r"]["Next"] == "for"
     assert compiled["return"] == {"Type": "Succeed", "Output": "{% $r %}"}
 
 

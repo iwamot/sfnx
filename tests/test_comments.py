@@ -82,7 +82,6 @@ return total
     assert remarks(compiled["States"]) == {
         # The assignments before the first Task go in it, their comments too.
         "receipt": "the total\nand the count\ncharge it",
-        "item_index": None,
         "for": "each item",
         "status": "poll\nuntil done",
         "if_2": None,

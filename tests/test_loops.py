@@ -856,3 +856,27 @@ def test_a_range_loop_keeps_a_value_before_it_that_may_fail():
     assert [s["Type"] for s in compiled.values()].count("Pass") == 2
     with pytest.raises(asl.Failure):
         run(body, {})
+
+
+@pytest.mark.parametrize(
+    "loop, counter, following",
+    [
+        ('for x in ["a", "b"]:', "x_index", "for"),
+        # 0 < 3 is known where the Task leads on, so it goes to the body.
+        ("for i in range(3):", "i", "wait"),
+        ("for i, x in enumerate([1, 2]):", "i", "for"),
+    ],
+)
+def test_the_start_of_a_loop_goes_in_the_task_before_it(loop, counter, following):
+    body = f'r = task("{PUBLISH}", {{"Message": "m"}})\n{loop}\n    wait(1)\nreturn 1'
+    compiled = states(body)
+    assert compiled["r"]["Assign"][counter] == 0
+    assert compiled["r"]["Next"] == following
+    assert run(body, {}, {"r": lambda arguments: {}}) == 1
+
+
+def test_a_start_that_reads_a_variable_keeps_its_pass_after_a_task():
+    body = f'n = 2\nr = task("{PUBLISH}", {{"Message": "m"}})\nfor i in range(n, 4):\n    wait(i)\nreturn 1'
+    compiled = states(body)
+    assert "i" not in compiled["r"]["Assign"]
+    assert run(body, {}, {"r": lambda arguments: {}}) == 1
