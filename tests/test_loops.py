@@ -352,7 +352,6 @@ def test_while_narrows_after_the_loop():
             'first: float = input["first"]\nfor i in range(first, 10):\n    wait(i)\nreturn 1',
             {"i": "{% $first %}"},
         ),
-        ("i = 5\nfor i in range(3):\n    wait(i)\nreturn 1", {"i": 0}),
     ],
 )
 def test_loop_initialization(body, first):
@@ -361,6 +360,41 @@ def test_loop_initialization(body, first):
         s["Assign"] for s in compiled.values() if s.get("Next") == "for"
     )
     assert initialization == first
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # The count comes from the input, known only when it runs.
+        'polls: int = input["p"]\nwhile polls < 20:\n    wait(1)\n    if input["b"]:\n        return 1\n    polls += 1\nreturn 0',
+        # The same, with nothing on the way back that changes the count.
+        'n: int = input["n"]\nwhile n < 3:\n    wait(1)\n    if input["b"]:\n        return 1\nreturn 0',
+        # JSONata orders strings by UTF-16 units, Python by code points.
+        's = "b"\nwhile s < "c":\n    wait(1)\n    s = s + "x"\nreturn s',
+    ],
+)
+def test_a_loop_whose_test_is_not_known_on_entry_keeps_it(body):
+    compiled = states(body)
+    (start,) = [s for s in compiled.values() if s["Type"] == "Pass"]
+    assert start["Next"] == "while"
+
+
+def test_a_loop_whose_count_comes_from_the_input_still_counts():
+    body = 'polls: int = input["p"]\nwhile polls < 20:\n    wait(1)\n    if input["b"]:\n        return 1\n    polls += 1\nreturn 0'
+    assert run(body, {"p": 19, "b": False}) == 0
+    assert run(body, {"p": 25, "b": False}) == 0
+    assert run(body, {"p": 0, "b": True}) == 1
+
+
+def test_a_loop_whose_counter_is_known_on_entry_skips_its_first_test():
+    """0 < 3 holds where the loop starts, so the start goes straight to the
+    body, and only the way back tests the counter."""
+    body = "i = 5\nfor i in range(3):\n    wait(i)\nreturn 1"
+    compiled = states(body)
+    (start,) = [s for s in compiled.values() if s.get("Assign") == {"i": 0}]
+    assert start["Next"] == "wait"
+    assert compiled["wait"]["Next"] == "for"
+    assert run(body, {}) == 1
 
 
 def test_a_body_that_always_returns_has_no_increment():
