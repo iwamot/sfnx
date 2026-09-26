@@ -102,7 +102,7 @@ VOLATILE = frozenset({"millis", "now", "random", "uuid"})
 # How a value may change when it is evaluated again: as the time or a random
 # value does, or as a jsonata() expression may, whose text is not read.
 # The functions and operators that fail for no value given them.
-TOTAL = frozenset({"exists", "type", "not", "boolean", "count"})
+TOTAL = frozenset({"exists", "type", "not", "boolean", "count", "keys"})
 # Functions that give a value for any argument, undefined included: 0 and
 # false (measured).
 DEFINED = frozenset({"exists", "count"})
@@ -132,8 +132,9 @@ class Expr:
     literal, a variable, which no Assign leaves undefined, d.get(), $exists(),
     $count(), a comprehension, and lists and dicts of such values. total says
     evaluating the code fails for no value: a literal, a variable, a path
-    step, $exists(), $type(), $not(), $boolean(), $count(), =, !=, in, and
-    and or, and conditionals, blocks, lists, dicts and comprehensions of them.
+    step, $exists(), $type(), $not(), $boolean(), $count(), $keys(), =, !=,
+    in, and and or, and conditionals, blocks, lists, dicts and comprehensions
+    of them.
     """
 
     code: str

@@ -283,7 +283,9 @@ def test_a_list_holding_an_expression_joined_stays_an_expression():
 
 
 # Values that neither fail nor are undefined, whatever the input holds.
-CERTAIN = 'xs: list[int] = input.get("xs", [])\n'
+CERTAIN = (
+    'xs: list[int] = input.get("xs", [])\nd: dict[str, int] = input.get("d", {})\n'
+)
 
 
 @pytest.mark.parametrize(
@@ -294,6 +296,12 @@ CERTAIN = 'xs: list[int] = input.get("xs", [])\n'
         '[{"id": x} for x in xs]',
         "[x for x in xs if x != 0]",
         "[[x] for x in xs]",
+        # $keys fails for no value (measured).
+        'len({"a": 1, "b": 2})',
+        "len(d)",
+        "[k for k in d]",
+        "list(d.keys())",
+        "d.keys()",
     ],
 )
 def test_a_value_that_cannot_fail_goes_in_the_return(value):
