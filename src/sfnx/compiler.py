@@ -2907,7 +2907,11 @@ class Scope:
             self.join([self.save(), *loop.continues])
         if self.graph.reachable:
             # Only the loop assigns its counter, so the increment joins
-            # whatever the body left pending.
+            # whatever the body left pending, and after a Task it reads
+            # nothing the Task assigns, so it can go in the Task's Assign as
+            # an assignment right after it does.
+            if self.following() is not None:
+                self.folded[counter] = increment
             self.defer(counter, increment, node, Origin(node, "loop step", header=True))
             self.flush()
         body_end = self.save()
