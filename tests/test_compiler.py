@@ -186,6 +186,13 @@ def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared(before):
         ("-7 % 2", 1),
         ("7 % -2", -1),
         ("x // 1 + 0", 3),
+        ("0 < 0", False),
+        ("x >= 3", True),
+        ("1 <= 2", True),
+        ("x == 3", True),
+        ("x != 3", False),
+        ('"a" == "a"', True),
+        ('"a" != "a"', False),
     ],
 )
 def test_an_operation_on_values_written_in_the_source_is_its_value(value, output):
@@ -202,6 +209,15 @@ def test_an_operation_on_values_written_in_the_source_is_its_value(value, output
         "9007199254740993 // 1",
         "1.5 + 1",
         "7.5 // 2",
+        "9007199254740993 > 0",
+        "4503599627370496 * 4",
+        # A quotient may not be whole, and a number that is not is left for
+        # JSONata to write.
+        "7 / 2",
+        # JSONata orders strings by UTF-16 units, and the deployment writes
+        # another text in the place of a placeholder.
+        '"a" < "b"',
+        '"${Name}" == "a"',
         # The input is known only when it runs.
         'input["x"] + 1',
     ],

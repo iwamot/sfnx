@@ -414,15 +414,32 @@ def binary(
 def fold(left: Expr, operator: str, right: Expr) -> Expr | None:
     """The value of an operation on values written in the source, as a
     hand-writer writes 1 for 0 + 1: the sum, difference or product of
-    integers a double holds exactly, and the joined text of strings. None for
-    anything else, which stays an expression."""
+    integers a double holds exactly, their comparisons, and the joined text
+    of strings and whether two are equal. Strings are not ordered here, as
+    JSONata orders them by UTF-16 units, nor compared where a ${Name}
+    placeholder stands for another text. None for anything else, which stays
+    an expression."""
     a, b = written_scalar(left), written_scalar(right)
-    if operator == "&" and isinstance(a, str) and isinstance(b, str):
-        return literal(a + b)
-    if not (isinstance(a, int) and isinstance(b, int)):
+    if isinstance(a, str) and isinstance(b, str):
+        if operator == "&":
+            return literal(a + b)
+        if operator in {"=", "!="} and "${" not in a + b:
+            return literal((a == b) == (operator == "="))
         return None
-    result = {"+": a + b, "-": a - b, "*": a * b}.get(operator)
-    if result is None or abs(result) > EXACT or max(abs(a), abs(b)) > EXACT:
+    if not (isinstance(a, int) and isinstance(b, int)) or max(abs(a), abs(b)) > EXACT:
+        return None
+    result = {
+        "+": a + b,
+        "-": a - b,
+        "*": a * b,
+        "=": a == b,
+        "!=": a != b,
+        "<": a < b,
+        "<=": a <= b,
+        ">": a > b,
+        ">=": a >= b,
+    }.get(operator)
+    if result is None or abs(result) > EXACT:
         return None
     return literal(result)
 
