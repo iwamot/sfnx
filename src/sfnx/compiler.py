@@ -1696,6 +1696,7 @@ class Scope:
         if scope.graph.reachable:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
+        thread_choices(definition)
         fold_start(definition, scope.starting)
         fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
         thread_choices(definition)
@@ -3595,7 +3596,8 @@ def assigned_value(template: object) -> Expr | None:
     if isinstance(template, (dict, list)):
         if not written(template):
             return None
-        return Expr(json.dumps(template, ensure_ascii=False), template)
+        code = json.dumps(template, ensure_ascii=False)
+        return Expr(code, template, defined=True, total=True)
     return literal(template)
 
 
@@ -4172,17 +4174,36 @@ def fold_start(
     Only where the state after it is a Choice, whose Assign runs on every
     path out of it, or a Task whose failure there ends the execution, and only
     the Pass leads there. A value the input lacks then fails after the Task
-    runs, where Python fails before calling it."""
+    runs, where Python fails before calling it. A Succeed takes them in its
+    Output where none can fail or be undefined, as nothing reads what it does
+    not; one follows the Pass where a Choice the Pass decides was skipped."""
     if starting is None:
         return
     start, values = starting
     states = definition["States"]
     assert isinstance(states, dict)
     opening = states[start]
+    # A decided Choice after the Pass hands the Pass the assignments of the
+    # way it takes, which the values recorded here no longer describe: the
+    # Pass's own are read again where each is written in the source.
+    assign = opening["Assign"]
+    assert isinstance(assign, dict)
+    if assign != {name: value.template for name, value in values.items()}:
+        read = {name: assigned_value(template) for name, template in assign.items()}
+        if not all(v is not None and v.defined for v in read.values()):
+            return
+        values = {name: v for name, v in read.items() if v is not None}
     following = opening["Next"]
     state = states[following]
     kind = state["Type"]
-    if not (kind == "Choice" or (kind == "Task" and may_fold(state))):
+    # A Succeed has no Assign: what it does not read ends with it, which is
+    # the Pass's Python meaning only where no value can fail.
+    certain = all(v.defined and v.total and not v.volatile for v in values.values())
+    if not (
+        kind == "Choice"
+        or (kind == "Task" and may_fold(state))
+        or (kind == "Succeed" and certain)
+    ):
         return
     leading = [
         name
@@ -4194,10 +4215,9 @@ def fold_start(
         return
     for name, value in values.items():
         substitute(state, name, value)
-    assign = opening["Assign"]
-    assert isinstance(assign, dict)
-    holders = [state, *state.get("Choices", [])] if kind == "Choice" else [state]
-    for holder in holders:
+    # A Succeed has no Assign to take them.
+    holders = {"Choice": [state, *state.get("Choices", [])], "Task": [state]}
+    for holder in holders.get(kind, []):
         own = holder.get("Assign", {})
         assert isinstance(own, dict)
         holder["Assign"] = {
@@ -4524,6 +4544,7 @@ def compile_machine(
     docstring = ast.get_docstring(function)
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
+    thread_choices(definition)
     fold_start(definition, scope.starting)
     fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
     thread_choices(definition)
