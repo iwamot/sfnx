@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from importlib.util import decode_source
 from pathlib import Path
-from typing import TypeGuard
+from typing import Literal, TypeGuard
 
 from sfnx.diagnostics import CompileError
 from sfnx.errors import EVERYTHING, caught, raised, retriers
@@ -2112,13 +2112,45 @@ class Scope:
             self.divert(handler, error, arguments, node)
             return
         state: dict[str, object] = {"Type": "Fail", "Error": error}
-        if arguments:
-            cause = self.translator.expr(arguments[0])
+        cause = self.translator.expr(arguments[0]) if arguments else None
+        origins = None
+        read = self.raise_pending(arguments[0] if arguments else None)
+        if read is not False:
+            cause, origins = read
+        if cause is not None:
             if cause.type is not None and cause.type.kinds != {STRING}:
                 cause = text(cause)
             state["Cause"] = cause.template
         self.flush()
-        self.add("raise", state, node)
+        self.add("raise", state, node, origins)
+
+    def raise_pending(
+        self, message: ast.expr | None
+    ) -> tuple[Expr | None, list[Origin]] | Literal[False]:
+        """A raise right after assignments that wait for a Pass, with no Task,
+        Parallel or Map before them to hold them, as a Fail alone: nothing
+        reads them after it, and where none fails, is undefined or changes on
+        evaluation, Python's evaluating them has no effect, so the Pass goes.
+        The message reads them as their expressions. The Fail's cause and
+        where it comes from in the source, or False where the Pass stays."""
+        pending = self.pending
+        if not pending or self.following() is not None:
+            return False
+        if not all(v.defined and v.total and not v.volatile for v in pending.values()):
+            return False
+        cause = None
+        if message is not None:
+            cause = self.read_as(message, dict(pending))
+            if cause.variables & pending.keys():
+                return False
+        remarks = [*self.pending_remarks, self.remark]
+        origins = [*self.pending_origins, self.here()]
+        self.pending = {}
+        self.pending_node = None
+        self.pending_origins = []
+        self.pending_remarks = []
+        self.remark = "\n".join(r for r in remarks if r) or None
+        return cause, origins
 
     def catcher_of(self, error: str) -> Handler | None:
         """The except clause a raise of the error goes to, as Python picks it:

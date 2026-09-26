@@ -925,3 +925,40 @@ def test_a_list_the_task_assigns_goes_on_to_a_return_after_the_try_when_written(
     compiled = states(read)
     assert "Output" not in compiled["r"]
     assert run(read, {}, tasks) == [2, 1]
+
+
+@pytest.mark.parametrize(
+    "body, cause",
+    [
+        ('n = 0\nraise Declined("r")', "r"),
+        ('n = 3\nraise Declined(f"n is {n}")', "n is 3"),
+    ],
+)
+def test_a_raise_after_assignments_that_cannot_fail_is_a_fail_alone(body, cause):
+    assert states(body) == {
+        "raise": {"Type": "Fail", "Error": "Declined", "Cause": cause}
+    }
+
+
+def test_a_raise_without_a_message_after_assignments_is_a_fail_alone():
+    assert states("n = 0\nraise Declined()") == {
+        "raise": {"Type": "Fail", "Error": "Declined"}
+    }
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # Python fails on the missing key before it raises.
+        'n = input["n"]\nraise Declined("r")',
+        # A field of the context is in some states only, so reading one may
+        # be undefined.
+        'name = context["State"]["Name"]\nraise Declined("r")',
+        # jsonata() reads n by its name, which no expression replaces.
+        'n = 3\nraise Declined(jsonata("$string($n)"))',
+    ],
+)
+def test_a_raise_after_assignments_keeps_their_pass_where_they_count(body):
+    preamble = CLASSES + "from sfnx import jsonata\n"
+    compiled = states(body, preamble)
+    assert [s["Type"] for s in compiled.values()] == ["Pass", "Fail"]
