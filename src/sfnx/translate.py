@@ -808,20 +808,33 @@ class Translator:
             )
         else:
             element = replace(element, type=item)
+        # $map and $filter fail only where the list, a condition or the
+        # element does, and what wraps them is a list even of nothing.
+        total = (
+            source.total
+            and all(t.total for t in tests)
+            and (element.total or not mapped)
+        )
         # The functions leave out their parameter; what the source reads stays,
         # even a variable of the same name. A list written out is a list already.
         if result.constructor:
             code = result.code
-        elif (tests or mapped) and may_be_list(element.type):
-            code = "$append([], " + result.code + "[])"
+            defined = result.defined
         else:
-            code = "[" + result.code + "]"
+            code = (
+                "$append([], " + result.code + "[])"
+                if (tests or mapped) and may_be_list(element.type)
+                else "[" + result.code + "]"
+            )
+            defined = True
         return expression(
             code,
             result.variables,
             type=of(ARRAY, items=element.type),
             constructor=True,
             volatile=result.volatile,
+            defined=defined,
+            total=total,
         )
 
     @contextmanager
@@ -829,10 +842,13 @@ class Translator:
         """The variables of a comprehension while its conditions and results
         are translated. Each is the parameter of the JSONata function, not a
         Step Functions variable: a variable of the same name that another
-        binding reads would be hidden."""
+        binding reads would be hidden. Each holds an item, a key or a value
+        of what is iterated, so reading it neither fails nor is undefined."""
         saved = {name: self.bindings.get(name) for name in names}
         for name, declared in names.items():
-            self.bindings[name] = expression("$" + self.spelling(name), type=declared)
+            self.bindings[name] = expression(
+                "$" + self.spelling(name), type=declared, defined=True, total=True
+            )
             self.inner.append(self.spelling(name))
         self.comprehending += 1
         try:
