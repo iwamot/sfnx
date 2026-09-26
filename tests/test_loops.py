@@ -791,11 +791,38 @@ def test_while_true_after_a_task_keeps_its_first_assignment():
 )
 def test_the_pass_that_moves_a_loop_on_is_named_next(loop, counter):
     """The counter names the Pass that starts the loop, so the one that only
-    moves it on is named after that instead of the counter again."""
-    body = f'{loop}\n    task("{PUBLISH}", {{"Message": "m"}})\nreturn 1'
+    moves it on is named after that instead of the counter again. A retrier for
+    every error would run the Task again for a failure of its Assign, so the
+    step keeps a Pass after it."""
+    retry = '[{"ErrorEquals": [Exception], "MaxAttempts": 2}]'
+    body = f'{loop}\n    task("{PUBLISH}", {{"Message": "m"}}, retry={retry})\nreturn 1'
     compiled = states(body)
     assert list(compiled) == [counter, "for", "publish", "next", "return"]
     assert list(compiled["next"]["Assign"]) == [counter]
+
+
+@pytest.mark.parametrize(
+    "loop, counter",
+    [
+        ("for x in [1, 2]:", "x_index"),
+        ("for i in range(3):", "i"),
+    ],
+)
+def test_the_step_of_a_loop_goes_in_the_task_that_ends_its_body(loop, counter):
+    """As an assignment right after a Task goes in its Assign, so does the
+    step, which reads only the counter, which the Task does not assign."""
+    body = f'n = 0\n{loop}\n    task("{PUBLISH}", {{"Message": "m"}})\n    n = n + 1\nreturn n'
+    compiled = states(body)
+    assert "next" not in compiled
+    assert compiled["publish"]["Assign"] == {
+        "n": "{% $n + 1 %}",
+        counter: f"{{% ${counter} + 1 %}}",
+    }
+    calls = []
+    tasks = {"publish": lambda arguments: calls.append(arguments) or {}}
+    rounds = 2 if "[" in loop else 3
+    assert run(body, {}, tasks) == rounds
+    assert len(calls) == rounds
 
 
 def test_an_enumerate_counter_keeps_a_value_before_it_that_may_fail():
