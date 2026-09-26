@@ -148,6 +148,28 @@ def test_a_list_or_dict_that_may_be_undefined_or_fail_keeps_its_pass(value):
     assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
 
 
+def test_a_swap_reads_the_pending_values_in_the_same_state():
+    definition = compile_one(machine("a = 3\nb = 2\na, b = b, a\nreturn [a, b]"))
+    assert list(definition["States"]) == ["return"]
+    assert definition["States"]["return"]["Output"] == [2, 3]
+
+
+@pytest.mark.parametrize(
+    "before",
+    [
+        # b reads a, which read as its expression would give another value.
+        "a = random.random()\nb = 2",
+        # Python evaluates the first a, which fails on a missing key.
+        'a = input["x"]\nb = 2',
+    ],
+)
+def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared(before):
+    body = f"{before}\na, b = b, a\nreturn [a, b]"
+    definition = compile_one("import random\n" + machine(body))
+    types = [s["Type"] for s in definition["States"].values()]
+    assert types == ["Pass", "Pass", "Succeed"]
+
+
 def test_serial_names_skip_names_in_use():
     definition = compile_one(
         machine(

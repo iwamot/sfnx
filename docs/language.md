@@ -189,7 +189,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 
 ## Assignments and variables
 
-- `x = value` assigns one name; `a, b = b, a` and `a, b = parallel(f, g)` assign several in one state, with the values from before it.
+- `x = value` assigns one name; `a, b = b, a` and `a, b = parallel(f, g)` assign several in one state, with the values from before it. Written as a tuple of values, as the swap is, they share the state of the assignments before them as `x = value` would, each value reading those as their expressions.
 - `x: float = value` declares a type along with the value.
 - `x += v`, `x -= v` and the others are `x = x + v` and so on. A list is the exception: `xs += [...]` extends the list in place in Python, which a JSON value cannot do, so write `xs = xs + [...]`.
 - A key or a position cannot be assigned (`d["k"] = v`); build the new dict or list as a literal.

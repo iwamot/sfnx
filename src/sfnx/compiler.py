@@ -1186,11 +1186,7 @@ class Scope:
         # undefined, such as one written in the source, has nothing to
         # evaluate, so the new value takes its place.
         first = self.pending.get(name)
-        if first is not None and (
-            first.volatile
-            or not first.defined
-            or not (first.total or always_reads(value_node, name))
-        ):
+        if first is not None and not replaceable(first, value_node, name):
             self.flush()
         reads = sorted(value.variables & self.pending.keys())
         if reads and not any(self.pending[read].volatile for read in reads):
@@ -1267,9 +1263,15 @@ class Scope:
                 remark,
             )
         else:
-            reads = frozenset().union(*(v.variables for v in values))
-            if set(names) & self.pending.keys() or reads & self.pending.keys():
-                self.flush()
+            shared = None
+            if isinstance(value_node, (ast.Tuple, ast.List)):
+                shared = self.read_pending(names, value_node.elts, values)
+            if shared is not None:
+                values = shared
+            else:
+                reads = frozenset().union(*(v.variables for v in values))
+                if set(names) & self.pending.keys() or reads & self.pending.keys():
+                    self.flush()
             for name, value in zip(names, values, strict=True):
                 self.defer(name, value, target, self.here())
             self.hold_remark()
@@ -1277,6 +1279,30 @@ class Scope:
             known = self.announced.get(name) or value.type or self.declared.get(name)
             self.bindings[name] = self.variable(name, known)
             self.partial.discard(name)
+
+    def read_pending(
+        self, names: list[str], nodes: list[ast.expr], values: list[Expr]
+    ) -> list[Expr] | None:
+        """The values of a, b = x, y read as a single assignment reads them, so
+        that they share the pending assignments' state: each value reads a
+        pending one as its expression, all of them before any name is
+        assigned, and a name assigned again replaces a first value it may
+        replace. None where they cannot, and need a state of their own."""
+        for name, node in zip(names, nodes, strict=True):
+            first = self.pending.get(name)
+            if first is not None and not replaceable(first, node, name):
+                return None
+        read = []
+        for node, value in zip(nodes, values, strict=True):
+            reads = sorted(value.variables & self.pending.keys())
+            if any(self.pending[r].volatile for r in reads):
+                return None
+            if reads:
+                value = self.read_as(node, {r: self.pending[r] for r in reads})
+                if value.variables & self.pending.keys():
+                    return None
+            read.append(value)
+        return read
 
     def end_without_value(self, node: ast.AST, origins: list[Origin]) -> None:
         """A return without a value, written or where a body ends, which
@@ -3051,6 +3077,18 @@ def conditional_assignment(node: ast.If) -> tuple[ast.Name, ast.expr, bool] | No
 # The functions whose first argument is evaluated wherever the call is,
 # in the JSONata they compile to as in Python.
 FIRST_ARGUMENT = frozenset({"isinstance", "len", "str", "int", "float", "bool"})
+
+
+def replaceable(first: Expr, node: ast.expr, name: str) -> bool:
+    """Whether a pending first value of a name can give way to the new value
+    in node in the same state: it changes on no evaluation and is never
+    undefined, and it either cannot fail, leaving nothing to evaluate, or the
+    new value evaluates it every time."""
+    return (
+        not first.volatile
+        and first.defined
+        and (first.total or always_reads(node, name))
+    )
 
 
 def always_reads(node: ast.AST, name: str) -> bool:

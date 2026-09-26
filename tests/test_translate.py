@@ -1243,6 +1243,8 @@ def test_a_variable_named_after_a_function_is_renamed():
     assert compiled["States"]["count"]["Assign"] == {
         "count_val": f"{{% {INPUT}.xs %}}",
         "merge_val": f"{{% {unpacked(INPUT)} %}}",
+        "type_val": f"{{% $count({INPUT}.xs) %}}",
+        "keys_val": f"{{% [$map({INPUT}.xs, function($map_val) {{ $map_val * 2 }})] %}}",
     }
     assert asl.run(compiled, {"xs": [1, 2]}) == [[1, 2], [1, 2], 2, [2, 4], 1]
 
