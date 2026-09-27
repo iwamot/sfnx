@@ -873,6 +873,21 @@ def test_a_choice_that_spells_a_name_in_a_string_keeps_it():
     assert asl.run(compiled, {"a": True, "b": 5}) == 1
 
 
+def test_a_function_that_changes_passed_on_is_not_taken_in():
+    """$map calls $random for each item, so the test would draw another value
+    than the rule's Assign: x is assigned in its own state and tested there,
+    as Python tests the value it holds."""
+    body = (
+        'if input["a"]:\n    x: list = jsonata("$map([1, 2], $random)")\n'
+        '    if x[0] > 0.5:\n        return ["hi", x]\n    return ["lo", x]\n'
+        "return 0"
+    )
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    drawn = iter([0.9, 0.1, 0.2, 0.3])
+    with asl.replaced(random=lambda *arguments: next(drawn)):
+        assert asl.run(compiled, {"a": True}) == ["hi", [0.9, 0.1]]
+
+
 def test_a_choice_that_leads_back_to_itself_is_taken_in_once():
     body = 'n = 0\nif input["z"]:\n    return 0\nwhile n < 3:\n    n = n + 1\nreturn n'
     compiled = definition(body)["States"]

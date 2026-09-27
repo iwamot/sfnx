@@ -10,6 +10,8 @@ from functools import cache
 from jsonata.jexception import JException
 from jsonata.parser import Parser
 
+from sfnx.expressions import VOLATILE
+
 # A variable as JSONata spells one, found in the text of a string or a
 # regular expression.
 SPELLED = re.compile(r"\$([^\W\d]\w*)")
@@ -67,6 +69,18 @@ def names_read(code: str) -> frozenset[str]:
     every name its text spells, the most it can read."""
     found = facts(code)
     return found.reads if found is not None else frozenset(SPELLED.findall(code))
+
+
+# What gives another value each time it is called: the time, a random value,
+# and $eval, which may call either and reads variables by names not written
+# out.
+CHANGING = VOLATILE | {"eval"}
+
+
+def changes(code: str) -> bool:
+    """Whether the code may give another value when evaluated again: it reads
+    a function of CHANGING, to call it or to pass it on, as to $map."""
+    return bool(names_read(code) & CHANGING)
 
 
 def free(node: Parser.Symbol, bound: frozenset[str]) -> Iterator[str]:
