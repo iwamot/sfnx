@@ -21,7 +21,6 @@ from sfnx.expressions import (
     ATOM,
     COMPARE,
     OPAQUE,
-    VOLATILE,
     WRITTEN,
     Expr,
     array,
@@ -53,7 +52,7 @@ from sfnx.jsontypes import (
 )
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
-from sfnx.syntax import facts, names_read
+from sfnx.syntax import changes, facts, names_read
 from sfnx.translate import (
     StateCall,
     Translator,
@@ -3591,8 +3590,6 @@ BARE = re.compile(r"\s*\$[^\W\d]\w*\s*")
 # A read of a variable or a path from it, which needs no parentheses where it
 # is written into another expression.
 PATH = re.compile(r"\$[^\W\d]\w*(?:\.\w+)*")
-# A call of a function that gives another value when evaluated again.
-TIMED = re.compile(r"\$(" + "|".join(sorted(VOLATILE)) + r")\(")
 # The context a Task and the state after it read alike.
 SAME_CONTEXT = re.compile(r"\$states\.context\.(Execution|StateMachine|Map)\b")
 
@@ -3669,8 +3666,9 @@ def fold_into_catching_tasks(
             if any("$states" in SAME_CONTEXT.sub("", code) for code in codes):
                 continue
             # When a Parallel's or a Map's Assign reads the time or a random
-            # value is not measured, where a Task's is when it ends.
-            if task["Type"] != "Task" and any(TIMED.search(c) for c in codes):
+            # value, which $eval may call, is not measured, where a Task's is
+            # when it ends.
+            if task["Type"] != "Task" and any(changes(c) for c in codes):
                 continue
             own = task.get("Assign", {})
             assert isinstance(own, dict)
@@ -3994,7 +3992,7 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
     comprehension gives [] for a missing key."""
     states = definition["States"]
     assert isinstance(states, dict)
-    if any(re.search(r"\$eval\s*\(", c) for c in expressions_in(states)):
+    if any("eval" in names_read(c) for c in expressions_in(states)):
         return
     changed = True
     while changed:
@@ -4283,10 +4281,7 @@ def merge_choices(definition: dict[str, object]) -> None:
             break
 
 
-# What gives another value each time it is evaluated, which a Choice's test
-# would evaluate apart from the Assign that keeps it, and what names the
-# state it is read in.
-CHANGING = re.compile(r"\$(random|uuid|now|millis|eval)\s*\(")
+# What names the state it is read in.
 STATE_CONTEXT = re.compile(r"\$states\.context\.State\b")
 
 
@@ -4432,7 +4427,7 @@ def read_as_values(
     reads = {read for code in codes for read in names_read(code)}
     used = {n: template_code(v) for n, v in values.items() if n in reads}
     if any(STATE_CONTEXT.search(code) for code in codes) or any(
-        CHANGING.search(code) for code in used.values()
+        changes(code) for code in used.values()
     ):
         return None
     if not all(reads_as(choice, n, expression(code)) for n, code in used.items()):
@@ -4800,11 +4795,7 @@ def changes_or_reads_the_state(code: str) -> bool:
     or gives another value when evaluated again: the time, a random value,
     or $eval, which a jsonata() expression may call and which reads
     variables by the names in its text."""
-    return bool(
-        "$states" in SAME_CONTEXT.sub("", code)
-        or TIMED.search(code)
-        or re.search(r"\$eval\s*\(", code)
-    )
+    return bool("$states" in SAME_CONTEXT.sub("", code) or changes(code))
 
 
 def way_assign(
@@ -4901,10 +4892,7 @@ def read_assigned(
     found = {n: assigned_value(v) for n, v in own.items() if n in reads}
     values = {n: v for n, v in found.items() if v is not None}
     # What the state's own Assign reads of $states the Output reads alike.
-    if len(values) < len(found) or any(
-        TIMED.search(v.code) or re.search(r"\$eval\s*\(", v.code)
-        for v in values.values()
-    ):
+    if len(values) < len(found) or any(changes(v.code) for v in values.values()):
         return None
     holder: dict[str, object] = {"Output": output}
     if not all(reads_as(holder, n, v) for n, v in values.items()):

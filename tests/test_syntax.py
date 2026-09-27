@@ -1,6 +1,28 @@
 import pytest
 
-from sfnx.syntax import facts, names_read
+from sfnx.syntax import changes, facts, names_read
+
+
+@pytest.mark.parametrize(
+    "code, changing",
+    [
+        ("$random() * 2", True),
+        ("$now()", True),
+        # $eval may call either, and reads variables by names not written.
+        ("$eval('1')", True),
+        # A function passed on is called too.
+        ("$map([1, 2], $random)", True),
+        # A string that spells one calls nothing.
+        ("'$random()'", False),
+        # A function of that name the expression defines is its own.
+        ("($random := function() { 1 }; $random())", False),
+        ("$count($xs)", False),
+        # What the parser cannot read may call anything its text names.
+        ("$random(", True),
+    ],
+)
+def test_changes(code, changing):
+    assert changes(code) == changing
 
 
 @pytest.mark.parametrize(
