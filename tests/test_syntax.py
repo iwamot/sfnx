@@ -1,6 +1,44 @@
 import pytest
 
-from sfnx.syntax import facts
+from sfnx.syntax import facts, names_read
+
+
+@pytest.mark.parametrize(
+    "code, reads",
+    [
+        ("$a + $b", {"a", "b"}),
+        # $states is a variable too, and so is a function called by name.
+        ("$count($states.input)", {"count", "states"}),
+        # The context and the root are not variables.
+        ("$count($ys[$ != 1]) + $$.a", {"count", "ys"}),
+        # A block binds a name for the expressions after the binding, and the
+        # binding reads the name from before it.
+        ("($x := $x + 1; $x * $y)", {"x", "y"}),
+        ("($v := 1; $v)", set()),
+        # A filter on the block reads what is bound around it.
+        ("($v := 1; $v)[$v]", {"v"}),
+        ("([1, 2])[$i]", {"i"}),
+        # A function's parameters are its own; what else its body reads is
+        # read.
+        ("function($i) { $i + $k }", {"k"}),
+        # @ and # bind for the step's filters and the steps after it.
+        ("$xs#$i[$i > $j].($i)", {"xs", "j"}),
+        ("$xs@$e.($e + $f)", {"xs", "f"}),
+        # A binding anywhere but right in a block binds nothing for certain,
+        # so the name still counts as read.
+        ("$f(($v := 1)) + $v", {"f", "v"}),
+        # A string spells a name, which is not a read.
+        ("'$n' & $m", {"m"}),
+        # Inside an object.
+        ('{"k": $v}', {"v"}),
+    ],
+)
+def test_names_read(code, reads):
+    assert names_read(code) == reads
+
+
+def test_what_the_parser_cannot_read_reads_every_name_it_spells():
+    assert names_read("$f($x") == {"f", "x"}
 
 
 @pytest.mark.parametrize(
@@ -12,6 +50,8 @@ from sfnx.syntax import facts
         ("$map($xs, function($x, $i) { $x + $i })", {"x", "i"}),
         # Inside an object's value, which the parser keeps in pairs.
         ('{"k": ($v := 1; $v)}', {"v"}),
+        # @ and # in a path.
+        ("$xs@$e#$i.($e + $i)", {"e", "i"}),
         # A read binds nothing.
         ("$v + 1", set()),
         # Nor does a string that looks like a binding.
