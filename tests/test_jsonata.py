@@ -252,3 +252,25 @@ def test_a_return_of_a_value_that_changes_keeps_its_pass():
     evaluation, so the Pass evaluates it once, as Python does."""
     compiled = definition('b = jsonata("$random()")\nreturn b')
     assert [s["Type"] for s in compiled["States"].values()] == ["Pass", "Succeed"]
+
+
+@pytest.mark.parametrize(
+    "value, text",
+    [
+        # s changes on each evaluation, so t reads the value s holds.
+        ('jsonata("$string($random())")', "$s"),
+        # The text binds s itself, which the value would take over.
+        ('"a"', "($s := 'b'; $s)"),
+    ],
+)
+def test_the_way_into_a_loop_keeps_a_round_it_cannot_read(value, text):
+    """The way in assigns s, and the first round, which the way in decides,
+    reads it, so the way in keeps to its own values."""
+    body = (
+        f's = {value}\nt = "none"\nc = 0\nwhile True:\n    c = c + 1\n'
+        f'    if c > 2:\n        return [s, t]\n    t = jsonata("{text}")\n'
+    )
+    compiled = definition(body)
+    assert compiled["States"]["s"]["Assign"]["c"] == 1
+    s, t = asl.run(compiled, {})
+    assert t == (s if text == "$s" else "b")

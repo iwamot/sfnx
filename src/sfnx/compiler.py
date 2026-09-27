@@ -1799,7 +1799,7 @@ class Scope:
         fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
         fold_start(definition, scope.starting)
         spread_passes(definition)
-        thread_choices(definition)
+        thread_choices(definition, rounds=True)
         merge_choices(definition)
         take_in_choices(definition)
         share_states(definition)
@@ -3774,7 +3774,7 @@ COMPARED = re.compile(rf"\$(\w+) (=|!=|<=|>=|<|>) ({LITERAL})")
 Known = dict[str, object]
 
 
-def thread_choices(definition: dict[str, object]) -> None:
+def thread_choices(definition: dict[str, object], rounds: bool = False) -> None:
     """Each transition into a Choice whose tests are decided by values known
     along it, as the transition to where the Choice would send it: a flag that
     each path assigns a value written in the source, such as the stage a saga
@@ -3783,10 +3783,19 @@ def thread_choices(definition: dict[str, object]) -> None:
     Assign of the rule or the Default the path takes goes in the transition
     that now skips it, where a failure ends the execution as it would in the
     Choice (a catcher's Assign does too; measured), and where its values
-    read neither `$states`, which is another state's there, nor a name that
-    transition assigns, which they would read before it is assigned."""
+    read no `$states`, which is another state's there. A name that
+    transition assigns, which they would read before it is assigned, they
+    read as the expression the transition assigns, once for each Choice it
+    goes past, as below."""
     states = definition["States"]
     assert isinstance(states, dict)
+    # With rounds, a transition goes past a Choice whose Assign reads what it
+    # assigns, or that leads back to the Choice it is in, once, as in the
+    # first round of a loop whose first test it decides: taking each round
+    # in would run the loop as the file compiles, and never end for a loop
+    # that does not. Only one call of this takes rounds, as each call starts
+    # counting afresh. These are the Choices each transition went past so.
+    read_into: dict[int, set[str]] = {}
     # A path sent past a Choice no longer joins the others there, so what is
     # known where it goes may grow: follow the values again until no
     # transition moves.
@@ -3805,6 +3814,8 @@ def thread_choices(definition: dict[str, object]) -> None:
                 # and its retriers take a failure the Choice would not.
                 movable = holder is not state or may_fold(state)
                 taken: dict[str, object] = {}
+                passed = read_into.setdefault(id(holder), set())
+                before = set(passed)
                 comment = holder.get("Comment")
                 seen = set()
                 while states[target]["Type"] == "Choice" and target not in seen:
@@ -3820,22 +3831,56 @@ def thread_choices(definition: dict[str, object]) -> None:
                         for code in expressions_in(assign)
                         for read in VARIABLE.findall(code)
                     }
-                    if assign and (
-                        not movable or "states" in reads or reads & {*own, *taken}
-                    ):
+                    current = {**own, **taken}
+                    if assign and (not movable or "states" in reads):
                         break
+                    if assign and reads & current.keys():
+                        # Choices that lead to each other would each be gone
+                        # past again, round after round, where the way into
+                        # them changes on each.
+                        if not rounds or target in passed:
+                            break
+                        assign = read_into_transition(assign, reads, current)
+                        if assign is None:
+                            break
+                        passed.add(target)
                     if assign:
                         taken.update(assign)
                         comment = joined_comments(comment, rule.get("Comment"))
                         known = assigned(known, assign)
                     target = following
-                if target != holder[key]:
+                # A rule that leads back to the Choice it is in, as a loop's
+                # Default does, is taken as the first round, once.
+                stays = target == holder[key] and bool(taken)
+                if stays and (not rounds or target in before):
+                    continue
+                if target != holder[key] or stays:
+                    if stays:
+                        passed.add(target)
                     holder[key] = target
                     if taken:
                         holder["Assign"] = {**own, **taken}
                         if comment is not None:
                             holder["Comment"] = comment
                     moved = True
+
+
+def read_into_transition(
+    assign: dict[str, object], reads: set[str], current: dict[str, object]
+) -> dict[str, object] | None:
+    """An Assign that reads what a transition assigns, as that transition's
+    Assign reads it: each such name as the expression it is assigned, as
+    way_assign reads them, or None where one cannot be read so."""
+    found = {n: assigned_value(v) for n, v in current.items() if n in reads}
+    values = {n: v for n, v in found.items() if v is not None}
+    state: dict[str, object] = {"Assign": assign}
+    if (
+        len(values) < len(found)
+        or any(changes_or_reads_the_state(v.code) for v in values.values())
+        or not all(reads_as(state, n, v) for n, v in values.items())
+    ):
+        return None
+    return {k: written_sum(read_through(v, values)) for k, v in assign.items()}
 
 
 def drop_unreachable(definition: dict[str, object]) -> None:
@@ -4860,7 +4905,7 @@ def compile_machine(
     fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
     fold_start(definition, scope.starting)
     spread_passes(definition)
-    thread_choices(definition)
+    thread_choices(definition, rounds=True)
     merge_choices(definition)
     take_in_choices(definition)
     share_states(definition)
