@@ -7,12 +7,14 @@ import pytest
 
 from sfnx import testing
 from sfnx.compiler import (
+    Rounds,
     always_reads,
     compile_source,
     definitions,
     drop_dead_assignments,
     grouped,
     read_as_values,
+    thread_choices,
 )
 from sfnx.diagnostics import CompileError
 from sfnx.locations import PREFIX
@@ -1007,6 +1009,55 @@ def test_a_flag_known_on_each_path_sends_the_path_on_directly():
 
     assert asl.run(compiled, {}, {"invoke": charge, "invoke_2": charge}) == "done"
     assert asl.run(compiled, {}, {"invoke": declined}) == "declined"
+
+
+def test_a_rule_that_reads_the_execution_input_goes_in_the_catcher():
+    """The execution's input reads the same in every state, so the rule's
+    assignment of it goes in the catcher that now skips the Choice."""
+    body = (
+        f"stage = 0\ntry:\n    {CHARGE}\nexcept Declined:\n    stage = 1\n"
+        'if stage == 1:\n    why = input["why"]\n    return [why, 1]\nreturn "done"'
+    )
+    states = flagged(body)["States"]
+    catcher = states["invoke"]["Catch"][0]
+    assert catcher["Assign"] == {"why": f"{{% {INPUT}.why %}}"}
+    assert states[catcher["Next"]]["Type"] == "Succeed"
+
+
+@pytest.mark.parametrize(
+    "read, moved",
+    [
+        # The execution's input reads the same in the catcher.
+        (f"{{% {INPUT}.x %}}", True),
+        # The state's input is the Task's in the catcher, not the Choice's.
+        ("{% $states.input.x %}", False),
+    ],
+)
+def test_a_rule_the_catcher_skips_to_reads_no_state_s_own_states(read, moved):
+    definition = {
+        "StartAt": "t",
+        "States": {
+            "t": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::lambda:invoke",
+                "Catch": [
+                    {"ErrorEquals": ["States.ALL"], "Assign": {"s": 1}, "Next": "if"}
+                ],
+                "End": True,
+            },
+            "if": {
+                "Type": "Choice",
+                "Choices": [
+                    {"Condition": "{% $s = 1 %}", "Assign": {"x": read}, "Next": "r"}
+                ],
+                "Default": "r",
+            },
+            "r": {"Type": "Succeed", "Output": "{% $x %}"},
+        },
+    }
+    thread_choices(definition, Rounds())
+    catcher = definition["States"]["t"]["Catch"][0]
+    assert (catcher["Next"] == "r") == moved
 
 
 @pytest.mark.parametrize(

@@ -27,11 +27,15 @@ class Facts:
     variable of the name. spelled holds the names a string or a regular
     expression in it writes as $name, as the text of jsonata() may: that is
     not a read, and a value put in the variable's place must leave it as it
-    is."""
+    is. states holds how it reads $states, each read as the names of the
+    fields that follow it for as long as they are plain names: ("input",)
+    for $states.input, and () for $states itself or one read otherwise, as
+    $states[0] is, which may be any part."""
 
     reads: frozenset[str]
     bound: frozenset[str]
     spelled: frozenset[str]
+    states: frozenset[tuple[str, ...]]
 
 
 @cache
@@ -45,9 +49,20 @@ def facts(code: str) -> Facts | None:
         return None
     bound: set[str] = set()
     spelled: set[str] = set()
+    states: set[tuple[str, ...]] = set()
+    # The $states that start a path, which the path reads.
+    heads: set[int] = set()
     for node in nodes(tree):
         kind = node.type
         bound.update(binds(node))
+        if kind == "path":
+            assert node.steps is not None
+            head, *steps = node.steps
+            if head.type == "variable" and head.value == "states":
+                heads.add(id(head))
+                states.add(fields(head, steps))
+        elif kind == "variable" and node.value == "states" and id(node) not in heads:
+            states.add(())
         if kind == "bind":
             bound.add(text(node.lhs))
         elif kind == "lambda":
@@ -60,8 +75,24 @@ def facts(code: str) -> Facts | None:
             assert isinstance(pattern, str)
             spelled.update(SPELLED.findall(pattern))
     return Facts(
-        frozenset(free(tree, frozenset())), frozenset(bound), frozenset(spelled)
+        frozenset(free(tree, frozenset())),
+        frozenset(bound),
+        frozenset(spelled),
+        frozenset(states),
     )
+
+
+def fields(head: Parser.Symbol, steps: list[Parser.Symbol]) -> tuple[str, ...]:
+    """The plain names that follow $states in a path, none where the path
+    filters $states itself."""
+    if head.stages or head.predicate or binds(head):
+        return ()
+    names: list[str] = []
+    for step in steps:
+        if step.type != "name":
+            break
+        names.append(text(step))
+    return tuple(names)
 
 
 def names_read(code: str) -> frozenset[str]:
@@ -69,6 +100,49 @@ def names_read(code: str) -> frozenset[str]:
     every name its text spells, the most it can read."""
     found = facts(code)
     return found.reads if found is not None else frozenset(SPELLED.findall(code))
+
+
+# The parts of the context every state of an execution reads alike; the rest,
+# as the State part, which names the state and says when it was entered,
+# differs from state to state.
+SHARED = frozenset({"Execution", "StateMachine", "Map"})
+
+
+def states_read(code: str) -> frozenset[tuple[str, ...]]:
+    """How the code reads $states, or, where the parser cannot read it and
+    its text spells $states, as a whole."""
+    found = facts(code)
+    if found is not None:
+        return found.states
+    return frozenset({()}) if "states" in SPELLED.findall(code) else frozenset()
+
+
+def shared(path: tuple[str, ...]) -> bool:
+    return len(path) >= 2 and path[0] == "context" and path[1] in SHARED
+
+
+def reads_own_states(code: str) -> bool:
+    """Whether the code reads a part of $states that is the state's own, as
+    its input, its result or its error output, or a part of the context
+    that is not shared."""
+    return any(not shared(path) for path in states_read(code))
+
+
+def reads_own_context(code: str) -> bool:
+    """Whether the code reads a part of the context that is not shared."""
+    return any(
+        not shared(path) and path[:1] in {(), ("context",)}
+        for path in states_read(code)
+    )
+
+
+def reads_state_name(code: str) -> bool:
+    """Whether the code reads the State part of the context, which names the
+    state it is read in."""
+    return any(
+        path in {(), ("context",)} or path[:2] == ("context", "State")
+        for path in states_read(code)
+    )
 
 
 # What gives another value each time it is called: the time, a random value,
