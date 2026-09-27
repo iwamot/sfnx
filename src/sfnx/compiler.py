@@ -3813,12 +3813,18 @@ def assigned_value(template: object) -> Expr | None:
     """What an Assign writes for a variable, as an expression to read in its
     place: an expression, or a value written out, whose JSON is JSONata too.
     An object or an array with expressions among its values is no one
-    expression."""
-    template = template_of(template)
-    if isinstance(template, str) and template.startswith("{%"):
-        code = template[2:-2].strip()
+    expression. An expression keeps what the field's Expr knows of it, as
+    whether it may fail or be undefined; the names it reads are those of
+    its code, $states and functions among them, and it binds as tightly as
+    an atom only where it is a path alone, which is what may be written in
+    place of a variable read more than once."""
+    if isinstance(template, Expr) and code_of(template) is not None:
+        code = template.code
         precedence = ATOM if path_alone(code) else WRITTEN
-        return expression(code, frozenset(names_read(code)), precedence)
+        return replace(
+            template, variables=frozenset(names_read(code)), precedence=precedence
+        )
+    template = template_of(template)
     if isinstance(template, (dict, list)):
         if not written(template):
             return None

@@ -1323,6 +1323,15 @@ def test_where_an_expression_always_reads_a_variable(code, reads):
             "n = 3\nfor i, x in enumerate([1, 2]):\n    n = 0\n    return [n]\nreturn [n]",
             [0],
         ),
+        # The way the test takes assigns c, so the start is read again as
+        # written: a conditional of strings neither fails nor is undefined.
+        (
+            (
+                's = "a"\nt = ("a" + s) if True else s\nc = 0\n'
+                "while c < 1:\n    c = c + 1\nreturn [t, c]"
+            ),
+            ["aa", 1],
+        ),
     ],
 )
 def test_a_test_of_what_the_start_assigns_is_decided_there(body, expected):

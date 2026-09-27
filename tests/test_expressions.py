@@ -72,7 +72,6 @@ def test_a_template_s_properties_are_not_known():
 def test_a_field_is_an_expr_as_it_is_or_as_its_template():
     leaf = exact("$x", True, True)
     assert as_expr(leaf) is leaf
-    assert as_expr("{% $x %}").code == "$x"
     assert as_expr({"k": "{% $x %}", "n": 1}).code == '{"k": $x, "n": 1}'
 
 

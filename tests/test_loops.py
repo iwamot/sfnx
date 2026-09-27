@@ -963,6 +963,19 @@ def test_the_first_statement_of_a_loop_goes_in_each_way_into_it():
     assert run(RETRY, {}, tasks) == 3
 
 
+def test_a_way_that_assigns_variables_alone_holds_the_statement_after_it():
+    """The Choice's rule assigns a and b each other's variable, which neither
+    fails nor is undefined, so the second swap's Assign may take their place
+    and its Pass goes in the rule."""
+    body = (
+        'a = input["a"]\nb = input["b"]\nxs: list = input["xs"]\nfor x in xs:\n'
+        "    a, b = b, a\n    a, b = b, a\nreturn [a, b]"
+    )
+    compiled = states(body)
+    assert [s["Type"] for s in compiled.values()] == ["Pass", "Choice", "Succeed"]
+    assert run(body, {"a": 1, "b": 2, "xs": [0, 0, 0]}) == [1, 2]
+
+
 @pytest.mark.parametrize(
     "body",
     [
