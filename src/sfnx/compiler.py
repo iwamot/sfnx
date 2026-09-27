@@ -455,11 +455,7 @@ class Scope:
         values = list(pending.values())
         if all(v.defined and v.total for v in values):
             self.failsafe.add(added)
-        if (
-            opening
-            and not any(v.volatile for v in values)
-            and self.holds_still(values, state)
-        ):
+        if opening:
             self.starting = (
                 added,
                 {self.spelling(k): value for k, value in pending.items()},
@@ -4594,8 +4590,11 @@ def fold_start(
     assign = opening["Assign"]
     assert isinstance(assign, dict)
     # drop_dead_assignments may have taken out what nothing reads; the rest
-    # is as recorded.
+    # is as recorded. A value that changes on evaluation or reads the State
+    # of the context, which names the state it is read in, keeps the Pass.
     values = {name: value for name, value in values.items() if name in assign}
+    if any(v.volatile or SHARED_CONTEXT.search(v.code) for v in values.values()):
+        return
     if assign != {name: value.template for name, value in values.items()}:
         read = {name: assigned_value(template) for name, template in assign.items()}
         if not all(v is not None and v.defined for v in read.values()):
