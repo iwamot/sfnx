@@ -209,16 +209,26 @@ def test_wait_through_the_module():
 
 def test_assignments_after_a_wait_are_its_assign():
     # Nothing reads n, so neither its first value nor n + 1 is assigned.
-    body = 'n = input["n"]\nwait(1)\n# counted\nn = n + 1\nm = 2\nreturn m'
+    body = 'n = input["n"]\nwait(1)\n# counted\nn = n + 1\nm = 2\nwait(m)\nreturn m'
     compiled = definition(body)
     assert compiled["States"]["wait"] == {
         "Type": "Wait",
         "Comment": "counted",
         "Seconds": 1,
         "Assign": {"m": 2},
-        "Next": "return",
+        "Next": "wait_2",
     }
     assert asl.run(compiled, {}) == 2
+
+
+def test_a_return_after_a_wait_reads_what_the_wait_assigns():
+    """The Output is evaluated with the values from before the Wait, so it
+    reads m as the value the Wait assigns it."""
+    body = 'n = input["n"]\nwait(1)\nn = n + 1\nm = 2\nreturn m'
+    compiled = definition(body)
+    assert compiled["States"] == {
+        "wait": {"Type": "Wait", "Seconds": 1, "Output": 2, "End": True}
+    }
 
 
 @pytest.mark.parametrize(
@@ -1270,11 +1280,12 @@ def test_a_return_after_a_wait_reads_what_reads_its_own_name():
     assert asl.run(compiled, {"names": ["a"]}) == ["a", "x"]
 
 
-def test_a_return_after_a_wait_that_reads_a_name_in_jsonata_keeps_its_state():
-    """The text of jsonata() reads names by its name, the new value."""
+def test_a_return_after_a_wait_that_reads_a_name_in_jsonata_reads_the_new_value():
+    """The text of jsonata() reads names by its name, which the Output reads
+    as the value the Wait assigns it."""
     body = SELF + 'return jsonata("$names")'
     (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
-    assert list(compiled["States"]) == ["wait", "return"]
+    assert list(compiled["States"]) == ["wait"]
     assert asl.run(compiled, {"names": ["a"]}) == ["a", "x"]
 
 
@@ -1304,21 +1315,36 @@ def test_a_raise_after_a_wait_reads_what_reads_its_own_name():
             ),
             True,
         ),
+    ],
+)
+def test_a_return_after_a_wait_reads_a_value_that_may_fail_where_it_fails(body, ends):
+    compiled = definition(body)
+    assert ("End" in compiled["States"]["wait"]) == ends
+
+
+@pytest.mark.parametrize(
+    "body, failing",
+    [
         # A missing key is undefined, which a list drops without failing.
-        ('wait(1)\nx = input["x"]\nreturn [x, 1]', False),
+        ('wait(1)\nx = input["x"]\nreturn [x, 1]', {}),
         # The return reads n in one branch only.
         (
             (
                 'n: int = input.get("n", 0)\nwait(1)\nn = n + 1\n'
                 'return n if input["a"] else 0'
             ),
-            False,
+            {"a": False, "n": "s"},
         ),
     ],
 )
-def test_a_return_after_a_wait_reads_a_value_that_may_fail_where_it_fails(body, ends):
+def test_a_wait_ending_with_a_return_keeps_a_value_that_may_fail(body, failing):
+    """The Wait's Output reads the value, and its Assign, which stays, fails
+    where Python does, where the Output would not."""
     compiled = definition(body)
-    assert ("End" in compiled["States"]["wait"]) == ends
+    assert list(compiled["States"]) == ["wait"]
+    assert compiled["States"]["wait"]["Assign"]
+    with pytest.raises(asl.Failure):
+        asl.run(compiled, failing)
 
 
 def test_a_return_reads_a_value_that_may_fail_where_it_fails():
@@ -1347,8 +1373,8 @@ def test_a_return_after_a_wait_reads_a_function_of_a_value_that_is_never_undefin
         # x * 2 may fail, so the Task, whose retrier would run it again,
         # keeps the Succeed.
         ("wait(1)", "[x * 2, 1]", True),
-        # The Wait assigns x, which the Output would read from before it.
-        ('wait(1)\n    x = input["y"]', "[x * 2, 1]", False),
+        # The Wait assigns x, which the Output reads as the Wait assigns it.
+        ('wait(1)\n    x = input["y"]', "[x * 2, 1]", True),
         # The State of the context names the state it is read in.
         ("wait(1)", 'context["State"]["Name"]', False),
     ],
@@ -1371,7 +1397,7 @@ def test_a_wait_before_a_return_other_ways_share_ends_with_it(branch, returned, 
     assert ("End" in compiled["States"]["wait"]) == ends
     assert "return" in compiled["States"]
     if ends:
-        assert asl.run(compiled, {"a": False, "x": 4}) == [8, 1]
+        assert asl.run(compiled, {"a": False, "x": 4, "y": 4}) == [8, 1]
 
 
 WAIT = {"Type": "Wait", "Seconds": 1}
