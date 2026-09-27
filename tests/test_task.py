@@ -980,8 +980,8 @@ def test_a_task_before_a_shared_return_drops_what_nothing_reads():
     [
         # A dict holding an expression is no one expression to read d as.
         ("\n    d = {'a': r['Payload']}", "d"),
-        # The text binds r itself, which the value would take over.
-        ("", 'jsonata("($r := 2; $r)")'),
+        # The text reads r and binds it too, which the value would take over.
+        ("", 'jsonata("[$r, ($r := 2; $r)]")'),
     ],
 )
 def test_a_task_before_a_shared_return_it_cannot_read_keeps_going_on(after, returned):

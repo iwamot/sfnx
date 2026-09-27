@@ -53,9 +53,8 @@ from sfnx.jsontypes import (
 )
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
-from sfnx.syntax import facts
+from sfnx.syntax import facts, names_read
 from sfnx.translate import (
-    VARIABLE,
     StateCall,
     Translator,
     direct_call,
@@ -3675,7 +3674,7 @@ def fold_into_catching_tasks(
                 continue
             own = task.get("Assign", {})
             assert isinstance(own, dict)
-            reads = {read for code in codes for read in VARIABLE.findall(code)}
+            reads = {read for code in codes for read in names_read(code)}
             found = {n: assigned_value(v) for n, v in own.items() if n in reads}
             values = {n: v for n, v in found.items() if v is not None}
             if len(values) < len(found) or not all(
@@ -3782,7 +3781,7 @@ def assigned_value(template: object) -> Expr | None:
     if isinstance(template, str) and template.startswith("{%"):
         code = template[2:-2].strip()
         precedence = ATOM if PATH.fullmatch(code) else WRITTEN
-        return expression(code, frozenset(VARIABLE.findall(code)), precedence)
+        return expression(code, frozenset(names_read(code)), precedence)
     if isinstance(template, (dict, list)):
         if not written(template):
             return None
@@ -3806,15 +3805,13 @@ def caught_reads(definition: dict[str, object], task: dict[str, object]) -> set[
         read
         for catcher in catchers
         for code in expressions_in({k: v for k, v in catcher.items() if k != "Next"})
-        for read in VARIABLE.findall(code)
+        for read in names_read(code)
     }
     pending = [catcher["Next"] for catcher in catchers]
     seen = set(pending)
     while pending:
         state = states[pending.pop()]
-        reads |= {
-            read for code in expressions_in(state) for read in VARIABLE.findall(code)
-        }
+        reads |= {read for code in expressions_in(state) for read in names_read(code)}
         for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
             for key in ("Next", "Default"):
                 if key in holder and holder[key] not in seen:
@@ -3907,7 +3904,7 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                     reads = {
                         read
                         for code in expressions_in(assign)
-                        for read in VARIABLE.findall(code)
+                        for read in names_read(code)
                     }
                     current = {**own, **taken}
                     if assign and (not movable or "states" in reads):
@@ -4003,7 +4000,7 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
     while changed:
         changed = False
         reads = {
-            name: {r for c in expressions_in(state) for r in VARIABLE.findall(c)}
+            name: {r for c in expressions_in(state) for r in names_read(c)}
             for name, state in states.items()
         }
         live: dict[str, set[str]] = {name: set() for name in states}
@@ -4259,9 +4256,7 @@ def merge_choices(definition: dict[str, object]) -> None:
                 continue
             then = states[second]
             own = first.get("Assign", {})
-            reads = {
-                read for code in expressions_in(then) for read in VARIABLE.findall(code)
-            }
+            reads = {read for code in expressions_in(then) for read in names_read(code)}
             if own.keys() & reads:
                 continue
             for rule in then["Choices"] if own else []:
@@ -4434,7 +4429,7 @@ def read_as_values(
     assigns as the expressions they take, or None where that is not how the
     Choice would read them."""
     codes = expressions_in(choice)
-    reads = {read for code in codes for read in VARIABLE.findall(code)}
+    reads = {read for code in codes for read in names_read(code)}
     used = {n: template_code(v) for n, v in values.items() if n in reads}
     if any(STATE_CONTEXT.search(code) for code in codes) or any(
         CHANGING.search(code) for code in used.values()
@@ -4465,7 +4460,7 @@ def read_as_values(
         # hand-writer binds a long one, where the values bound before it
         # would not hide a name it reads.
         once = [n for n in used if counts[n] > 1]
-        bound = {r for n in once for r in VARIABLE.findall(used[n])}
+        bound = {r for n in once for r in names_read(used[n])}
         if not once or bound & set(once):
             return "{% " + pattern.sub(lambda m: grouped(used[m[1]]), code) + " %}"
         inline = [n for n in used if counts[n] == 1]
@@ -4672,7 +4667,7 @@ def reads_as(state: dict[str, object], name: str, value: Expr) -> bool:
     reads, which would take them over, no string in one spells the name, as
     the text of jsonata() may, which is not a read and stays as it is, and
     the parser reads each, as what one it cannot read binds is not known."""
-    names = {name, *(read for read in VARIABLE.findall(value.code))}
+    names = {name, *(read for read in names_read(value.code))}
     found = [facts(code) for code in expressions_in(state)]
     return all(
         f is not None and name not in f.spelled and not f.bound & names for f in found
@@ -4829,7 +4824,7 @@ def way_assign(
     ):
         return None
     own = assigns(holder)
-    reads = {read for code in codes for read in VARIABLE.findall(code)}
+    reads = {read for code in codes for read in names_read(code)}
     found = {n: assigned_value(v) for n, v in own.items() if n in reads or n in assign}
     if any(v is None for v in found.values()):
         return None
@@ -4902,7 +4897,7 @@ def read_assigned(
     fails in the Assign, where Python fails, even where the Output would
     drop it."""
     own = assigns(state)
-    reads = {read for code in codes for read in VARIABLE.findall(code)}
+    reads = {read for code in codes for read in names_read(code)}
     found = {n: assigned_value(v) for n, v in own.items() if n in reads}
     values = {n: v for n, v in found.items() if v is not None}
     # What the state's own Assign reads of $states the Output reads alike.

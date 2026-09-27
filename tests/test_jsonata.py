@@ -236,8 +236,8 @@ def test_a_string_in_the_text_that_spells_a_starting_variable_stays_as_it_is():
         ("x = 1", "'$x' & $string($x)", {}, "$x1"),
         # A dict holding an expression is no one expression to read x as.
         ('x = {"a": input["a"]}', "$x.a + 1", {"a": 1}, 2),
-        # The text binds x itself, which the value would take over.
-        ("x = 1", "($x := 2; $x)", {}, 2),
+        # The text reads x and binds it too, which the value would take over.
+        ("x = 1", "$x + ($x := 2; $x)", {}, 3),
     ],
 )
 def test_an_assignment_the_state_before_cannot_read_keeps_its_state(
@@ -247,6 +247,15 @@ def test_an_assignment_the_state_before_cannot_read_keeps_its_state(
     compiled = definition(body)
     assert [s["Type"] for s in compiled["States"].values()][:2] == ["Pass", "Pass"]
     assert asl.run(compiled, execution_input) == [output, 1]
+
+
+@pytest.mark.parametrize("text, output", [("($x := 2; $x)", 2), ("'$x'", "$x")])
+def test_a_name_the_text_binds_or_spells_is_not_a_read(text, output):
+    """The text binds x for itself, or spells it in a string, so nothing reads
+    the x assigned before it, which is not assigned."""
+    compiled = definition(f'x = 1\ny = jsonata("{text}")\nreturn [y, 1]')
+    assert all("x" not in s.get("Assign", {}) for s in compiled["States"].values())
+    assert asl.run(compiled, {}) == [output, 1]
 
 
 def test_a_return_of_a_value_that_changes_keeps_its_pass():
@@ -261,8 +270,8 @@ def test_a_return_of_a_value_that_changes_keeps_its_pass():
     [
         # s changes on each evaluation, so t reads the value s holds.
         ('jsonata("$string($random())")', "$s"),
-        # The text binds s itself, which the value would take over.
-        ('"a"', "($s := 'b'; $s)"),
+        # The text reads s and binds it too, which the value would take over.
+        ('"a"', "$s & ($s := 'b'; $s)"),
     ],
 )
 def test_the_way_into_a_loop_keeps_a_round_it_cannot_read(value, text):
@@ -275,4 +284,4 @@ def test_the_way_into_a_loop_keeps_a_round_it_cannot_read(value, text):
     compiled = definition(body)
     assert compiled["States"]["s"]["Assign"]["c"] == 1
     s, t = asl.run(compiled, {})
-    assert t == (s if text == "$s" else "b")
+    assert t == (s if text == "$s" else "ab")

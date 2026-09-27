@@ -281,8 +281,18 @@ def count(input):
                 (header, "loop step"),
             ],
         ),
-        "for_2": ([], [(counting, None), ("kept = kept[:-1]", None)]),
+        # The second loop's Default takes in the first round of the last
+        # loop, its test included, as a rule of its own.
+        "for_2": (
+            [],
+            [
+                (counting, None),
+                ("kept = kept[:-1]", None),
+                ("if len(kept) < 3:", None),
+            ],
+        ),
         "for_2[0]": ([], [("kept = kept + [i]", None), (counting, "loop step")]),
+        "for_2[1]": ([], [(counting, None), ("kept = kept[:-1]", None)]),
         "if_2": ([], [("if len(kept) < 3:", None), ("kept = kept[:-1]", None)]),
         "return": ([], [("return kept", None)]),
     }

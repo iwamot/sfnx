@@ -589,11 +589,12 @@ def test_after_a_state_in_an_except_clause_the_error_is_its_variable():
         ),
         # It reads the name of the state it is in, which is the Task's there.
         ('x = [r["Payload"], context["State"]["Name"]]', True, [2, "x"]),
-        # Its expression binds the name the Task assigns, which the Task's
-        # expression would take the place of.
-        ('x = jsonata("($r := 5; $r + 1)")', True, 6),
-        # A string in its expression spells the name, which is not a read.
-        ("x = jsonata(\"'$r'\")", True, "$r"),
+        # Its expression reads the name the Task assigns and binds it too,
+        # which the Task's expression would take the place of.
+        ('x = jsonata("$r.Payload + ($r := 5; $r + 1)")', True, 8),
+        # A string in its expression spells the name it reads, which is not a
+        # read.
+        ("x = jsonata(\"'$r' & $string($r.Payload)\")", True, "$r2"),
     ],
 )
 def test_what_goes_in_the_assign_of_a_task_inside_try(statements, kept, result):
@@ -973,8 +974,9 @@ def test_a_raise_without_a_message_after_assignments_is_a_fail_alone():
 @pytest.mark.parametrize(
     "body",
     [
-        # The text of jsonata() spells n in a string, which is not a read.
-        "n = 3\nraise Declined(jsonata(\"'$n'\"))",
+        # The text of jsonata() reads n and spells it in a string, which is
+        # not a read.
+        "n = 3\nraise Declined(jsonata(\"'$n' & $string($n)\"))",
     ],
 )
 def test_a_raise_after_assignments_keeps_their_pass_where_they_count(body):
