@@ -852,6 +852,19 @@ def test_a_choice_takes_in_the_choice_a_rule_leads_to(body, inputs):
     assert any(len(s["Choices"]) > 1 for s in choices)
 
 
+def test_a_choice_that_spells_a_name_in_a_string_keeps_it():
+    """The text of jsonata() may spell a variable the rule assigns in a
+    string, which is not a read and stays as it is, so the second Choice is
+    not taken in."""
+    body = (
+        'if input["a"]:\n    n = input["b"]\n'
+        "    if jsonata(\"$length('$n')\") == 2:\n        return 1\n    return 2\n"
+        "return 3"
+    )
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    assert asl.run(compiled, {"a": True, "b": 5}) == 1
+
+
 def test_a_choice_that_leads_back_to_itself_is_taken_in_once():
     body = 'n = 0\nif input["z"]:\n    return 0\nwhile n < 3:\n    n = n + 1\nreturn n'
     compiled = definition(body)["States"]
