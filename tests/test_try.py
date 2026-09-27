@@ -1028,6 +1028,35 @@ def test_a_return_of_variables_goes_in_a_task_whose_catch_takes_everything(
     assert run(body, {"a": True}, paid) == expected
 
 
+@pytest.mark.parametrize(
+    "clauses, folded",
+    [
+        # The except that reads r catches Declined, which a failing Assign
+        # never raises; the one that takes it reads nothing of r.
+        ("except Declined:\n    return r\nexcept Exception:\n    raise", True),
+        ("except Exception:\n    return r", False),
+    ],
+)
+def test_a_statement_goes_in_the_task_when_no_catcher_of_its_failure_reads_r(
+    clauses, folded
+):
+    body = (
+        f'r = {{}}\ntry:\n    r = {CHARGE}\n    y = r["Payload"]["n"]\n'
+        f"{clauses}\nreturn [y, 1]"
+    )
+    compiled = states(body)
+    [task] = [n for n, s in compiled.items() if s["Type"] == "Task"]
+    assert ("y" in compiled[task]["Assign"]) is folded
+    tasks = {task: lambda arguments: {"Payload": {"n": 3}}}
+    assert run(body, {}, tasks) == [3, 1]
+    if folded:
+        # A missing key raises again, as Python's KeyError does, and a
+        # Declined call returns r from before the try.
+        with pytest.raises(asl.Failure):
+            run(body, {}, {task: lambda arguments: {"Payload": {}}})
+        assert run(body, {}, {task: fails("Declined")}) == {}
+
+
 def test_a_return_after_a_catching_task_reads_what_it_cannot_hold():
     """The except reads r, which a failing Assign of the Task would not
     assign, so what follows the Task stays out of it; the Succeed reads it
