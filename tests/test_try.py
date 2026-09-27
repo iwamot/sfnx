@@ -972,13 +972,40 @@ def test_a_raise_after_assignments_keeps_their_pass_where_they_count(body):
     assert [s["Type"] for s in compiled.values()] == ["Pass", "Fail"]
 
 
+@pytest.mark.parametrize(
+    "caught, holds",
+    [
+        ("Declined", True),
+        # Only a Catch for States.ALL or States.QueryEvaluationError takes a
+        # failure of the Output (measured).
+        ("Exception", False),
+        ("QueryEvaluationError", False),
+    ],
+)
+def test_a_return_after_the_try_goes_in_a_task_whose_catch_misses_it(caught, holds):
+    """The return after the try is not in the except's reach, so it goes in
+    the Task's Output only where the Catch does not take the Output's
+    failure, which then ends the execution as the Succeed's would."""
+    body = f'try:\n    r = {CHARGE}\nexcept {caught}:\n    return "caught"\nreturn r["Payload"]["n"]'
+    preamble = CLASSES + "from sfnx import QueryEvaluationError\n"
+    compiled = states(body, preamble)
+    assert ("Output" in compiled["r"]) is holds
+    (definition,) = compile_source(source(body, preamble)).values()
+    tasks = {"r": lambda arguments: {"Payload": {"n": 3}}}
+    assert asl.run(definition, {}, tasks) == 3
+    if holds:
+        with pytest.raises(asl.Failure) as failure:
+            asl.run(definition, {}, {"r": lambda arguments: {"Payload": {}}})
+        assert failure.value.error == "States.QueryEvaluationError"
+
+
 def test_a_return_after_a_catching_task_reads_what_it_cannot_hold():
     """The except reads r, which a failing Assign of the Task would not
     assign, so what follows the Task stays out of it; the Succeed reads it
     as its expression, where it fails as a Pass would."""
     body = (
         f'r = {{}}\ntry:\n    r = {CHARGE}\n    y = r["Payload"]["n"]\n    return y\n'
-        "except Declined:\n    return r"
+        "except Exception:\n    return r"
     )
     compiled = states(body)
     assert [s["Type"] for s in compiled.values()] == ["Task", "Succeed", "Succeed"]
