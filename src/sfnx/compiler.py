@@ -4480,17 +4480,30 @@ def end_before_returns(definition: dict[str, object]) -> None:
     value as its Output, as it does when the return follows it alone. The
     Succeed stays for the other ways to it, such as a catcher or a Choice's
     Default after a try or an if, and goes when none is left. The Output
-    has no expression, so it cannot fail where the Succeed would not."""
+    has no expression, so it cannot fail where the Succeed would not. A Wait
+    takes any Output so, as it evaluates it when the wait is over (measured),
+    where the Succeed would, and has no Catch, unless the Output reads what
+    the Wait assigns, which it would read from before the Wait, or the State
+    of the context, which names the state it is read in."""
     states = definition["States"]
     assert isinstance(states, dict)
     for state in states.values():
         after = states.get(state.get("Next"))
         if (
-            state["Type"] not in {"Task", "Parallel", "Map"}
+            state["Type"] not in {"Task", "Parallel", "Map", "Wait"}
             or "Output" in state
             or after is None
             or after["Type"] != "Succeed"
-            or "{%" in json.dumps(after["Output"])
+        ):
+            continue
+        codes = expressions_in({"Output": after["Output"]})
+        if state["Type"] != "Wait":
+            if codes:
+                continue
+        elif any(
+            SHARED_CONTEXT.search(code)
+            or any(re.search(rf"\${re.escape(n)}(?!\w)", code) for n in assigns(state))
+            for code in codes
         ):
             continue
         del state["Next"]
