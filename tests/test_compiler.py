@@ -154,22 +154,37 @@ def test_a_swap_reads_the_pending_values_in_the_same_state():
     assert definition["States"]["return"]["Output"] == [2, 3]
 
 
-@pytest.mark.parametrize(
-    "before",
-    [
-        # b reads a, which read as its expression would give another value.
-        "a = random.random()\nb = 2",
-        # Python evaluates the first a, which fails on a missing key.
-        'a = input["x"]\nb = 2',
-    ],
-)
-def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared(before):
-    """The swap does not share the first Pass, so the return right after it
+def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared():
+    """b reads a, which read as its expression would give another value, so
+    the swap does not share the first Pass, and the return right after it
     reads the values the first Pass assigns, each in the other's place."""
-    body = f"{before}\na, b = b, a\nreturn [a, b]"
+    body = "a = random.random()\nb = 2\na, b = b, a\nreturn [a, b]"
     definition = compile_one("import random\n" + machine(body))
     assert definition["States"]["a"]["Assign"]["b"] == 2
     assert definition["States"]["return"]["Output"] == ["{% $b %}", "{% $a %}"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # The swap takes the first a whole into b, where it is still
+        # evaluated, and fails on a missing key there as Python does.
+        'a = input["x"]\nb = 2\na, b = b, a\nreturn [a, b]',
+        # So does an assignment of a copy before the name is assigned again.
+        'a = input["x"]\nb = a\na = 2\nreturn [a, b]',
+    ],
+)
+def test_a_first_value_another_name_takes_whole_shares_the_state(body):
+    source = machine(body)
+    definition = compile_one(source)
+    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
+    assert definition["States"]["a"]["Assign"] == {
+        "a": 2,
+        "b": "{% $states.context.Execution.Input.x %}",
+    }
+    assert asl.run(definition, {"x": 5}) == python(source, {"x": 5}) == [2, 5]
+    with pytest.raises(asl.Failure):
+        asl.run(definition, {})
 
 
 @pytest.mark.parametrize(
@@ -403,7 +418,7 @@ def test_the_length_of_a_list_holding_an_expression_stays_an_expression():
 def test_serial_names_skip_names_in_use():
     definition = compile_one(
         machine(
-            'x = input["w"]\nx = input["x"]\nx_2 = x\nx_2 = input["y"]\nreturn [x, x_2]'
+            'x = input["w"]\nx = input["x"]\nx_2 = x + 1\nx_2 = input["y"]\nreturn [x, x_2]'
         )
     )
     assert list(definition["States"]) == ["x", "x_2", "x_2_2", "return"]

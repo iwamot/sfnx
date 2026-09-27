@@ -1224,9 +1224,15 @@ class Scope:
         # never gives undefined, which a test reads without failing where the
         # first Assign would fail. A first value that can neither fail nor be
         # undefined, such as one written in the source, has nothing to
-        # evaluate, so the new value takes its place.
+        # evaluate, so the new value takes its place, and so does one that
+        # another pending name holds whole, which still evaluates it.
         first = self.pending.get(name)
-        if first is not None and not replaceable(first, value_node, name):
+        others = [v for n, v in self.pending.items() if n != name]
+        if (
+            first is not None
+            and not replaceable(first, value_node, name)
+            and not kept(first, others)
+        ):
             self.flush()
         reads = sorted(value.variables & self.pending.keys())
         if reads and not any(self.pending[read].volatile for read in reads):
@@ -1327,10 +1333,6 @@ class Scope:
         pending one as its expression, all of them before any name is
         assigned, and a name assigned again replaces a first value it may
         replace. None where they cannot, and need a state of their own."""
-        for name, node in zip(names, nodes, strict=True):
-            first = self.pending.get(name)
-            if first is not None and not replaceable(first, node, name):
-                return None
         read = []
         for node, value in zip(nodes, values, strict=True):
             reads = sorted(value.variables & self.pending.keys())
@@ -1341,6 +1343,15 @@ class Scope:
                 if value.variables & self.pending.keys():
                     return None
             read.append(value)
+        for name, node in zip(names, nodes, strict=True):
+            first = self.pending.get(name)
+            others = [v for n, v in zip(names, read, strict=True) if n != name]
+            if (
+                first is not None
+                and not replaceable(first, node, name)
+                and not kept(first, others)
+            ):
+                return None
         return read
 
     def end_without_value(self, node: ast.AST, origins: list[Origin]) -> None:
@@ -3287,6 +3298,16 @@ def replaceable(first: Expr, node: ast.expr, name: str) -> bool:
         and first.defined
         and (first.total or always_reads(node, name))
     )
+
+
+def kept(first: Expr, others: list[Expr]) -> bool:
+    """Whether a pending first value of a name that the new value replaces
+    is still evaluated, as another name in the same Assign takes it whole,
+    as n1 does in n0, n1 = n1, n0: the Assign then fails where the first
+    value fails or is undefined, as Python fails evaluating it. One that
+    changes on evaluation would be evaluated once there, where the two
+    assignments read it apart."""
+    return not first.volatile and any(o.code == first.code for o in others)
 
 
 def always_reads(node: ast.AST, name: str) -> bool:

@@ -201,12 +201,13 @@ def test_nested_parallel_and_hidden_names_across_scopes():
 
 def test_unpacking():
     compiled = states('a, b = 1, input["b"]\nb, a = a, b\nreturn [a, b]')
+    # The second unpacking reads each as the value the other held, and
+    # takes the first b whole into a, so the two share one state.
     assert compiled["a"]["Assign"] == {
-        "a": 1,
-        "b": "{% $states.context.Execution.Input.b %}",
+        "a": "{% $states.context.Execution.Input.b %}",
+        "b": 1,
     }
-    # The return reads each as the value the other held.
-    assert compiled["return"]["Output"] == ["{% $b %}", "{% $a %}"]
+    assert compiled["return"]["Output"] == ["{% $a %}", "{% $b %}"]
     assert run('a, b = 1, input["b"]\nb, a = a, b\nreturn [a, b]', {"b": 2}) == [2, 1]
     # The unpacking goes in the state that assigns pair, reading it as the
     # list written there.
