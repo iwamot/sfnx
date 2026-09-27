@@ -4352,11 +4352,16 @@ def fold_start(
 def reads_as(state: dict[str, object], name: str, value: Expr) -> bool:
     """Whether a value can be written where a state reads the variable of a
     name: no expression in the state binds that name, or a name the value
-    reads, which would take them over."""
+    reads, which would take them over, and no string in one spells the name,
+    as the text of jsonata() may, which is not a read and stays as it is."""
     names = {name, *(read for read in VARIABLE.findall(value.code))}
+    codes = expressions_in(state)
+    spelled = rf"\${re.escape(name)}(?!\w)"
+    if any(re.search(spelled, t) for code in codes for t in re.findall(QUOTED, code)):
+        return False
     return not any(
         re.search(rf"\$({bound})\s*:=|function\s*\([^)]*\$({bound})\b", code)
-        for code in expressions_in(state)
+        for code in codes
         for bound in map(re.escape, names)
     )
 
