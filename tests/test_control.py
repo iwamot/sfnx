@@ -1287,3 +1287,12 @@ def test_a_return_reads_a_value_that_may_fail_where_it_fails():
     assert asl.run(compiled, {"n": 3}) == [6, 1]
     with pytest.raises(asl.Failure):
         asl.run(compiled, {"n": "a"})
+
+
+def test_a_return_after_a_wait_reads_a_function_of_a_value_that_is_never_undefined():
+    """$length of a variable fails or gives a number, so the return reads it
+    where it fails."""
+    body = 's: str = input.get("s", "")\nwait(1)\nn = len(s)\nreturn [n, 1]'
+    compiled = definition(body)
+    assert list(compiled["States"]) == ["wait"]
+    assert asl.run(compiled, {"s": "abc"}) == [3, 1]
