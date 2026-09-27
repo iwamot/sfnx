@@ -73,12 +73,10 @@ def test_a_read_of_a_pending_assignment_reads_its_expression():
     """Assign reads the values from before the state, so b reads what a takes
     rather than $a, and the two share a Pass, as a hand-writer spells a path
     out again."""
-    definition = compile_one(machine('a = input["n"]\nb = [a]\nc = 2\nreturn b'))
+    body = 'a = input["n"]\nb = [a]\nc = 2\nreturn [a, b, c]'
+    definition = compile_one(machine(body))
     n = "{% $states.context.Execution.Input.n %}"
-    assert definition["States"] == {
-        "a": {"Type": "Pass", "Assign": {"a": n, "b": [n], "c": 2}, "Next": "return"},
-        "return": {"Type": "Succeed", "Output": "{% $b %}"},
-    }
+    assert definition["States"]["a"]["Assign"] == {"a": n, "b": [n], "c": 2}
 
 
 def test_a_read_of_a_value_that_changes_starts_a_new_state():
@@ -94,8 +92,10 @@ def test_a_read_of_a_value_that_changes_starts_a_new_state():
 
 
 def test_reassignment_starts_a_new_state_with_a_serial_name():
-    """The first value is still evaluated, as Python evaluates it."""
-    definition = compile_one(machine('x = input["w"]\nx = input["x"]\nreturn [x]'))
+    """The new value reads the first, which may be undefined, so the first
+    keeps its state."""
+    body = 'x: float = input["w"]\nx = x + input["x"]\nreturn [x]'
+    definition = compile_one(machine(body))
     assert list(definition["States"]) == ["x", "x_2", "return"]
     assert definition["States"]["x"]["Next"] == "x_2"
 
@@ -117,10 +117,14 @@ def test_a_first_value_that_cannot_fail_is_replaced_in_the_same_state(first):
     "first",
     ['input["x"]', '10 / input.get("d", 1)', "random.random()"],
 )
-def test_a_first_value_that_can_fail_or_change_keeps_its_state(first):
+def test_a_first_value_nothing_reads_goes(first):
+    """Nothing reads the first n before n = 0, so a hand-writer would not
+    evaluate it: a missing key fails nowhere, which the table of differences
+    lists."""
     body = f'n = {first}\ns = "a"\nn = 0\nreturn [n, s]'
     definition = compile_one("import random\n" + machine(body))
-    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
+    assert all("n" not in s.get("Assign", {}) for s in definition["States"].values())
+    assert asl.run(definition, {}) == [0, "a"]
 
 
 @pytest.mark.parametrize(
@@ -404,10 +408,12 @@ def test_a_value_that_cannot_fail_goes_in_the_return(value):
     ],
 )
 def test_a_comprehension_that_may_fail_keeps_its_pass(value):
-    # Python evaluates v, which the return does not read.
-    body = f'{CERTAIN}v = {value}\ns = "a"\nreturn s'
-    definition = compile_one(machine(body))
-    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
+    # v may fail, and the return reads s while nothing after it reads v, so
+    # v needs a state where the return does not read it: the Wait assigns it.
+    body = f'{CERTAIN}v = {value}\ns = "a"\nwait(1)\nreturn [s, v]'
+    source = machine(body).replace("import state_machine", "import state_machine, wait")
+    definition = compile_one(source)
+    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Wait"]
 
 
 def test_the_length_of_a_list_holding_an_expression_stays_an_expression():
@@ -418,7 +424,8 @@ def test_the_length_of_a_list_holding_an_expression_stays_an_expression():
 def test_serial_names_skip_names_in_use():
     definition = compile_one(
         machine(
-            'x = input["w"]\nx = input["x"]\nx_2 = x + 1\nx_2 = input["y"]\nreturn [x, x_2]'
+            'x: float = input["w"]\nx = x + input["x"]\n'
+            'x_2: float = input["y"]\nx_2 = x_2 + input["z"]\nreturn [x, x_2]'
         )
     )
     assert list(definition["States"]) == ["x", "x_2", "x_2_2", "return"]
@@ -674,9 +681,9 @@ def test_names_do_not_depend_on_lines():
         ('x = input["a"]\nreturn x', ["return"]),
         ('x = input.get("a")\nreturn [x]', ["return"]),
         ("x = 1", ["return"]),
-        # Python evaluates an assignment the return does not read, which may
-        # fail, and one that changes on evaluation is evaluated once.
-        ('x = input["a"]\nreturn 1', ["x", "return"]),
+        # Nothing reads x, so it goes; one that changes on evaluation is
+        # evaluated once.
+        ('x = input["a"]\nreturn 1', ["return"]),
         ("x = random.random()\nreturn [x, x]", ["x", "return"]),
     ],
 )

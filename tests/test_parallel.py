@@ -8,7 +8,7 @@ from sfnx.diagnostics import CompileError
 from tests import asl
 
 PUBLISH = "arn:aws:states:::aws-sdk:sns:publish"
-HEADER = "from sfnx import Timeout, parallel, state_machine, task\n\n\nclass Declined(Exception):\n    pass\n"
+HEADER = "from sfnx import Timeout, parallel, state_machine, task, wait\n\n\nclass Declined(Exception):\n    pass\n"
 
 
 def source(body: str, after: str = "") -> str:
@@ -85,7 +85,9 @@ def test_where_parallel_can_be_written():
         + "results = parallel(email, audit)\nparallel(email)\nreturn parallel(audit)"
     )
     compiled = states(body)
-    assert compiled["results"]["Assign"] == {"results": "{% $states.result %}"}
+    # Nothing reads results, so the Parallel assigns nothing.
+    assert compiled["results"]["Type"] == "Parallel"
+    assert "Assign" not in compiled["results"]
     assert compiled["parallel"]["Next"] == "return"
     assert compiled["return"]["End"] is True
 
@@ -98,16 +100,9 @@ def test_retry_and_catch():
     state = states(body)["r"]
     assert state["Retry"] == [{"ErrorEquals": ["States.Timeout"]}]
     assert state["Catch"][0]["ErrorEquals"] == ["Declined"]
-    # The return after the try reads a variable, which cannot fail.
-    assert list(state) == [
-        "Type",
-        "Branches",
-        "Retry",
-        "Catch",
-        "Assign",
-        "Output",
-        "End",
-    ]
+    # The return after the try reads a variable, which cannot fail, and
+    # nothing else reads r, so the Parallel does not assign it.
+    assert list(state) == ["Type", "Branches", "Retry", "Catch", "Output", "End"]
 
 
 def test_a_module_function_sees_none_of_the_machine():
@@ -130,14 +125,14 @@ def test_a_branch_assigns_names_of_its_own():
     """Step Functions rejects a branch that assigns a variable of the
     machine's, where Python keeps the two apart, so the branch's name is
     numbered."""
-    # The branch's return does not read total, which int() may fail on, so
-    # the assignment keeps its state.
+    # The branch reads total after a Wait, which cannot take int(), which
+    # may fail, so the assignment keeps its state.
     body = (
-        'total = 0\ndef f():\n    total = int("1")\n    return [1]\n'
+        'total = 0\ndef f():\n    total = int("1")\n    wait(0)\n    return [total]\n'
         "r = parallel(f)\nreturn [total, r]"
     )
     branch = states(body)["r"]["Branches"][0]["States"]
-    assert list(branch) == ["f.total_2", "f.return"]
+    assert list(branch) == ["f.total_2", "f.wait"]
     assert list(branch["f.total_2"]["Assign"]) == ["total_2"]
     assert run(body, {}) == [0, [[1]]]
     # The machine may assign the name after the branch too.
@@ -211,8 +206,8 @@ def test_unpacking():
     assert run('a, b = 1, input["b"]\nb, a = a, b\nreturn [a, b]', {"b": 2}) == [2, 1]
     # The unpacking goes in the state that assigns pair, reading it as the
     # list written there.
-    assert states("pair = [1, 2]\na, b = pair\nreturn a")["pair"]["Assign"] == {
-        "pair": [1, 2],
+    # pair, written in the source, is read in place and nothing reads it.
+    assert states("pair = [1, 2]\na, b = pair\nreturn [a, b]")["pair"]["Assign"] == {
         "a": "{% [1, 2][0] %}",
         "b": "{% [1, 2][1] %}",
     }

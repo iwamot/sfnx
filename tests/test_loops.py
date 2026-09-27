@@ -63,22 +63,25 @@ def test_for_over_a_list_is_a_counter_and_a_choice():
 
 def test_what_follows_a_loop_goes_in_its_choice():
     """Only the Default leads out of a loop without break, and the Choice's
-    own Assign applies only there. The return does not read done, which
-    Python evaluates, so the Choice assigns it."""
-    body = 'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    n = n + 1\ndone = n * 2\nreturn [n]'
+    own Assign applies only there. The Wait after it cannot take done, which
+    the return reads after the Wait, so the Choice assigns it."""
+    body = (
+        'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    n = n + 1\ndone = n * 2\n'
+        "wait(0)\nreturn [n, done]"
+    )
     compiled = states(body)
     assert compiled["for"]["Assign"] == {"done": "{% $n * 2 %}"}
-    assert run(body, {"xs": [1, 2]}) == [2]
+    assert run(body, {"xs": [1, 2]}) == [2, 4]
     body = (
         'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    if x > 1:\n        break\n'
-        "    n = n + 1\ndone = n * 2\nreturn [n]"
+        "    n = n + 1\ndone = n * 2\nwait(0)\nreturn [n, done]"
     )
     # A break joins the Default after the loop, so each takes it.
     compiled = states(body)
     assert compiled["for"]["Assign"] == {"done": "{% $n * 2 %}"}
     # The if the body starts with is a rule of the loop's Choice.
     assert compiled["for"]["Choices"][0]["Assign"] == {"done": "{% $n * 2 %}"}
-    assert run(body, {"xs": [1, 2]}) == [1]
+    assert run(body, {"xs": [1, 2]}) == [1, 2]
 
 
 def test_enumerate_names_the_counter():
@@ -110,14 +113,17 @@ def test_enumerate_names_the_counter():
 
 
 def test_zip_counts_to_the_shorter_list():
-    body = 'xs: list = input["xs"]\nys: list = input["ys"]\nfor a, b in zip(xs, ys):\n    pair = [a, b]'
+    body = (
+        'xs: list = input["xs"]\nys: list = input["ys"]\nfor a, b in zip(xs, ys):\n'
+        "    pair = [a, b]\n    wait(len(pair))"
+    )
     compiled = states(body)
     assert compiled["for"]["Choices"][0]["Condition"] == (
         "{% $a_index < $min([$count($xs), $count($ys)]) %}"
     )
+    # The Wait the body ends with takes the step to the next pair.
     assert compiled["for"]["Choices"][0]["Assign"] == {
         "pair": ["{% $xs[$a_index] %}", "{% $ys[$a_index] %}"],
-        "a_index": "{% $a_index + 1 %}",
     }
 
 
@@ -828,12 +834,12 @@ def test_the_step_of_a_loop_goes_in_the_task_that_ends_its_body(loop, counter):
     assert len(calls) == rounds
 
 
-def test_an_enumerate_counter_keeps_a_value_before_it_that_may_fail():
-    """Python evaluates i = input["i"] before the loop assigns i, and fails on
-    a missing key, so the value keeps its own state."""
+def test_an_enumerate_counter_replaces_a_value_before_it_nothing_reads():
+    """Nothing reads i = input["i"] before the loop assigns i, so a
+    hand-writer would not read it: a missing key fails nowhere, which the
+    table of differences lists."""
     body = 'i = input["i"]\nxs: list = input["xs"]\nfor i, x in enumerate(xs):\n    wait(1)\nreturn 1'
-    with pytest.raises(asl.Failure):
-        run(body, {"xs": [1]})
+    assert run(body, {"xs": [1]}) == 1
     assert run(body, {"i": 7, "xs": [1]}) == 1
 
 
@@ -853,12 +859,11 @@ def test_a_range_loop_takes_the_place_of_a_written_value(stop):
     assert run(body, {}) == 1
 
 
-def test_a_range_loop_keeps_a_value_before_it_that_may_fail():
+def test_a_range_loop_replaces_a_value_before_it_nothing_reads():
     body = 'i = input["i"]\nfor i in range(3):\n    wait(i)\nreturn 1'
     compiled = states(body)
-    assert [s["Type"] for s in compiled.values()].count("Pass") == 2
-    with pytest.raises(asl.Failure):
-        run(body, {})
+    assert [s["Type"] for s in compiled.values()].count("Pass") == 1
+    assert run(body, {}) == 1
 
 
 @pytest.mark.parametrize(
