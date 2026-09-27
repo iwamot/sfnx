@@ -9,6 +9,7 @@ from sfnx import testing
 from sfnx.compiler import (
     Rounds,
     always_reads,
+    both,
     compile_source,
     definitions,
     drop_dead_assignments,
@@ -963,12 +964,29 @@ def test_a_choice_reads_what_the_transition_assigns(condition, values, read):
         ("'s'", "'s'"),
         ("($v := 1; $v)", "($v := 1; $v)"),
         ("($a) + ($b)", "(($a) + ($b))"),
-        ("('(' & $a)", "(('(' & $a))"),
+        # A parenthesis in a string is text.
+        ("('(' & $a)", "('(' & $a)"),
+        ("('(') + (')')", "(('(') + (')'))"),
         ("$a + 1", "($a + 1)"),
     ],
 )
 def test_a_value_read_in_place_of_a_variable_is_grouped_where_it_must_be(code, group):
     assert grouped(code) == group
+
+
+@pytest.mark.parametrize(
+    "second, joined",
+    [
+        ("$b or $c", "$a and ($b or $c)"),
+        ("$b ? 1 : 0", "$a and ($b ? 1 : 0)"),
+        ("$b > 1", "$a and $b > 1"),
+        # A word or a parenthesis in a string is text.
+        ("$b = 'or'", "$a and $b = 'or'"),
+        ("('(') or (')')", "$a and (('(') or (')'))"),
+    ],
+)
+def test_two_tests_are_joined_with_and(second, joined):
+    assert both("{% $a %}", f"{{% {second} %}}") == f"{{% {joined} %}}"
 
 
 FLAGGED = (
@@ -1521,6 +1539,26 @@ def test_an_assignment_assigned_again_before_any_read_goes():
     )
     assert "Assign" not in definition["States"]["w"]
     assert definition["States"]["w2"]["Assign"] == {"x": 2}
+
+
+@pytest.mark.parametrize(
+    "value, kept",
+    [
+        # A variable alone fails nowhere, wherever else it is read.
+        ("{% $x %}", False),
+        # A path read in its place elsewhere may fail there otherwise.
+        ("{% $x.a %}", True),
+    ],
+)
+def test_an_assignment_nothing_reads_but_its_expression_elsewhere(value, kept):
+    definition = dropped(
+        {
+            "w": {**WAIT, "Assign": {"x": "{% $states.input %}"}, "Next": "w2"},
+            "w2": {**WAIT, "Assign": {"y": value}, "Next": "r"},
+            "r": {"Type": "Succeed", "Output": value},
+        }
+    )
+    assert ("Assign" in definition["States"]["w2"]) == kept
 
 
 @pytest.mark.parametrize(

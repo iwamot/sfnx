@@ -53,9 +53,13 @@ from sfnx.jsontypes import (
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
 from sfnx.syntax import (
+    atomic,
     changes,
     facts,
+    lone_variable,
+    looser_than_and,
     names_read,
+    path_alone,
     reads_own_context,
     reads_own_states,
     reads_state_name,
@@ -3587,13 +3591,6 @@ def takes_evaluation(state: dict[str, object], field: str) -> bool:
     return bool(errors & EVALUATION_ERRORS)
 
 
-# A read of a variable alone.
-BARE = re.compile(r"\s*\$[^\W\d]\w*\s*")
-# A read of a variable or a path from it, which needs no parentheses where it
-# is written into another expression.
-PATH = re.compile(r"\$[^\W\d]\w*(?:\.\w+)*")
-
-
 def fold_into_catching_tasks(
     definition: dict[str, object],
     enclosing: dict[str, tuple[list[Handler], ...]],
@@ -3756,7 +3753,7 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
     ):
         placed = {n: v for n, v in values.items() if reads[n]}
         bound = []
-    if not bound and len(placed) == 1 and code == f"${next(iter(placed))}":
+    if not bound and len(placed) == 1 and lone_variable(code) == next(iter(placed)):
         return next(iter(placed.values())).template
     if placed:
         # All at once: a value put in place may read the name of another from
@@ -3778,7 +3775,7 @@ def assigned_value(template: object) -> Expr | None:
     expression."""
     if isinstance(template, str) and template.startswith("{%"):
         code = template[2:-2].strip()
-        precedence = ATOM if PATH.fullmatch(code) else WRITTEN
+        precedence = ATOM if path_alone(code) else WRITTEN
         return expression(code, frozenset(names_read(code)), precedence)
     if isinstance(template, (dict, list)):
         if not written(template):
@@ -4066,7 +4063,7 @@ def copied(template: object, codes: list[str]) -> bool:
     out or a variable alone has nothing to fail, whatever holds it."""
     found = [code.strip() for code in expressions_in(template)]
     return any(
-        not (BARE.fullmatch(code) or code in NEVER_FAILS)
+        not (lone_variable(code) is not None or code in NEVER_FAILS)
         and sum(code in other for other in codes) > 1
         for code in found
     )
@@ -4447,9 +4444,9 @@ def read_as_values(
         code = item[2:-2].strip()
         # An Assign value that is only the variable is the value as written;
         # a Condition stays an expression.
-        whole = re.fullmatch(r"\$(\w+)", code)
-        if whole and whole[1] in used and not test:
-            return values[whole[1]]
+        whole = lone_variable(code)
+        if whole in used and not test:
+            return values[whole]
         counts = Counter(m[1] for m in pattern.finditer(code))
         # A value read more than once is bound once in a block, as a
         # hand-writer binds a long one, where the values bound before it
@@ -4487,21 +4484,11 @@ def template_code(template: object) -> str:
 
 
 def grouped(code: str) -> str:
-    """Code to read in place of a variable: a path or a literal as it is, and
-    anything else in parentheses."""
-    if re.fullmatch(r"\$?[\w.]+(\([^()]*\))?|'[^'\\]*'", code) or enclosed(code):
+    """Code to read in place of a variable: as it is where it reads as one
+    operand, and in parentheses otherwise."""
+    if atomic(code):
         return code
     return f"({code})"
-
-
-def enclosed(code: str) -> bool:
-    """Whether code is one parenthesized group, such as a block."""
-    depth = 0
-    for position, character in enumerate(code):
-        depth += {"(": 1, ")": -1}.get(character, 0)
-        if depth == 0:
-            return position == len(code) - 1 and code.startswith("(")
-    return False
 
 
 def both(first: object, second: object) -> object:
@@ -4520,8 +4507,7 @@ def both(first: object, second: object) -> object:
             continue
         assert isinstance(condition, str)
         code = condition[2:-2].strip()
-        loose = re.search(r"\bor\b|\?|:=", code) and not enclosed(code)
-        tests.append(f"({code})" if loose else code)
+        tests.append(f"({code})" if looser_than_and(code) else code)
     return "{% " + " and ".join(tests) + " %}"
 
 
@@ -4684,7 +4670,6 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
     """Each read of a variable in a state as a value's expression: an
     expression that is only the variable is the value as written, and one
     that reads it among others reads the value's code."""
-    whole = f"{{% ${name} %}}"
     pattern = re.compile(rf"\${re.escape(name)}(?!\w)")
     code = operand(value, ATOM)
 
@@ -4693,9 +4678,9 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
             return {k: v if k == "Comment" else replaced(v) for k, v in item.items()}
         if isinstance(item, list):
             return [replaced(v) for v in item]
-        if item == whole:
-            return value.template
         if isinstance(item, str) and item.startswith("{%") and item.endswith("%}"):
+            if lone_variable(item[2:-2].strip()) == name:
+                return value.template
             return pattern.sub(lambda _: code, item)
         return item
 
@@ -4867,7 +4852,7 @@ def read_what_it_assigns(
     one the state assigns reads the expression its Assign evaluates alike,
     so the Output fails only where the Assign does, which the Catch or the
     retrier takes as it would without the Output."""
-    if not (may_fold(state) or all(BARE.fullmatch(c) for c in codes)) or any(
+    if not (may_fold(state) or all(lone_variable(c) is not None for c in codes)) or any(
         changes_or_reads_the_state(c) for c in codes
     ):
         return None
