@@ -4860,15 +4860,16 @@ def way_assign(
         return None
     own = assigns(holder)
     reads = {read for code in codes for read in names_read(code)}
-    found = {n: assigned_value(v) for n, v in own.items() if n in reads or n in assign}
-    if any(v is None for v in found.values()):
+    found = {n: assigned_value(v) for n, v in own.items() if n in reads}
+    read = {n: v for n, v in found.items() if v is not None}
+    if len(read) < len(found):
         return None
-    values = {n: v for n, v in found.items() if v is not None}
-    # A name both assign drops the way's value, which must have nothing to
-    # evaluate.
-    if any(not (values[n].defined and values[n].total) for n in own if n in assign):
+    # A name both assign drops the way's value, which the Pass's new value
+    # evaluates in its place where it reads it: one that may be undefined
+    # could pass there through a test such as $type() where the way's
+    # Assign would fail.
+    if any(n in assign and not v.defined for n, v in read.items()):
         return None
-    read = {n: v for n, v in values.items() if n in reads}
     # A value read again in the Pass's place would give another value.
     if any(changes_or_reads_the_state(v.code) for v in read.values()):
         return None

@@ -3,8 +3,9 @@ import textwrap
 
 import pytest
 
-from sfnx.compiler import compile_source
+from sfnx.compiler import compile_source, emitted, expressions_in, from_asl, way_assign
 from sfnx.diagnostics import CompileError
+from sfnx.expressions import expression
 from tests import asl
 
 INPUT = "$states.context.Execution.Input"
@@ -974,6 +975,34 @@ def test_a_way_that_assigns_variables_alone_holds_the_statement_after_it():
     compiled = states(body)
     assert [s["Type"] for s in compiled.values()] == ["Pass", "Choice", "Succeed"]
     assert run(body, {"a": 1, "b": 2, "xs": [0, 0, 0]}) == [1, 2]
+
+
+# What the way assigns t: from the input, which may fail or be undefined, and
+# a division, which may fail but is never undefined.
+FROM_INPUT = expression("$states.input.t")
+DIVIDED = expression("10 / $d", defined=True)
+
+
+@pytest.mark.parametrize(
+    "way, then, taken",
+    [
+        # Nothing reads the way's value once the Pass assigns t again.
+        (FROM_INPUT, 5, {"t": 5}),
+        (DIVIDED, 5, {"t": 5}),
+        # The Pass's new value evaluates the way's value in its place, where
+        # it fails as the way's Assign would.
+        (DIVIDED, "{% $t + 1 %}", {"t": "{% (10 / $d) + 1 %}"}),
+        # An undefined value would pass through $type() where the way's
+        # Assign fails.
+        (FROM_INPUT, "{% $type($t) %}", None),
+    ],
+)
+def test_a_way_holds_a_pass_that_assigns_its_name_again(way, then, taken):
+    holder = {"Type": "Pass", "Assign": {"t": way}, "Next": "p"}
+    assign = from_asl({"t": then})
+    assert isinstance(assign, dict)
+    found = way_assign(holder, holder, assign, expressions_in(assign))
+    assert emitted(found) == taken
 
 
 @pytest.mark.parametrize(
