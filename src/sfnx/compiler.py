@@ -1460,10 +1460,11 @@ class Scope:
         in the place of the assignments, fails where Python does, which
         evaluates each even when the return does not read it: each neither
         fails nor is undefined, the return is that variable itself, whose
-        Output fails where the Pass would, or the return reads the only one
-        that may fail every time it is evaluated, and it is never undefined,
-        which a list or a dict would drop without failing. Two that may fail
-        could fail in another order."""
+        Output fails where the Pass would, or the return reads each one that
+        may fail every time it is evaluated, and each is never undefined,
+        which a list or a dict would drop without failing. Where two may
+        fail, the Output may fail on another of them first, as its message
+        then says, which a hand-writer would not spend a state to keep."""
         whole = value_node.id if isinstance(value_node, ast.Name) else None
         uncertain = [
             name
@@ -1472,8 +1473,10 @@ class Scope:
         ]
         if not uncertain:
             return True
-        [name, *others] = uncertain
-        return not others and pending[name].defined and always_reads(value_node, name)
+        return all(
+            pending[name].defined and always_reads(value_node, name)
+            for name in uncertain
+        )
 
     def read_by_name(self, value_node: ast.expr, pending: dict[str, Expr]) -> bool:
         """Whether a value reads a pending variable where no expression can
