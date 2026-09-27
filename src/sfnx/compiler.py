@@ -1850,18 +1850,7 @@ class Scope:
         if scope.graph.reachable:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
-        thread_choices(definition)
-        drop_dead_assignments(definition)
-        fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
-        fold_start(definition, scope.starting)
-        spread_passes(definition)
-        thread_choices(definition, rounds=True)
-        fold_start(definition, scope.starting)
-        merge_choices(definition)
-        take_in_choices(definition)
-        share_states(definition)
-        end_before_returns(definition)
-        drop_dead_assignments(definition)
+        optimize(definition, scope)
         docstring = ast.get_docstring(function)
         if docstring:
             definition = {"Comment": docstring, **definition}
@@ -3857,7 +3846,25 @@ COMPARED = re.compile(rf"\$(\w+) (=|!=|<=|>=|<|>) ({LITERAL})")
 Known = dict[str, object]
 
 
-def thread_choices(definition: dict[str, object], rounds: bool = False) -> None:
+class Rounds:
+    """The first rounds of loops already taken, kept while the passes run
+    again, so that a loop gives up its first round once however often they
+    run: the Choices each transition went past so in thread_choices, and the
+    Choices that take_in_choices took in a Choice that leads back to itself."""
+
+    def __init__(self) -> None:
+        # By the id of the transition's holder, which is kept here so that no
+        # other holder takes its id.
+        self.passed: dict[int, tuple[dict[str, object], set[str]]] = {}
+        # The first Choice and the second, by name.
+        self.taken_in: set[tuple[str, str]] = set()
+
+    def of(self, holder: dict[str, object]) -> set[str]:
+        """The Choices the transition of holder went past so."""
+        return self.passed.setdefault(id(holder), (holder, set()))[1]
+
+
+def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) -> None:
     """Each transition into a Choice whose tests are decided by values known
     along it, as the transition to where the Choice would send it: a flag that
     each path assigns a value written in the source, such as the stage a saga
@@ -3876,9 +3883,7 @@ def thread_choices(definition: dict[str, object], rounds: bool = False) -> None:
     # assigns, or that leads back to the Choice it is in, once, as in the
     # first round of a loop whose first test it decides: taking each round
     # in would run the loop as the file compiles, and never end for a loop
-    # that does not. Only one call of this takes rounds, as each call starts
-    # counting afresh. These are the Choices each transition went past so.
-    read_into: dict[int, set[str]] = {}
+    # that does not. Rounds records the Choices each transition went past so.
     # A path sent past a Choice no longer joins the others there, so what is
     # known where it goes may grow: follow the values again until no
     # transition moves.
@@ -3897,7 +3902,7 @@ def thread_choices(definition: dict[str, object], rounds: bool = False) -> None:
                 # and its retriers take a failure the Choice would not.
                 movable = holder is not state or may_fold(state)
                 taken: dict[str, object] = {}
-                passed = read_into.setdefault(id(holder), set())
+                passed = rounds.of(holder) if rounds is not None else set()
                 before = set(passed)
                 comment = holder.get("Comment")
                 seen = set()
@@ -3921,7 +3926,7 @@ def thread_choices(definition: dict[str, object], rounds: bool = False) -> None:
                         # Choices that lead to each other would each be gone
                         # past again, round after round, where the way into
                         # them changes on each.
-                        if not rounds or target in passed:
+                        if rounds is None or target in passed:
                             break
                         assign = read_into_transition(assign, reads, current)
                         if assign is None:
@@ -3935,7 +3940,7 @@ def thread_choices(definition: dict[str, object], rounds: bool = False) -> None:
                 # A rule that leads back to the Choice it is in, as a loop's
                 # Default does, is taken as the first round, once.
                 stays = target == holder[key] and bool(taken)
-                if stays and (not rounds or target in before):
+                if stays and (rounds is None or target in before):
                     continue
                 if target != holder[key] or stays:
                     if stays:
@@ -4300,7 +4305,7 @@ CHANGING = re.compile(r"\$(random|uuid|now|millis|eval)\s*\(")
 STATE_CONTEXT = re.compile(r"\$states\.context\.State\b")
 
 
-def take_in_choices(definition: dict[str, object]) -> None:
+def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
     """A transition of a Choice that leads straight to another Choice takes in
     that one's tests, as a hand-writer lists the tests of `if a:` and the `if
     b:` right inside it, or right after it, in one Choice: a rule `c` becomes
@@ -4317,7 +4322,6 @@ def take_in_choices(definition: dict[str, object]) -> None:
     name it would read. The second stays for the other ways into it."""
     states = definition["States"]
     assert isinstance(states, dict)
-    done: set[tuple[str, str]] = set()
     taken = True
     while taken:
         taken = False
@@ -4335,7 +4339,7 @@ def take_in_choices(definition: dict[str, object]) -> None:
                 # A Choice that leads back to itself through Choices alone
                 # would be taken in again each time, as a loop unrolled
                 # without end, so it is taken in once into each Choice.
-                if (name, target) in done:
+                if (name, target) in rounds.taken_in:
                     continue
                 values = rule.get("Assign", {})
                 assert isinstance(values, dict)
@@ -4344,7 +4348,7 @@ def take_in_choices(definition: dict[str, object]) -> None:
                     continue
                 later_rules, later_default, own = read
                 if circles(states, target):
-                    done.add((name, target))
+                    rounds.taken_in.add((name, target))
                 # Each way out describes the transition it takes the place
                 # of, whose Assign it takes, as merge_choices does.
                 leading = rule.get("Comment") if rule is not first or values else None
@@ -4569,9 +4573,9 @@ def fold_start(
     child execution of a distributed map, whose context is its own. A
     Succeed takes them in its Output, and a Fail in its Error and Cause,
     where none can fail or be undefined, as nothing reads what they do not;
-    one follows the Pass where a Choice the Pass decides was skipped, or,
-    once thread_choices has run, where the first round of a loop leaves it,
-    so this runs again then. It runs after fold_into_catching_tasks, as the
+    one follows the Pass where a Choice the Pass decides was skipped, or
+    where the first round of a loop that thread_choices took in the way in
+    leaves it. It runs after fold_into_catching_tasks, as the
     catchers assign these values too, where that would count them among what
     Python assigned before a statement that may fail."""
     if starting is None:
@@ -4579,8 +4583,8 @@ def fold_start(
     start, values = starting
     states = definition["States"]
     assert isinstance(states, dict)
-    # Called again once decided Choices are gone, the Pass may already be in
-    # the state after it.
+    # Run again in each round of the passes, the Pass may already be in the
+    # state after it.
     if start not in states:
         return
     opening = states[start]
@@ -5115,6 +5119,30 @@ def commented(state: dict[str, object], comment: str) -> dict[str, object]:
     return state
 
 
+def optimize(definition: dict[str, object], scope: "Scope") -> None:
+    """The states of a machine, a branch or a Map processor, rewritten by
+    each pass in turn until a round of them changes nothing: one pass can
+    open the way for one that ran before it, as a Choice taken in another
+    leaves a start Pass that fold_start can now fold. Each pass takes what it
+    can in one go, and the first round of a loop is taken once, so the
+    rounds end."""
+    rounds = Rounds()
+    while True:
+        before = copy.deepcopy(definition)
+        thread_choices(definition)
+        drop_dead_assignments(definition)
+        fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
+        fold_start(definition, scope.starting)
+        spread_passes(definition)
+        thread_choices(definition, rounds)
+        merge_choices(definition)
+        take_in_choices(definition, rounds)
+        share_states(definition)
+        end_before_returns(definition)
+        if definition == before:
+            return
+
+
 def compile_machine(
     function: ast.FunctionDef,
     options: dict[str, object],
@@ -5166,18 +5194,7 @@ def compile_machine(
     docstring = ast.get_docstring(function)
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
-    thread_choices(definition)
-    drop_dead_assignments(definition)
-    fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
-    fold_start(definition, scope.starting)
-    spread_passes(definition)
-    thread_choices(definition, rounds=True)
-    fold_start(definition, scope.starting)
-    merge_choices(definition)
-    take_in_choices(definition)
-    share_states(definition)
-    end_before_returns(definition)
-    drop_dead_assignments(definition)
+    optimize(definition, scope)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
 
