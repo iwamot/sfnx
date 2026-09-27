@@ -330,6 +330,10 @@ CERTAIN = (
         "[k for k in d]",
         "list(d.keys())",
         "d.keys()",
+        # $string fails for no value of any JSON type (measured).
+        "str(xs)",
+        "str(d)",
+        'f"-{len(xs)}"',
     ],
 )
 def test_a_value_that_cannot_fail_goes_in_the_return(value):
