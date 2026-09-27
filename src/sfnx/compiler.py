@@ -4662,17 +4662,49 @@ def written_sum(template: object) -> object:
     return folded.template
 
 
+def read_what_it_assigns(
+    state: dict[str, object], output: object, codes: list[str]
+) -> object | None:
+    """The Output of a return for a Task, a Parallel or a Map to end with,
+    or None where it cannot: only where a failure of its Output ends the
+    execution, as the Succeed's would, and where the return reads nothing
+    of $states, which is the Succeed's own there, nor the time, a random
+    value or $eval, which a jsonata() expression may read in ways not known
+    here, nor what the state assigns as such a value, which the Output
+    would evaluate again. The Output reads what the state assigns as the
+    expressions it assigns, as it is evaluated with the values from before
+    it; the Assign stays, as Python evaluates what the return does not
+    read."""
+    if not may_fold(state) or any(changes_or_reads_the_state(c) for c in codes):
+        return None
+    own = assigns(state)
+    reads = {read for code in codes for read in VARIABLE.findall(code)}
+    found = {n: assigned_value(v) for n, v in own.items() if n in reads}
+    values = {n: v for n, v in found.items() if v is not None}
+    # What the state's own Assign reads of $states the Output reads alike.
+    if len(values) < len(found) or any(
+        TIMED.search(v.code) or re.search(r"\$eval\s*\(", v.code)
+        for v in values.values()
+    ):
+        return None
+    holder: dict[str, object] = {"Output": output}
+    if not all(reads_as(holder, n, v) for n, v in values.items()):
+        return None
+    return read_through(output, values)
+
+
 def end_before_returns(definition: dict[str, object]) -> None:
-    """A Task, a Parallel or a Map that goes on to a Succeed returning a value
-    written in the source ends the machine or the branch itself, with that
-    value as its Output, as it does when the return follows it alone. The
-    Succeed stays for the other ways to it, such as a catcher or a Choice's
-    Default after a try or an if, and goes when none is left. The Output
-    has no expression, so it cannot fail where the Succeed would not. A Wait
-    takes any Output so, as it evaluates it when the wait is over (measured),
-    where the Succeed would, and has no Catch, unless the Output reads what
-    the Wait assigns, which it would read from before the Wait, or the State
-    of the context, which names the state it is read in."""
+    """A Task, a Parallel or a Map that goes on to a Succeed ends the machine
+    or the branch itself, with the Succeed's Output as its own, as it does
+    when the return follows it alone. The Succeed stays for the other ways
+    to it, such as a catcher or a Choice's Default after a try or an if, and
+    goes when none is left. An Output written in the source has no
+    expression, so it cannot fail where the Succeed would not; one with
+    expressions goes as read_what_it_assigns says. A Wait takes any Output
+    so, as it evaluates it when the wait is over (measured), where the
+    Succeed would, and has no Catch, unless the Output reads what the Wait
+    assigns, which it would read from before the Wait, or the State of the
+    context, which names the state it is read in."""
     states = definition["States"]
     assert isinstance(states, dict)
     for state in states.values():
@@ -4685,9 +4717,12 @@ def end_before_returns(definition: dict[str, object]) -> None:
         ):
             continue
         codes = expressions_in({"Output": after["Output"]})
+        output: object = after["Output"]
         if state["Type"] != "Wait":
             if codes:
-                continue
+                output = read_what_it_assigns(state, output, codes)
+                if output is None:
+                    continue
         elif any(
             SHARED_CONTEXT.search(code)
             or any(re.search(rf"\${re.escape(n)}(?!\w)", code) for n in assigns(state))
@@ -4695,7 +4730,7 @@ def end_before_returns(definition: dict[str, object]) -> None:
         ):
             continue
         del state["Next"]
-        state["Output"] = after["Output"]
+        state["Output"] = output
         state["End"] = True
         comment = joined_comments(state.get("Comment"), after.get("Comment"))
         if comment is not None:

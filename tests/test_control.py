@@ -1310,11 +1310,12 @@ def test_a_return_after_a_wait_reads_a_function_of_a_value_that_is_never_undefin
 )
 def test_a_wait_before_a_return_other_ways_share_ends_with_it(branch, returned, ends):
     """The Wait evaluates its Output when the wait is over (measured), where
-    the Succeed the other way still takes would."""
+    the Succeed the other way still takes would: a retrier for Exception
+    would run that Task again on a failure of its Output."""
     body = (
         'x: int = input.get("x", 0)\nif input["a"]:\n'
-        '    x = task("arn:aws:states:::lambda:invoke", {"FunctionName": "f"})'
-        '["StatusCode"]\n'
+        '    x = task("arn:aws:states:::lambda:invoke", {"FunctionName": "f"},'
+        ' retry=[{"ErrorEquals": [Exception]}])["StatusCode"]\n'
         f"else:\n    {branch}\nreturn {returned}"
     )
     header = "from sfnx import context, state_machine, task, wait\n\n\n"
