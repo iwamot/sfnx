@@ -3625,12 +3625,7 @@ def fold_into_catching_tasks(
     folded = True
     while folded:
         folded = False
-        leading: dict[str, list[str]] = {}
-        for name, state in states.items():
-            for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
-                for key in ("Next", "Default"):
-                    if key in holder:
-                        leading.setdefault(holder[key], []).append(name)
+        led = leading(states)
         for name, task in states.items():
             after = task.get("Next")
             if (
@@ -3638,7 +3633,7 @@ def fold_into_catching_tasks(
                 or "Catch" not in task
                 or "Output" in task
                 or after is None
-                or set(leading[after]) != {name}
+                or set(led[after]) != {name}
                 or not (
                     after in failsafe
                     or same_tries(enclosing.get(after, ()), enclosing[name])
@@ -3650,7 +3645,7 @@ def fold_into_catching_tasks(
             kind = following["Type"]
             # A catcher that leads there too still needs the state; a Succeed
             # stays for it, where a Pass would have to be written twice.
-            shared = leading[after].count(name) > 1
+            shared = led[after].count(name) > 1
             if shared and kind != "Succeed":
                 continue
             fields = set(following) - {"Type", "Comment"}
@@ -3802,16 +3797,9 @@ def caught_reads(definition: dict[str, object], task: dict[str, object]) -> set[
         for code in expressions_in({k: v for k, v in catcher.items() if k != "Next"})
         for read in names_read(code)
     }
-    pending = [catcher["Next"] for catcher in catchers]
-    seen = set(pending)
-    while pending:
-        state = states[pending.pop()]
-        reads |= {read for code in expressions_in(state) for read in names_read(code)}
-        for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
-            for key in ("Next", "Default"):
-                if key in holder and holder[key] not in seen:
-                    seen.add(holder[key])
-                    pending.append(holder[key])
+    for name in reached(states, [catcher["Next"] for catcher in catchers]):
+        codes = expressions_in(states[name])
+        reads |= {read for code in codes for read in names_read(code)}
     return reads
 
 
@@ -3957,6 +3945,54 @@ def read_into_transition(
     return {k: written_sum(read_through(v, values)) for k, v in assign.items()}
 
 
+def links(state: dict[str, object]) -> list[tuple[dict[str, object], str, str]]:
+    """Each transition out of a state, as the part that holds it, its key and
+    the state it leads to: the state's Next, a Choice's rules and Default,
+    and each catcher's Next."""
+    rules = state.get("Choices", [])
+    catchers = state.get("Catch", [])
+    assert isinstance(rules, list) and isinstance(catchers, list)
+    found = []
+    for holder in [state, *rules, *catchers]:
+        assert isinstance(holder, dict)
+        for key in ("Next", "Default"):
+            target = holder.get(key)
+            if isinstance(target, str):
+                found.append((holder, key, target))
+    return found
+
+
+def leading(states: dict[str, dict[str, object]]) -> dict[str, list[str]]:
+    """The states each state is led to from, once for each transition."""
+    found: dict[str, list[str]] = {}
+    for name, state in states.items():
+        for _, _, target in links(state):
+            found.setdefault(target, []).append(name)
+    return found
+
+
+def reached(states: dict[str, dict[str, object]], starts: list[str]) -> set[str]:
+    """The states the transitions lead to from the starts, the starts
+    included."""
+    found = set(starts)
+    pending = list(starts)
+    while pending:
+        for _, _, target in links(states[pending.pop()]):
+            if target not in found:
+                found.add(target)
+                pending.append(target)
+    return found
+
+
+def redirect(states: dict[str, dict[str, object]], renamed: dict[str, str]) -> None:
+    """Each transition to a state renamed leads to the state it is renamed
+    to."""
+    for state in states.values():
+        for holder, key, target in links(state):
+            if target in renamed:
+                holder[key] = renamed[target]
+
+
 def ways_out(state: dict[str, object]) -> list[tuple[dict[str, object], str | None]]:
     """Each way out of a state, as the part whose Assign runs on it and the
     state it leads to, or None where it ends: a Choice's rules, and its own
@@ -4041,15 +4077,7 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
                 or following == name
             ):
                 continue
-            for other in states.values():
-                for holder in [
-                    other,
-                    *other.get("Choices", []),
-                    *other.get("Catch", []),
-                ]:
-                    for key in ("Next", "Default"):
-                        if holder.get(key) == name:
-                            holder[key] = following
+            redirect(states, {name: following})
             if definition["StartAt"] == name:
                 definition["StartAt"] = following
             del states[name]
@@ -4078,15 +4106,9 @@ def drop_unreachable(definition: dict[str, object]) -> None:
     """Remove the states no transition leads to any more."""
     states = definition["States"]
     assert isinstance(states, dict)
-    reachable = {definition["StartAt"]}
-    pending = [definition["StartAt"]]
-    while pending:
-        state = states[pending.pop()]
-        for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
-            for key in ("Next", "Default"):
-                if key in holder and holder[key] not in reachable:
-                    reachable.add(holder[key])
-                    pending.append(holder[key])
+    start = definition["StartAt"]
+    assert isinstance(start, str)
+    reachable = reached(states, [start])
     for name in [n for n in states if n not in reachable]:
         del states[name]
 
@@ -4239,18 +4261,13 @@ def merge_choices(definition: dict[str, object]) -> None:
     merged = True
     while merged:
         merged = False
-        leading: dict[str, list[str]] = {}
-        for name, state in states.items():
-            for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
-                for key in ("Next", "Default"):
-                    if key in holder:
-                        leading.setdefault(holder[key], []).append(name)
+        led = leading(states)
         for name, first in states.items():
             second = first.get("Default")
             if (
                 first["Type"] != "Choice"
                 or states[second]["Type"] != "Choice"
-                or leading[second] != [name]
+                or led[second] != [name]
             ):
                 continue
             then = states[second]
@@ -4595,13 +4612,8 @@ def fold_start(
         for code in expressions_in(inner)
     ):
         return
-    leading = [
-        name
-        for name, other in states.items()
-        for holder in [other, *other.get("Choices", []), *other.get("Catch", [])]
-        if name != start and following in (holder.get("Next"), holder.get("Default"))
-    ]
-    if leading or not all(reads_as(state, name, values[name]) for name in values):
+    others = [name for name in leading(states).get(following, []) if name != start]
+    if others or not all(reads_as(state, name, values[name]) for name in values):
         return
     # A name the state assigns too drops the value from the start, which
     # Python evaluates, so only one that neither fails nor is undefined may go.
@@ -4707,11 +4719,7 @@ def share_states(definition: dict[str, object]) -> None:
         start = definition["StartAt"]
         assert isinstance(start, str)
         definition["StartAt"] = shared.get(start, start)
-        for state in states.values():
-            for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]:
-                for key in ("Next", "Default"):
-                    if holder.get(key) in shared:
-                        holder[key] = shared[holder[key]]
+        redirect(states, shared)
 
 
 def spread_passes(definition: dict[str, object]) -> None:
@@ -4751,13 +4759,8 @@ def spread_passes(definition: dict[str, object]) -> None:
             ways = [
                 (holder, key, owner)
                 for owner in states.values()
-                for holder in [
-                    owner,
-                    *owner.get("Choices", []),
-                    *owner.get("Catch", []),
-                ]
-                for key in ("Next", "Default")
-                if holder.get(key) == name
+                for holder, key, target in links(owner)
+                if target == name
             ]
             merged = [
                 way_assign(holder, owner, assign, codes) for holder, _, owner in ways
@@ -4929,14 +4932,9 @@ def end_before_returns(definition: dict[str, object]) -> None:
         comment = joined_comments(state.get("Comment"), after.get("Comment"))
         if comment is not None:
             state["Comment"] = comment
-    reached = {
-        holder.get(key)
-        for state in states.values()
-        for holder in [state, *state.get("Choices", []), *state.get("Catch", [])]
-        for key in ("Next", "Default")
-    }
+    targets = leading(states)
     for name in [n for n, s in states.items() if s["Type"] == "Succeed"]:
-        if name not in reached and name != definition["StartAt"]:
+        if name not in targets and name != definition["StartAt"]:
             del states[name]
 
 
