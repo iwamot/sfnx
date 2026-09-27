@@ -4284,8 +4284,9 @@ def fold_start(
     Only where the state after it is a Choice, whose Assign runs on every
     path out of it, or a Task whose failure there ends the execution, and only
     the Pass leads there. A value the input lacks then fails after the Task
-    runs, where Python fails before calling it. A Wait, a Parallel or a Map
-    takes them where none can fail or be undefined, so that none fails after
+    runs, where Python fails before calling it. A Task with a Catch or a
+    retrier that takes such a failure, a Wait, a Parallel or a Map takes
+    them where none can fail or be undefined, so that none fails after
     the state has run, a catcher's Assign holding them where one takes the
     state's failure. The branches or the processor run before that Assign,
     so they read only values written in the source, which read the same in a
@@ -4317,13 +4318,14 @@ def fold_start(
     kind = state["Type"]
     # A Succeed or a Fail has no Assign: what it does not read ends with it,
     # which is the Pass's Python meaning only where no value can fail. A
-    # Wait, a Parallel or a Map evaluates its Assign after it has run, where
-    # only a value that cannot fail fails nowhere else than Python's.
+    # Task, a Wait, a Parallel or a Map evaluates its Assign after it has
+    # run, where only a value that cannot fail fails nowhere else than
+    # Python's, and neither a Catch nor a retrier has a failure to take.
     certain = all(v.defined and v.total and not v.volatile for v in values.values())
     if not (
         kind == "Choice"
         or (kind == "Task" and may_fold(state))
-        or (kind in {"Succeed", "Fail", "Wait", "Parallel", "Map"} and certain)
+        or (kind in {"Succeed", "Fail", "Wait", "Task", "Parallel", "Map"} and certain)
     ):
         return
     inner = [state.get("Branches", []), state.get("ItemProcessor", {})]
