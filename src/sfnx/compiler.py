@@ -3548,6 +3548,8 @@ def takes_evaluation(state: dict[str, object], field: str) -> bool:
     return bool(errors & EVALUATION_ERRORS)
 
 
+# A read of a variable alone.
+BARE = re.compile(r"\s*\$[^\W\d]\w*\s*")
 # A read of a variable or a path from it, which needs no parentheses where it
 # is written into another expression.
 PATH = re.compile(r"\$[^\W\d]\w*(?:\.\w+)*")
@@ -4689,8 +4691,14 @@ def read_what_it_assigns(
     would evaluate again. The Output reads what the state assigns as the
     expressions it assigns, as it is evaluated with the values from before
     it; the Assign stays, as Python evaluates what the return does not
-    read."""
-    if not may_fold(state) or any(changes_or_reads_the_state(c) for c in codes):
+    read. A return whose every expression is a variable alone goes in
+    after a Catch or a retrier too: a variable neither fails nor is
+    undefined, and one the state assigns reads the expression its Assign
+    evaluates alike, so the Output fails only where the Assign does, which
+    the Catch or the retrier takes as it would without the Output."""
+    if not (may_fold(state) or all(BARE.fullmatch(c) for c in codes)) or any(
+        changes_or_reads_the_state(c) for c in codes
+    ):
         return None
     own = assigns(state)
     reads = {read for code in codes for read in VARIABLE.findall(code)}

@@ -999,6 +999,35 @@ def test_a_return_after_the_try_goes_in_a_task_whose_catch_misses_it(caught, hol
         assert failure.value.error == "States.QueryEvaluationError"
 
 
+@pytest.mark.parametrize(
+    "returned, holds",
+    [
+        # Variables alone neither fail nor are undefined, and n reads the
+        # Task's Assign, which fails where the Output would.
+        ("[n, s]", True),
+        ("n", True),
+        # n + 1 may fail after the call, which the Catch would take.
+        ("[n + 1, s]", False),
+    ],
+)
+def test_a_return_of_variables_goes_in_a_task_whose_catch_takes_everything(
+    returned, holds
+):
+    """The if's Default leads to the return too, which stays for it."""
+    body = (
+        f'n = 0\ns = "a"\nif input["a"]:\n    try:\n        n = {CHARGE}["Payload"]\n'
+        f'    except Exception:\n        return "caught"\nreturn {returned}'
+    )
+    compiled = states(body)
+    [task] = [n for n, s in compiled.items() if s["Type"] == "Task"]
+    assert ("Output" in compiled[task]) is holds
+    # A missing Payload fails the Assign, which the except takes in both.
+    assert run(body, {"a": True}, {task: lambda arguments: {}}) == "caught"
+    paid = {task: lambda arguments: {"Payload": 3}}
+    expected = {"[n, s]": [3, "a"], "n": 3, "[n + 1, s]": [4, "a"]}[returned]
+    assert run(body, {"a": True}, paid) == expected
+
+
 def test_a_return_after_a_catching_task_reads_what_it_cannot_hold():
     """The except reads r, which a failing Assign of the Task would not
     assign, so what follows the Task stays out of it; the Succeed reads it

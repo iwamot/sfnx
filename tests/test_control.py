@@ -1324,9 +1324,11 @@ def test_a_return_after_a_wait_reads_a_function_of_a_value_that_is_never_undefin
 @pytest.mark.parametrize(
     "branch, returned, ends",
     [
-        ("wait(1)", "[x, 1]", True),
+        # x * 2 may fail, so the Task, whose retrier would run it again,
+        # keeps the Succeed.
+        ("wait(1)", "[x * 2, 1]", True),
         # The Wait assigns x, which the Output would read from before it.
-        ('wait(1)\n    x = input["y"]', "[x, 1]", False),
+        ('wait(1)\n    x = input["y"]', "[x * 2, 1]", False),
         # The State of the context names the state it is read in.
         ("wait(1)", 'context["State"]["Name"]', False),
     ],
@@ -1349,4 +1351,4 @@ def test_a_wait_before_a_return_other_ways_share_ends_with_it(branch, returned, 
     assert ("End" in compiled["States"]["wait"]) == ends
     assert "return" in compiled["States"]
     if ends:
-        assert asl.run(compiled, {"a": False, "x": 4}) == [4, 1]
+        assert asl.run(compiled, {"a": False, "x": 4}) == [8, 1]
