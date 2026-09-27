@@ -4482,15 +4482,19 @@ def fold_start(
     ]
     if leading or not all(reads_as(state, name, values[name]) for name in values):
         return
+    # A name the state assigns too drops the value from the start, which
+    # Python evaluates, so only one that neither fails nor is undefined may go.
+    for holder in holders_of(state):
+        own = holder.get("Assign", {})
+        assert isinstance(own, dict)
+        if any(
+            name in own and not (value.defined and value.total)
+            for name, value in values.items()
+        ):
+            return
     for name, value in values.items():
         substitute(state, name, value)
-    # A Succeed and a Fail have no Assign to take them.
-    holders = {
-        "Choice": [state, *state.get("Choices", [])],
-        "Succeed": [],
-        "Fail": [],
-    }.get(kind, [state, *state.get("Catch", [])])
-    for holder in holders:
+    for holder in holders_of(state):
         own = holder.get("Assign", {})
         assert isinstance(own, dict)
         holder["Assign"] = {
@@ -4503,6 +4507,18 @@ def fold_start(
             holder["Comment"] = comment
     del states[start]
     definition["StartAt"] = following
+
+
+def holders_of(state: dict[str, object]) -> list[dict[str, object]]:
+    """The parts of a state whose Assign runs on a way out of it: a Choice's
+    rules and its own, which its Default applies, and a Task's, a Wait's, a
+    Parallel's or a Map's own and its catchers'. A Succeed and a Fail have
+    none."""
+    if state["Type"] in {"Succeed", "Fail"}:
+        return []
+    others = state.get("Choices" if state["Type"] == "Choice" else "Catch", [])
+    assert isinstance(others, list)
+    return [state, *others]
 
 
 def reads_as(state: dict[str, object], name: str, value: Expr) -> bool:
