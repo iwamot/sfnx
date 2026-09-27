@@ -146,12 +146,9 @@ def test_branches_that_all_return_end_the_function():
     ],
 )
 def test_wait(call, field):
-    states = definition(f'x = input["x"]\n{call}\nreturn x')["States"]
-    assert states == {
-        "x": {"Type": "Pass", "Assign": {"x": f"{{% {INPUT}.x %}}"}, "Next": "wait"},
-        # The return right after the Wait is its Output, read when it is over.
-        "wait": {"Type": "Wait", **field, "Output": "{% $x %}", "End": True},
-    }
+    states = definition(f"{call}\nreturn 1")["States"]
+    # The return right after the Wait is its Output, read when it is over.
+    assert states == {"wait": {"Type": "Wait", **field, "Output": 1, "End": True}}
 
 
 DATETIME_IMPORTS = "from datetime import datetime, timedelta\n"
@@ -1237,7 +1234,8 @@ def test_a_raise_after_the_test_the_start_decides_ends_without_its_pass():
 @pytest.mark.parametrize(
     "body, output",
     [
-        ('n: int = input["n"]\nwait(1)\nreturn n + 1', "{% $n + 1 %}"),
+        # The Wait takes n, which the Output reads as the Wait assigns it.
+        ('n: int = input["n"]\nwait(1)\nreturn n + 1', f"{{% {INPUT}.n + 1 %}}"),
         ("wait(1)\nx = 2\nreturn [x, 3]", [2, 3]),
         ('wait(1)\nx = input["x"]\nreturn x', f"{{% {INPUT}.x %}}"),
     ],

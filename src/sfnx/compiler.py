@@ -4558,12 +4558,16 @@ def fold_start(
     state: that state reads each value as its expression, and its Assign
     assigns it, reading what the Pass would, as nothing between them changes.
     Only where the state after it is a Choice, whose Assign runs on every
-    path out of it, or a Task whose failure there ends the execution, and only
-    the Pass leads there. A value the input lacks then fails after the Task
-    runs, where Python fails before calling it. A Task with a Catch or a
-    retrier that takes such a failure, a Wait, a Parallel or a Map takes
-    them where none can fail or be undefined, so that none fails after
-    the state has run, a catcher's Assign holding them where one takes the
+    path out of it, a Task whose failure there ends the execution, or a
+    Wait, which has no Catch, and only the Pass leads there. A value the
+    input lacks then fails after the Task runs or the wait is over, where
+    Python fails before calling it or waiting, as a hand-writer spends no
+    state to check the input first; the Task or the Wait fails before it
+    runs where it reads the value. A Task with a Catch or a retrier that
+    takes such a failure, a Parallel or a Map takes them where none can fail
+    or be undefined, so that none fails after the state has run, where a
+    Catch would take it or the branches or the processor would have run
+    for nothing, a catcher's Assign holding them where one takes the
     state's failure. The branches or the processor run before that Assign,
     so they read only values written in the source, which read the same in a
     child execution of a distributed map, whose context is its own. A
@@ -4605,14 +4609,15 @@ def fold_start(
     kind = state["Type"]
     # A Succeed or a Fail has no Assign: what it does not read ends with it,
     # which is the Pass's Python meaning only where no value can fail. A
-    # Task, a Wait, a Parallel or a Map evaluates its Assign after it has
-    # run, where only a value that cannot fail fails nowhere else than
-    # Python's, and neither a Catch nor a retrier has a failure to take.
+    # Task with a Catch or a retrier for such a failure, a Parallel or a Map
+    # evaluates its Assign after it has run, where only a value that cannot
+    # fail fails nowhere else than Python's, neither a Catch nor a retrier
+    # has a failure to take, and no branch or processor runs for nothing.
     certain = all(v.defined and v.total and not v.volatile for v in values.values())
     if not (
-        kind == "Choice"
+        kind in {"Choice", "Wait"}
         or (kind == "Task" and may_fold(state))
-        or (kind in {"Succeed", "Fail", "Wait", "Task", "Parallel", "Map"} and certain)
+        or (kind in {"Succeed", "Fail", "Task", "Parallel", "Map"} and certain)
     ):
         return
     inner = [state.get("Branches", []), state.get("ItemProcessor", {})]

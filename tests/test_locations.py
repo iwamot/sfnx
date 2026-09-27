@@ -309,8 +309,14 @@ def test_a_wait_spans_the_assignments_it_takes():
     (definition,) = definitions(source, "app.py", located=True).values()
     comment = definition["States"]["wait"]["Comment"]
     spans = json.loads(comment.removeprefix(PREFIX))["spans"]
-    # The return right after them is the Wait's Output, so it spans that too.
-    assert spans == [{"at": "7:5-7:12"}, {"at": "8:5-8:14"}, {"at": "9:5-9:13"}]
+    # The Wait takes the start and the assignments after it, and the return
+    # right after them is its Output, so it spans them all.
+    assert spans == [
+        {"at": "6:5-6:19"},
+        {"at": "7:5-7:12"},
+        {"at": "8:5-8:14"},
+        {"at": "9:5-9:13"},
+    ]
 
 
 def test_each_path_that_takes_an_assignment_spans_it():
