@@ -383,9 +383,34 @@ def test_loop_initialization(body, first):
     ],
 )
 def test_a_loop_whose_test_is_not_known_on_entry_keeps_it(body):
+    (definition,) = compile_source(source(body)).values()
+    start = definition["StartAt"]
+    # The loop's test runs on entry: the machine starts at it, or goes to it.
+    assert "while" in [start, definition["States"][start].get("Next")]
+
+
+def test_a_pass_opens_the_way_for_one_that_ran_before_it():
+    """The if in the body takes in the loop's test, so only the start leads to
+    the while any more, and the start's assignment goes in it: the passes run
+    again until nothing changes."""
+    body = 'polls: int = input["p"]\nwhile polls < 20:\n    wait(1)\n    if input["b"]:\n        return 1\n    polls += 1\nreturn 0'
+    (definition,) = compile_source(source(body)).values()
+    assert definition["StartAt"] == "while"
+    assert definition["States"]["while"]["Assign"] == {"polls": f"{{% {INPUT}.p %}}"}
+
+
+def test_a_loop_gives_up_its_first_round_once_however_often_the_passes_run():
+    body = "x = 1\nfor i in range(3):\n    x = [x]\nreturn x"
+    assert states(body)["for"]["Type"] == "Choice"
+    assert run(body, None) == [[[1]]]
+
+
+def test_a_choice_that_leads_back_to_itself_is_taken_in_once():
+    # The while stays for the way back, and the if takes in its first round.
+    body = 'n = 0\nif input["z"]:\n    return 0\nwhile n < input["k"]:\n    n = n + 1\nreturn n'
     compiled = states(body)
-    (start,) = [s for s in compiled.values() if s["Type"] == "Pass"]
-    assert start["Next"] == "while"
+    assert [r["Next"] for r in compiled["if"]["Choices"]] == ["return", "while"]
+    assert [run(body, {"z": False, "k": k}) for k in (0, 2)] == [0, 2]
 
 
 def test_a_loop_whose_count_comes_from_the_input_still_counts():
