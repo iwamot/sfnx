@@ -262,13 +262,16 @@ def test_a_function_of_values_that_are_never_undefined(function, arguments, defi
 
 
 def test_inferred_types_flow_through_variables():
-    # z may be undefined, so the assignments keep their Pass and the return
-    # reads the variables.
+    # Nothing reads z, so it goes, and the return reads n as the number and
+    # words as the list they are.
     body = (
         'z = input["z"]\nn = len("abc")\nwords = ["a"] + input["w"]\n'
         "return [n + input['x'], words + [1]]"
     )
-    assert output(body) == [f"{{% $n + {INPUT}.x %}}", "{% $append($words, [1]) %}"]
+    assert output(body) == [
+        f"{{% 3 + {INPUT}.x %}}",
+        f"{{% $append($append(['a'], {INPUT}.w), [1]) %}}",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2296,7 +2299,7 @@ def test_and_keeps_null():
 def test_a_value_bound_once_keeps_whether_it_is_undefined(expression_text, defined):
     source = (
         "from sfnx import state_machine\n\n\n@state_machine\ndef pay(input):\n"
-        f'    k: int = input.get("k", 0)\n    t = {expression_text}\n    return 1\n'
+        f'    k: int = input.get("k", 0)\n    t = {expression_text}\n    return [t, 1]\n'
     )
     (compiled,) = compile_source(source).values()
     assert (list(compiled["States"]) == ["return"]) == defined

@@ -1851,6 +1851,7 @@ class Scope:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
         thread_choices(definition)
+        drop_dead_assignments(definition)
         fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
         fold_start(definition, scope.starting)
         spread_passes(definition)
@@ -1860,6 +1861,7 @@ class Scope:
         take_in_choices(definition)
         share_states(definition)
         end_before_returns(definition)
+        drop_dead_assignments(definition)
         docstring = ast.get_docstring(function)
         if docstring:
             definition = {"Comment": docstring, **definition}
@@ -3964,6 +3966,123 @@ def read_into_transition(
     return {k: written_sum(read_through(v, values)) for k, v in assign.items()}
 
 
+def ways_out(state: dict[str, object]) -> list[tuple[dict[str, object], str | None]]:
+    """Each way out of a state, as the part whose Assign runs on it and the
+    state it leads to, or None where it ends: a Choice's rules, and its own
+    Assign for its Default; any other state's own Assign for its Next or its
+    End, and each catcher's for its Next. A Succeed and a Fail end."""
+    kind = state["Type"]
+    if kind in {"Succeed", "Fail"}:
+        return []
+    if kind == "Choice":
+        rules = state["Choices"]
+        assert isinstance(rules, list)
+        default = state.get("Default")
+        assert default is None or isinstance(default, str)
+        return [(r, r["Next"]) for r in rules] + [(state, default)]
+    catchers = state.get("Catch", [])
+    assert isinstance(catchers, list)
+    following = state.get("Next")
+    assert following is None or isinstance(following, str)
+    return [(state, following)] + [(c, c["Next"]) for c in catchers]
+
+
+def drop_dead_assignments(definition: dict[str, object]) -> None:
+    """Each assignment that no state reads before the variable is assigned
+    again or the execution, the branch or the processor ends, as a
+    hand-writer assigns only what is read: a missing key its value reads
+    fails nowhere then, which the table of differences lists. A Pass left
+    with nothing to do goes, each way to it leading on to its Next. Every
+    expression of a state, those of its branches or its processor included,
+    reads the variables it names; a definition that calls $eval, which reads
+    variables by names not written out, keeps every assignment. So does one
+    whose expression another value reads in its place, as y = [x for x in
+    xs] reads xs = input["xs"]: Python reads the variable there, and the
+    expression read in place may not fail where the assignment would, as a
+    comprehension gives [] for a missing key."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    if any(re.search(r"\$eval\s*\(", c) for c in expressions_in(states)):
+        return
+    changed = True
+    while changed:
+        changed = False
+        reads = {
+            name: {r for c in expressions_in(state) for r in VARIABLE.findall(c)}
+            for name, state in states.items()
+        }
+        live: dict[str, set[str]] = {name: set() for name in states}
+        settled = False
+        while not settled:
+            settled = True
+            for name, state in states.items():
+                after = set()
+                for holder, target in ways_out(state):
+                    own = holder.get("Assign", {})
+                    assert isinstance(own, dict)
+                    following = live[target] if target is not None else set()
+                    after |= following - own.keys()
+                found = reads[name] | after
+                if found != live[name]:
+                    live[name] = found
+                    settled = False
+        codes = expressions_in(states)
+        for state in states.values():
+            for holder, target in ways_out(state):
+                own = holder.get("Assign")
+                if not isinstance(own, dict):
+                    continue
+                following = live[target] if target is not None else set()
+                dead = [
+                    k for k in own if k not in following and not copied(own[k], codes)
+                ]
+                for k in dead:
+                    del own[k]
+                    changed = True
+                if not own:
+                    del holder["Assign"]
+        for name, state in list(states.items()):
+            following = state.get("Next")
+            if (
+                state["Type"] != "Pass"
+                or set(state) - {"Type", "Comment", "Next"}
+                or not isinstance(following, str)
+                or following == name
+            ):
+                continue
+            for other in states.values():
+                for holder in [
+                    other,
+                    *other.get("Choices", []),
+                    *other.get("Catch", []),
+                ]:
+                    for key in ("Next", "Default"):
+                        if holder.get(key) == name:
+                            holder[key] = following
+            if definition["StartAt"] == name:
+                definition["StartAt"] = following
+            del states[name]
+            changed = True
+            break
+
+
+def copied(template: object, codes: list[str]) -> bool:
+    """Whether another expression holds the expression of a value that may
+    fail, as reading the variable in its place writes it: a value written
+    out or a variable alone has nothing to fail, whatever holds it."""
+    found = [code.strip() for code in expressions_in(template)]
+    return any(
+        not (BARE.fullmatch(code) or code in NEVER_FAILS)
+        and sum(code in other for other in codes) > 1
+        for code in found
+    )
+
+
+# What a state reads of its own that is always there: the result of a Task,
+# a Parallel or a Map, and the error output of a catcher.
+NEVER_FAILS = frozenset({"$states.result", "$states.errorOutput"})
+
+
 def drop_unreachable(definition: dict[str, object]) -> None:
     """Remove the states no transition leads to any more."""
     states = definition["States"]
@@ -4470,6 +4589,9 @@ def fold_start(
     # Pass's own are read again where each is written in the source.
     assign = opening["Assign"]
     assert isinstance(assign, dict)
+    # drop_dead_assignments may have taken out what nothing reads; the rest
+    # is as recorded.
+    values = {name: value for name, value in values.items() if name in assign}
     if assign != {name: value.template for name, value in values.items()}:
         read = {name: assigned_value(template) for name, template in assign.items()}
         if not all(v is not None and v.defined for v in read.values()):
@@ -5045,6 +5167,7 @@ def compile_machine(
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
     thread_choices(definition)
+    drop_dead_assignments(definition)
     fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
     fold_start(definition, scope.starting)
     spread_passes(definition)
@@ -5054,6 +5177,7 @@ def compile_machine(
     take_in_choices(definition)
     share_states(definition)
     end_before_returns(definition)
+    drop_dead_assignments(definition)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
 

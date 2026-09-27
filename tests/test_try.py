@@ -64,13 +64,9 @@ def test_each_task_gets_a_catch_for_each_except():
         }
     ]
     assert compiled["publish"]["Catch"] == compiled["receipt"]["Catch"]
-    # A value written in the source cannot fail, so the Task with the Catch
-    # takes it.
+    # Nothing reads note, so no state assigns it.
     assert "note" not in compiled
-    assert compiled["receipt"]["Assign"] == {
-        "receipt": "{% $states.result %}",
-        "note": 1,
-    }
+    assert compiled["receipt"]["Assign"] == {"receipt": "{% $states.result %}"}
     assert compiled["return"] == {"Type": "Succeed", "Output": "{% $e.Cause %}"}
     assert list(compiled["receipt"]) == [
         "Type",
@@ -543,7 +539,9 @@ def test_a_caught_error_named_after_a_function_is_renamed():
 
 def test_assignments_that_start_an_except_clause_go_in_its_catch():
     """They read the error as the error output the Catch assigns, and one
-    reads what another before it assigns as its expression."""
+    reads what another before it assigns as its expression. Nothing reads e
+    after them, so the Catch does not assign it; note reads the expression
+    of reason, which keeps its assignment where Python reads it."""
     body = (
         f"try:\n    {CHARGE}\nexcept Declined as e:\n"
         '    reason = str(e)\n    note = {"reason": reason, "kind": type(e).__name__}\n'
@@ -553,7 +551,6 @@ def test_assignments_that_start_an_except_clause_go_in_its_catch():
     assert compiled["invoke"]["Catch"][0] == {
         "ErrorEquals": ["Declined"],
         "Assign": {
-            "e": "{% $states.errorOutput %}",
             "reason": "{% $states.errorOutput.Cause %}",
             "note": {
                 "reason": "{% $states.errorOutput.Cause %}",
@@ -591,7 +588,7 @@ def test_after_a_state_in_an_except_clause_the_error_is_its_variable():
             3,
         ),
         # It reads the name of the state it is in, which is the Task's there.
-        ('x = r["Payload"]\n    y = context["State"]["Name"]', True, 2),
+        ('x = [r["Payload"], context["State"]["Name"]]', True, [2, "x"]),
         # Its expression binds the name the Task assigns, which the Task's
         # expression would take the place of.
         ('x = jsonata("($r := 5; $r + 1)")', True, 6),
@@ -976,11 +973,6 @@ def test_a_raise_without_a_message_after_assignments_is_a_fail_alone():
 @pytest.mark.parametrize(
     "body",
     [
-        # Python fails on the missing key before it raises.
-        'n = input["n"]\nraise Declined("r")',
-        # A field of the context is in some states only, so reading one may
-        # be undefined.
-        'name = context["State"]["Name"]\nraise Declined("r")',
         # The text of jsonata() spells n in a string, which is not a read.
         "n = 3\nraise Declined(jsonata(\"'$n'\"))",
     ],
@@ -989,6 +981,20 @@ def test_a_raise_after_assignments_keeps_their_pass_where_they_count(body):
     preamble = CLASSES + "from sfnx import jsonata\n"
     compiled = states(body, preamble)
     assert [s["Type"] for s in compiled.values()] == ["Pass", "Fail"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'n = input["n"]\nraise Declined("r")',
+        'name = context["State"]["Name"]\nraise Declined("r")',
+    ],
+)
+def test_a_raise_after_assignments_nothing_reads_is_a_fail_alone(body):
+    """A hand-writer would not read what nothing reads: a missing key fails
+    nowhere, which the table of differences lists."""
+    compiled = states(body)
+    assert [s["Type"] for s in compiled.values()] == ["Fail"]
 
 
 @pytest.mark.parametrize(
@@ -1074,6 +1080,19 @@ def test_a_statement_goes_in_the_task_when_no_catcher_of_its_failure_reads_r(
         with pytest.raises(asl.Failure):
             run(body, {}, {task: lambda arguments: {"Payload": {}}})
         assert run(body, {}, {task: fails("Declined")}) == {}
+
+
+def test_a_catcher_that_goes_on_to_a_state_that_reads_r_keeps_what_may_fail_out():
+    """The way from the catcher calls publish twice and returns r, which a
+    failing Assign of the Task would not assign, so y keeps its Pass."""
+    body = (
+        f'r = {{}}\ntry:\n    r = {CHARGE}\n    y = r["Payload"]["n"]\n'
+        f"except Exception:\n    {NOTIFY}\n    {NOTIFY}\n    return r\nreturn y"
+    )
+    compiled = states(body)
+    assert "Pass" in [s["Type"] for s in compiled.values()]
+    ok = {"r_2": lambda arguments: {"Payload": {"n": 3}}, "publish": dict}
+    assert run(body, {}, ok) == 3
 
 
 def test_a_return_after_a_catching_task_reads_what_it_cannot_hold():

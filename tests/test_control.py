@@ -10,6 +10,7 @@ from sfnx.compiler import (
     always_reads,
     compile_source,
     definitions,
+    drop_dead_assignments,
     grouped,
     read_as_values,
 )
@@ -23,6 +24,22 @@ HEADER = "from sfnx import state_machine, wait\n\n\n"
 
 def source(body: str) -> str:
     return HEADER + "@state_machine\ndef pay(input):\n" + textwrap.indent(body, "    ")
+
+
+def reading_all(body: str) -> str:
+    """A return that reads each name the body assigns, after a Wait that takes
+    what is pending, which a return alone would write into its Output: an
+    assignment nothing reads goes (drop_dead_assignments). jsonata() reads
+    them by name, so a name only some paths assign may be read too."""
+    names = sorted(
+        {
+            n.id
+            for n in ast.walk(ast.parse(body))
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+        }
+    )
+    read = ", ".join(f"${n}" for n in names)
+    return f'\nwait(0)\nreturn jsonata("[{read}]")'
 
 
 def definition(body: str) -> dict:
@@ -46,11 +63,12 @@ def test_choice_example():
                 "Choices": [
                     {
                         "Condition": f"{{% {INPUT}.amount > 1000 %}}",
-                        "Assign": {"fee": 100, "tier": "big"},
+                        # Nothing reads tier, so neither branch assigns it.
+                        "Assign": {"fee": 100},
                         "Next": "return",
                     }
                 ],
-                "Assign": {"fee": 10, "tier": "small"},
+                "Assign": {"fee": 10},
                 "Default": "return",
             },
             "return": {"Type": "Succeed", "Output": "{% $fee %}"},
@@ -190,18 +208,17 @@ def test_wait_through_the_module():
 
 
 def test_assignments_after_a_wait_are_its_assign():
-    # The return does not read n, which Python evaluates, so the Wait
-    # assigns it.
+    # Nothing reads n, so neither its first value nor n + 1 is assigned.
     body = 'n = input["n"]\nwait(1)\n# counted\nn = n + 1\nm = 2\nreturn m'
     compiled = definition(body)
     assert compiled["States"]["wait"] == {
         "Type": "Wait",
         "Comment": "counted",
         "Seconds": 1,
-        "Assign": {"n": "{% $n + 1 %}", "m": 2},
+        "Assign": {"m": 2},
         "Next": "return",
     }
-    assert asl.run(compiled, {"n": 0}) == 2
+    assert asl.run(compiled, {}) == 2
 
 
 @pytest.mark.parametrize(
@@ -240,9 +257,7 @@ def test_what_a_wait_assigns(body, joined, passes):
     imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context, jsonata\n"
     # The Wait after them takes what is pending, which a return alone would
     # write into its Output instead.
-    (compiled,) = compile_source(
-        imports + source(body + "\nwait(0)\nreturn 1")
-    ).values()
+    (compiled,) = compile_source(imports + source(body + reading_all(body))).values()
     states = compiled["States"]
     assert states["wait"].get("Assign") == joined
     assert [n for n, s in states.items() if s["Type"] == "Pass"] == passes
@@ -309,9 +324,7 @@ def test_what_a_choice_assigns(body, rule, default, passes):
     imports = "import uuid\nfrom datetime import datetime\nfrom sfnx import context, jsonata\n"
     # The Wait after them takes what is pending, which a return alone would
     # write into its Output instead.
-    (compiled,) = compile_source(
-        imports + source(body + "\nwait(0)\nreturn 1")
-    ).values()
+    (compiled,) = compile_source(imports + source(body + reading_all(body))).values()
     states = compiled["States"]
     assert states["if"]["Choices"][0].get("Assign") == rule
     assert states["if"].get("Assign") == default
@@ -1113,9 +1126,9 @@ def test_an_if_whose_branch_makes_a_state_keeps_its_choice():
         ('input["a"].get("b")', "x = 0 if input['b'] else x", True, 0),
         ('input["a"].get("b")', 'x = input.get("c", x)', True, 5),
         ('input["a"].get("b")', "x = 1", True, 1),
-        # One that can fail keeps its state where the new value does not
-        # always read it, so a missing key still fails.
-        ('input["a"]["b"]', "x = 1", False, 1),
+        # Nothing reads the first value before x = 1, so it goes, and a
+        # missing key fails nowhere.
+        ('input["a"]["b"]', "x = 1", True, 1),
     ],
 )
 def test_a_name_assigned_again(first, second, merged, result):
@@ -1127,7 +1140,7 @@ def test_a_name_assigned_again(first, second, merged, result):
     # The return right after the last Wait is its Output.
     assert len(compiled["States"]) == (2 if merged else 3)
     assert asl.run(compiled, {"a": {"b": 2}, "b": True, "c": 5}) == result
-    if first.endswith('["b"]'):
+    if first.endswith('["b"]') and second != "x = 1":
         with pytest.raises(asl.Failure):
             asl.run(compiled, {"a": {}})
 
@@ -1359,3 +1372,102 @@ def test_a_wait_before_a_return_other_ways_share_ends_with_it(branch, returned, 
     assert "return" in compiled["States"]
     if ends:
         assert asl.run(compiled, {"a": False, "x": 4}) == [8, 1]
+
+
+WAIT = {"Type": "Wait", "Seconds": 1}
+
+
+def dropped(states: dict, start: str | None = None) -> dict:
+    definition = {"StartAt": start or next(iter(states)), "States": states}
+    drop_dead_assignments(definition)
+    return definition
+
+
+def test_an_assignment_nothing_reads_goes_with_its_pass():
+    definition = dropped(
+        {
+            "p": {
+                "Type": "Pass",
+                "Assign": {"x": "{% $states.input.a %}"},
+                "Next": "w",
+            },
+            "w": {**WAIT, "Assign": {"y": 1}, "Next": "r"},
+            "r": {"Type": "Succeed", "Output": "{% $y %}"},
+        }
+    )
+    # The Pass had nothing else to do, so the machine starts at the Wait.
+    assert definition["StartAt"] == "w"
+    assert list(definition["States"]) == ["w", "r"]
+
+
+def test_an_assignment_assigned_again_before_any_read_goes():
+    definition = dropped(
+        {
+            "w": {**WAIT, "Assign": {"x": "{% $states.input.a %}"}, "Next": "w2"},
+            "w2": {**WAIT, "Assign": {"x": 2}, "Next": "r"},
+            "r": {"Type": "Succeed", "Output": "{% $x %}"},
+        }
+    )
+    assert "Assign" not in definition["States"]["w"]
+    assert definition["States"]["w2"]["Assign"] == {"x": 2}
+
+
+@pytest.mark.parametrize(
+    "reader",
+    [
+        # A read on one way out is enough.
+        {
+            "Type": "Choice",
+            "Choices": [{"Condition": "{% $b %}", "Next": "r"}],
+            "Default": "s",
+        },
+        # A branch reads the variables around its Parallel.
+        {
+            "Type": "Parallel",
+            "Branches": [
+                {
+                    "StartAt": "o",
+                    "States": {"o": {"Type": "Succeed", "Output": "{% $x %}"}},
+                }
+            ],
+            "Next": "r",
+        },
+    ],
+)
+def test_an_assignment_something_reads_stays(reader):
+    states = {
+        "w": {**WAIT, "Assign": {"x": "{% $states.input.a %}", "b": True}, "Next": "c"},
+        "c": reader,
+        "r": {"Type": "Succeed", "Output": "{% $x %}"},
+        "s": {"Type": "Succeed", "Output": 1},
+    }
+    definition = dropped(states)
+    assert "x" in definition["States"]["w"]["Assign"]
+
+
+def test_an_expression_another_value_reads_in_place_keeps_its_assignment():
+    """y reads xs in its place, where a missing key would give [] where the
+    assignment of xs fails, as Python fails."""
+    xs = "{% $states.input.xs %}"
+    definition = dropped(
+        {
+            "w": {
+                **WAIT,
+                "Assign": {
+                    "xs": xs,
+                    "y": "{% [$map($states.input.xs, function($v) { $v })] %}",
+                },
+                "Next": "r",
+            },
+            "r": {"Type": "Succeed", "Output": "{% $y %}"},
+        }
+    )
+    assert definition["States"]["w"]["Assign"]["xs"] == xs
+
+
+def test_a_definition_that_calls_eval_keeps_every_assignment():
+    states = {
+        "w": {**WAIT, "Assign": {"x": 1}, "Next": "r"},
+        "r": {"Type": "Succeed", "Output": "{% $eval('$x') %}"},
+    }
+    assert dropped(states)["States"]["w"]["Assign"] == {"x": 1}

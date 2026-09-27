@@ -199,16 +199,8 @@ def test_an_assignment_that_could_differ_keeps_its_pass(body):
 @pytest.mark.parametrize(
     "body, expected",
     [
-        # The Task assigns n its result, which would drop the value from the
-        # input in its Assign.
-        (
-            (
-                f'n = input["n"]\nn = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]\n'
-                f'task("{LAMBDA}", {{"FunctionName": "g"}})\nreturn n'
-            ),
-            5,
-        ),
-        # So does the Choice rule of the if.
+        # The Choice rule of the if assigns n too, and the other way reads
+        # the value from the input.
         (
             (
                 'n = input["n"]\nif input["big"]:\n    n = 10\n'
@@ -228,6 +220,20 @@ def test_a_start_value_that_may_fail_is_not_dropped_by_the_state_after_it(
     with pytest.raises(asl.Failure):
         asl.run(compiled, {"big": True}, tasks)
     assert asl.run(compiled, {"n": 1, "big": True}, tasks) == expected
+
+
+def test_a_start_value_the_task_replaces_before_anything_reads_it_goes():
+    """The Task assigns n its result before anything reads the value from
+    the input, so a hand-writer would not read it: a missing key fails
+    nowhere, which the table of differences lists."""
+    body = (
+        f'n = input["n"]\nn = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]\n'
+        f'task("{LAMBDA}", {{"FunctionName": "g"}})\nreturn n'
+    )
+    compiled = definition(body)
+    tasks = {n: lambda arguments: {"Payload": 5} for n in compiled["States"]}
+    assert [s["Type"] for s in compiled["States"].values()] == ["Task", "Task"]
+    assert asl.run(compiled, {}, tasks) == 5
 
 
 @pytest.mark.parametrize(
@@ -401,14 +407,14 @@ def test_arguments_that_are_not_a_dict():
 
 
 def test_assignments_that_start_the_machine_go_in_the_first_task():
-    """The Task reads each as its expression and assigns it, reading what a
-    Pass before it would."""
+    """The Task reads each as its expression, reading what a Pass before it
+    would; nothing reads them after it, so it assigns none of them."""
     compiled = states(
         f'fee = 10\nname = "f"\nr = task("{LAMBDA}", {{"FunctionName": name}})\nreturn [fee, r]'
     )
     assert list(compiled) == ["r"]
     assert compiled["r"]["Arguments"] == {"FunctionName": "f"}
-    assert compiled["r"]["Assign"] == {"fee": 10, "name": "f"}
+    assert "Assign" not in compiled["r"]
     assert compiled["r"]["Output"] == [10, "{% $states.result %}"]
 
 
@@ -435,7 +441,8 @@ def test_certain_assignments_that_start_the_machine_go_in_a_wait_parallel_or_map
     compiled = definition(body, FAN_OUT)
     assert compiled["StartAt"] == first
     state = compiled["States"][first]
-    assert state["Assign"] == {"fee": 2, "name": "f"}
+    # The state and its return read them as written, so none is assigned.
+    assert "Assign" not in state
     assert "$fee" not in json.dumps(compiled)
     assert asl.run(compiled, {}, {}) == [2, "f"]
 
@@ -455,9 +462,11 @@ def test_certain_assignments_that_start_the_machine_go_in_a_catching_task(call):
     state = compiled["States"][compiled["StartAt"]]
     assert state["Type"] == "Task"
     assert state["Arguments"] == {"FunctionName": "f"}
-    assert state["Assign"] == {"fee": 2, "name": "f"}
+    # The return after the try reads name as written; only the way from the
+    # catcher reads fee.
+    assert "Assign" not in state
     [catcher] = state["Catch"]
-    assert catcher["Assign"] == {"fee": 2, "name": "f"}
+    assert catcher["Assign"] == {"fee": 2}
 
 
 def test_certain_assignments_that_start_the_machine_go_in_the_catchers_too():
@@ -467,7 +476,7 @@ def test_certain_assignments_that_start_the_machine_go_in_the_catchers_too():
     )
     compiled = definition(body, FAN_OUT)
     state = compiled["States"][compiled["StartAt"]]
-    assert state["Type"] == "Parallel" and state["Assign"] == {"fee": 2}
+    assert state["Type"] == "Parallel" and state["Output"] == 2
     [catcher] = state["Catch"]
     assert catcher["Assign"]["fee"] == 2
 
@@ -948,9 +957,9 @@ def test_each_task_before_a_return_several_paths_share_ends_with_it(returned, ou
     assert "return" not in compiled
 
 
-def test_a_task_before_a_shared_return_keeps_what_the_return_does_not_read():
-    """Python evaluates n, which may fail, where the return does not read
-    it, so the Task keeps its Assign."""
+def test_a_task_before_a_shared_return_drops_what_nothing_reads():
+    """Nothing reads n, so the Task does not assign it, and it ends with the
+    return the other way shares."""
     body = (
         f"if input['a']:\n    {R})\n    n = r['Payload'] + 1\nelse:\n"
         f'    r = task("{LAMBDA}", {{"FunctionName": "g"}})\nreturn r'
@@ -961,7 +970,7 @@ def test_a_task_before_a_shared_return_keeps_what_the_return_does_not_read():
         for s in compiled.values()
         if s.get("Arguments", {}).get("FunctionName") == "f"
     ]
-    assert "n" in first["Assign"] and first.get("End")
+    assert "n" not in first.get("Assign", {}) and first.get("End")
 
 
 @pytest.mark.parametrize(
