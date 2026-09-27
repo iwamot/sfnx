@@ -1,6 +1,47 @@
 import pytest
 
-from sfnx.syntax import changes, facts, names_read
+from sfnx.syntax import (
+    changes,
+    facts,
+    names_read,
+    reads_own_context,
+    reads_own_states,
+    reads_state_name,
+)
+
+
+@pytest.mark.parametrize(
+    "code, own, context, name",
+    [
+        # The execution's input reads alike in every state.
+        ("$states.context.Execution.Input.a", False, False, False),
+        (
+            "$states.context.StateMachine.Id & $states.context.Map.Item.Index",
+            *[False] * 3,
+        ),
+        # A state's input, result and error output are its own.
+        ("$states.input.a", True, False, False),
+        ("$count($states.result)", True, False, False),
+        # The other parts of the context are the state's own too.
+        ("$states.context.Task.Token", True, True, False),
+        ("$states.context.State.Name", True, True, True),
+        # Read whole, or another way, any part may be read.
+        ("$states.context", True, True, True),
+        ("$states", True, True, True),
+        ("$states[0]", True, True, True),
+        ("$states[0].input", True, True, True),
+        # The names stop where a step is not a name, as a block is not.
+        ("$states.context.(Execution)", True, True, True),
+        # A string that spells it reads nothing.
+        ("'$states.input'", False, False, False),
+        # What the parser cannot read may read any of it.
+        ("$states.input(", True, True, True),
+    ],
+)
+def test_states_read(code, own, context, name):
+    assert reads_own_states(code) == own
+    assert reads_own_context(code) == context
+    assert reads_state_name(code) == name
 
 
 @pytest.mark.parametrize(

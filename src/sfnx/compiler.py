@@ -52,7 +52,14 @@ from sfnx.jsontypes import (
 )
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
-from sfnx.syntax import changes, facts, names_read
+from sfnx.syntax import (
+    changes,
+    facts,
+    names_read,
+    reads_own_context,
+    reads_own_states,
+    reads_state_name,
+)
 from sfnx.translate import (
     StateCall,
     Translator,
@@ -74,11 +81,6 @@ STATE_CALLS = ("task", "activity", "parallel", "inline_map", "distributed_map")
 # The errors a catcher or a retrier matches when a state's Assign or Output
 # fails.
 EVALUATION_ERRORS = frozenset({EVERYTHING, "States.QueryEvaluationError"})
-# Context a state and the Pass after it read alike. The State part, its name
-# and when it was entered, differs, and so does the whole object.
-SHARED_CONTEXT = re.compile(r"\$states\.context(?!\.(Execution|StateMachine|Map)\b)")
-# The part of the context that names the state it is read in.
-NAMED_CONTEXT = re.compile(r"\$states\.context\.State\b")
 
 
 def machine_options(decorator: ast.expr, context: Module) -> dict[str, object]:
@@ -1592,7 +1594,7 @@ class Scope:
         return not any(
             value.volatile == OPAQUE
             or (value.volatile and timed)
-            or SHARED_CONTEXT.search(value.code)
+            or reads_own_context(value.code)
             for value in values
         )
 
@@ -3590,8 +3592,6 @@ BARE = re.compile(r"\s*\$[^\W\d]\w*\s*")
 # A read of a variable or a path from it, which needs no parentheses where it
 # is written into another expression.
 PATH = re.compile(r"\$[^\W\d]\w*(?:\.\w+)*")
-# The context a Task and the state after it read alike.
-SAME_CONTEXT = re.compile(r"\$states\.context\.(Execution|StateMachine|Map)\b")
 
 
 def fold_into_catching_tasks(
@@ -3663,7 +3663,7 @@ def fold_into_catching_tasks(
             ):
                 continue
             codes = expressions_in({k: v for k, v in following.items() if k != "Next"})
-            if any("$states" in SAME_CONTEXT.sub("", code) for code in codes):
+            if any(reads_own_states(code) for code in codes):
                 continue
             # When a Parallel's or a Map's Assign reads the time or a random
             # value, which $eval may call, is not measured, where a Task's is
@@ -3858,7 +3858,8 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
     Assign of the rule or the Default the path takes goes in the transition
     that now skips it, where a failure ends the execution as it would in the
     Choice (a catcher's Assign does too; measured), and where its values
-    read no `$states`, which is another state's there. A name that
+    read no part of `$states` that is the Choice's own, which is another
+    state's there; the execution's input reads the same. A name that
     transition assigns, which they would read before it is assigned, they
     read as the expression the transition assigns, once for each Choice it
     goes past, as below."""
@@ -3905,7 +3906,10 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                         for read in names_read(code)
                     }
                     current = {**own, **taken}
-                    if assign and (not movable or "states" in reads):
+                    own_states = any(
+                        reads_own_states(c) for c in expressions_in(assign)
+                    )
+                    if assign and (not movable or own_states):
                         break
                     if assign and reads & current.keys():
                         # Choices that lead to each other would each be gone
@@ -4281,10 +4285,6 @@ def merge_choices(definition: dict[str, object]) -> None:
             break
 
 
-# What names the state it is read in.
-STATE_CONTEXT = re.compile(r"\$states\.context\.State\b")
-
-
 def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
     """A transition of a Choice that leads straight to another Choice takes in
     that one's tests, as a hand-writer lists the tests of `if a:` and the `if
@@ -4426,7 +4426,7 @@ def read_as_values(
     codes = expressions_in(choice)
     reads = {read for code in codes for read in names_read(code)}
     used = {n: template_code(v) for n, v in values.items() if n in reads}
-    if any(STATE_CONTEXT.search(code) for code in codes) or any(
+    if any(reads_state_name(code) for code in codes) or any(
         changes(code) for code in used.values()
     ):
         return None
@@ -4578,7 +4578,7 @@ def fold_start(
     # is as recorded. A value that changes on evaluation or reads the State
     # of the context, which names the state it is read in, keeps the Pass.
     values = {name: value for name, value in values.items() if name in assign}
-    if any(v.volatile or SHARED_CONTEXT.search(v.code) for v in values.values()):
+    if any(v.volatile or reads_own_context(v.code) for v in values.values()):
         return
     if assign != {name: value.template for name, value in values.items()}:
         read = {name: assigned_value(template) for name, template in assign.items()}
@@ -4795,7 +4795,7 @@ def changes_or_reads_the_state(code: str) -> bool:
     or gives another value when evaluated again: the time, a random value,
     or $eval, which a jsonata() expression may call and which reads
     variables by the names in its text."""
-    return bool("$states" in SAME_CONTEXT.sub("", code) or changes(code))
+    return reads_own_states(code) or changes(code)
 
 
 def way_assign(
@@ -4932,7 +4932,7 @@ def end_before_returns(definition: dict[str, object]) -> None:
                 output = read_what_it_assigns(state, output, codes)
                 if output is None:
                     continue
-        elif any(SHARED_CONTEXT.search(code) for code in codes):
+        elif any(reads_own_context(code) for code in codes):
             continue
         else:
             output = read_assigned(state, output, codes)
@@ -4966,7 +4966,7 @@ def same_states(states: dict[str, dict[str, object]]) -> dict[str, str]:
             {**{k: v for k, v in state.items() if k != "Comment"}, "Comment": own},
             sort_keys=True,
         )
-        if NAMED_CONTEXT.search(key):
+        if any(reads_state_name(code) for code in expressions_in(state)):
             continue
         if key not in kept:
             kept[key] = name
