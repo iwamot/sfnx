@@ -953,3 +953,57 @@ def test_the_first_statement_of_a_loop_goes_in_each_way_into_it():
 def test_a_statement_a_way_into_it_cannot_hold_keeps_its_pass(body):
     compiled = states(body)
     assert "Pass" in [s["Type"] for s in compiled.values()]
+
+
+@pytest.mark.parametrize(
+    "body, first, execution_input, output",
+    [
+        # The first test of c is decided where c is 1, so the way in takes
+        # the first round, reading c and total as the values it assigns.
+        (
+            (
+                'total: int = input.get("t", 0)\nc = 0\nwhile True:\n    c = c + 1\n'
+                "    if c > 3:\n        return total\n    total = total - 1"
+            ),
+            {"c": 2},
+            {"t": 10},
+            7,
+        ),
+        # The first item of a list written in the source is known too.
+        (
+            "n = 3\nfor i, x in enumerate([5, 6]):\n    n = x\nreturn n",
+            {"i": 1, "n": "{% ([5, 6])[0] %}"},
+            {},
+            6,
+        ),
+    ],
+)
+def test_the_way_into_a_loop_takes_its_first_round_once(
+    body, first, execution_input, output
+):
+    """Only the first round: the next would run the loop as the file
+    compiles."""
+    compiled = states(body)
+    start = compiled[next(iter(compiled))]
+    assert first.items() <= start["Assign"].items()
+    assert any(s["Type"] == "Choice" for s in compiled.values())
+    assert run(body, execution_input) == output
+
+
+def test_the_way_into_a_loop_keeps_a_round_that_reads_a_value_it_cannot_read():
+    """A dict holding an expression is no one expression to read d as."""
+    body = (
+        'd = {"a": input["a"]}\nc = 0\nwhile True:\n    c = c + 1\n'
+        '    if c > 2:\n        return d\n    d = {"a": d["a"] + 1}'
+    )
+    compiled = states(body)
+    assert "c" in compiled["d"]["Assign"] and compiled["d"]["Assign"]["c"] == 1
+    assert run(body, {"a": 1}) == {"a": 3}
+
+
+def test_a_loop_that_never_ends_compiles():
+    """Each round would be decided as the one before, so the way in takes
+    only the first."""
+    body = "x = 0\nwhile x < 5:\n    x = 0\nreturn x"
+    compiled = states(body)
+    assert any(s["Type"] == "Choice" for s in compiled.values())

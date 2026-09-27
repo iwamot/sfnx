@@ -985,9 +985,9 @@ PAST_A_CHOICE = (
         # The note reads nothing the catcher or the rule assigns: both go on
         # to the last call, and only the if on the Task's result is left.
         ("!", 1),
-        # It reads the status they assign, which the Choice's Default would
-        # read after they assign it: the paths keep the Choice.
-        ("{status}", 2),
+        # It reads the status they assign, which the Default's Assign reads
+        # as the value they assign it: the paths go past the Choice too.
+        ("{status}", 1),
     ],
 )
 def test_a_path_past_a_choice_takes_the_assignments_of_its_default(note, choices):
