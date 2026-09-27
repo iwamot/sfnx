@@ -346,6 +346,10 @@ def call(
             # as Python counts them. A ${Name} placeholder is measured where
             # it runs, since the deployment writes another text in its place.
             return literal(len(text))
+    if function == "not" and isinstance(arguments[0].template, bool):
+        # The negation of a boolean written in the source, as a hand-writer
+        # writes false for not true.
+        return literal(not arguments[0].template)
     if function == "append" and len(arguments) == 2:
         first, second = (a.template for a in arguments)
         if isinstance(first, list) and isinstance(second, list):
