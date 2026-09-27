@@ -215,3 +215,10 @@ def test_an_unsettled_expression_keeps_its_pass():
     assert compiled["r"]["Type"] == "Pass"
     first, second = asl.run(definition(body), {"a": False})
     assert first == second
+
+
+def test_a_string_in_the_text_that_spells_a_starting_variable_stays_as_it_is():
+    """The start's value would go in the return where it reads the variable,
+    and the text is not read: '$n' is a string, not n."""
+    compiled = definition("n = 3\nreturn jsonata(\"'$n' & $string($n)\")")
+    assert asl.run(compiled, {}) == "$n3"
