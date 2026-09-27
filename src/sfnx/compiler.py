@@ -1170,6 +1170,22 @@ class Scope:
         declared = annotate(annotation_node, self.module) or self.announced.get(name)
         value, call = self.translator.statement_value(value_node)
         known = declared or value.type or self.declared.get(name)
+        bound = self.bindings.get(name)
+        if (
+            isinstance(value_node, ast.Name)
+            and value_node.id == name
+            and bound is not None
+            and bound.code == self.variable(name, None).code
+        ):
+            # A variable assigned its own value keeps it: reading a variable
+            # neither fails nor is undefined, so nothing is left to do. A name
+            # bound to an expression, such as the parameter of a function
+            # called directly, becomes a variable as any assignment makes it
+            # one.
+            if declared is not None:
+                self.declared[name] = declared
+            self.bindings[name] = self.variable(name, known)
+            return
         if call is not None:
             # The state's own Assign takes its result. A Catch leaves with the
             # declarations from before, as the assignment did not happen.

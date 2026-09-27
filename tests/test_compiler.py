@@ -302,6 +302,39 @@ def test_a_list_holding_an_expression_joined_stays_an_expression():
     assert output["return"]["Output"][0].startswith("{% $append(")
 
 
+@pytest.mark.parametrize(
+    "body, execution_input, expected",
+    [
+        ('n = input["n"]\nn = n\nreturn n', {"n": 4}, 4),
+        ('n: int = input["n"]\nn: int = n\nreturn n', {"n": 4}, 4),
+        # The loop's variable, assigned in the body, is a variable already.
+        ("t = 0\nfor x in [1, 2]:\n    x = x\n    t = t + x\nreturn t", {}, 3),
+    ],
+)
+def test_a_variable_assigned_its_own_value_makes_no_state(
+    body, execution_input, expected
+):
+    source = machine(body)
+    compiled = compile_one(source)
+    assert not {"n", "x"} & set(compiled["States"])
+    assert asl.run(compiled, execution_input) == expected
+    assert python(source, execution_input) == expected
+
+
+def test_a_name_bound_to_an_expression_assigned_itself_becomes_a_variable():
+    """The parameter of a function called directly is bound to the argument's
+    expression, so assigning it makes the variable the return reads."""
+    source = (
+        HEADER + "def helper(v):\n    v = v\n    return v + 1\n\n\n"
+        '@state_machine\ndef pay(input):\n    return helper(input["n"])\n'
+    )
+    compiled = compile_one(source)
+    assert compiled["States"]["v"]["Assign"] == {
+        "v": "{% $states.context.Execution.Input.n %}"
+    }
+    assert asl.run(compiled, {"n": 4}) == 5
+
+
 # Values that neither fail nor are undefined, whatever the input holds.
 CERTAIN = (
     'xs: list[int] = input.get("xs", [])\nd: dict[str, int] = input.get("d", {})\n'
