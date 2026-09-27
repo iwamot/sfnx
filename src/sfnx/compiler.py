@@ -1710,7 +1710,9 @@ class Scope:
                 catcher: dict[str, object] = {"ErrorEquals": handler.errors}
                 if handler.variable:
                     error = self.spelling(handler.variable)
-                    catcher["Assign"] = {error: "{% $states.errorOutput %}"}
+                    # The error output is always there in a catcher.
+                    caught = expression("$states.errorOutput", defined=True, total=True)
+                    catcher["Assign"] = {error: caught}
                 catchers.append(catcher)
                 # The state's own Assign does not happen when it fails.
                 flow = Flow(
@@ -1924,7 +1926,7 @@ class Scope:
             raise CompileError(
                 f"{name} is a number, not {article(value.type.describe())}", node
             )
-        return value.template
+        return value
 
     def inline_map_state(self, node: ast.Call) -> tuple[dict[str, object], Type | None]:
         """inline_map(f, items): f takes the item, and its index if it has a
@@ -1958,7 +1960,7 @@ class Scope:
         sources = ["$states.context.Map.Item.Value", "$states.context.Map.Item.Index"]
         kinds = [item_type, of(NUMBER)]
         selector = {
-            parameter.arg: "{% " + source + " %}"
+            parameter.arg: expression(source)
             for parameter, source in zip(parameters, sources, strict=False)
         }
         declared = [
@@ -2145,7 +2147,7 @@ class Scope:
                 bindings[name] = step(step(read, "BatchInput"), name)
         else:
             selector: dict[str, object] = {
-                parameters[0]: "{% $states.context.Map.Item.Value %}",
+                parameters[0]: expression("$states.context.Map.Item.Value"),
                 **arguments,
             }
             state["ItemSelector"] = selector
@@ -2221,7 +2223,7 @@ class Scope:
                 raise CompileError(f"the keys of {name} are strings", key or value)
             if allowed is not None and key.value not in allowed:
                 raise CompileError(f"{name} takes {', '.join(sorted(allowed))}", key)
-            result[key.value] = self.translator.expr(value).template
+            result[key.value] = self.translator.expr(value)
         missing = (required or set()) - result.keys()
         if missing:
             raise CompileError(f"{name} needs {', '.join(sorted(missing))}", node)
@@ -2256,8 +2258,8 @@ class Scope:
             self.flush()
             state: dict[str, object] = {
                 "Type": "Fail",
-                "Error": f"{{% ${caught_error}.Error %}}",
-                "Cause": f"{{% ${caught_error}.Cause %}}",
+                "Error": expression(f"${caught_error}.Error"),
+                "Cause": expression(f"${caught_error}.Cause"),
             }
             self.add("raise", state, node)
             return
@@ -3769,7 +3771,7 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
     return composed(leaf, code, [v for n, v in values.items() if reads[n]])
 
 
-def composed(leaf: object, code: str, values: list[Expr]) -> Expr:
+def composed(leaf: object, code: str, values: list[Expr], shape: object = None) -> Expr:
     """The Expr of code written from a field's expression, leaf, with values
     read in place of variables it reads. The field's expression was judged
     with variables, which are never undefined and fail for nothing, in their
@@ -3778,21 +3780,24 @@ def composed(leaf: object, code: str, values: list[Expr]) -> Expr:
     fails for none and each value is never undefined and fails for none,
     and changes on evaluation where the field's expression or a value does.
     A field that holds a template, whose properties are not known, gives
-    the code none of them."""
+    the code none of them. Where the field is written as an object or an
+    array with expressions among its values, shape is that template."""
     precedence = ATOM if path_alone(code) else WRITTEN
     read = frozenset(names_read(code))
     if not isinstance(leaf, Expr):
-        return expression(code, read, precedence, volatile=CHANGES * changes(code))
-    return expression(
-        code,
-        read,
-        precedence,
-        leaf.type,
-        leaf.boolean,
-        volatile=max([leaf.volatile, *(v.volatile for v in values)]),
-        defined=leaf.defined and all(v.defined for v in values),
-        total=leaf.total and all(v.total and v.defined for v in values),
-    )
+        found = expression(code, read, precedence, volatile=CHANGES * changes(code))
+    else:
+        found = expression(
+            code,
+            read,
+            precedence,
+            leaf.type,
+            leaf.boolean,
+            volatile=max([leaf.volatile, *(v.volatile for v in values)]),
+            defined=leaf.defined and all(v.defined for v in values),
+            total=leaf.total and all(v.total and v.defined for v in values),
+        )
+    return found if shape is None else replace(found, template=shape)
 
 
 def as_expr(leaf: object) -> Expr:
@@ -4565,11 +4570,10 @@ def both(first: object, second: object) -> object:
     the second where it is first, as `and` evaluates no more once one side
     is false, and is written into the test where it is second, after the
     first, which may fail."""
-    first, second = template_of(first), template_of(second)
-    if isinstance(first, bool):
-        return second if first else False
+    if isinstance(template_of(first), bool):
+        return second if template_of(first) else False
     tests = []
-    for condition in (first, second):
+    for condition in (template_of(first), template_of(second)):
         if isinstance(condition, bool):
             tests.append(json.dumps(condition))
             continue
@@ -4888,8 +4892,8 @@ def written_sum(template: object) -> object:
     """A template that is only a sum, difference or product of integers
     written out, as the value, as fold writes one in the source: 1 for
     0 + 1. Anything else stays as it is."""
-    template = template_of(template)
-    found = SUM.fullmatch(template) if isinstance(template, str) else None
+    text = template_of(template)
+    found = SUM.fullmatch(text) if isinstance(text, str) else None
     if found is None:
         return template
     left, right = literal(int(found[1])), literal(int(found[3]))
@@ -5105,15 +5109,25 @@ def placed(value: object, mark: str) -> dict[str, object]:
     def read(match: re.Match[str]) -> str:
         return step(expression("$states.input"), match.group(1)).code
 
-    def rewrite(item: object) -> object:
-        item = template_of(item)
+    def rewrite(leaf: object) -> object:
+        item = template_of(leaf)
+        rewritten: object
         if isinstance(item, str):
-            return pattern.sub(read, item)
-        if isinstance(item, dict):
-            return {k: rewrite(v) for k, v in item.items()}
-        if isinstance(item, list):
-            return [rewrite(v) for v in item]
-        return item
+            rewritten = pattern.sub(read, item)
+        elif isinstance(item, dict):
+            rewritten = {k: rewrite(v) for k, v in item.items()}
+        elif isinstance(item, list):
+            rewritten = [rewrite(v) for v in item]
+        else:
+            return leaf
+        if not isinstance(leaf, Expr):
+            return rewritten
+        plain = emitted(rewritten)
+        if plain == item:
+            return leaf
+        # A marked read is the processor's input, which may lack the key.
+        code = template_code(plain)
+        return composed(leaf, code, [expression("$states.input")], plain)
 
     result = rewrite(value)
     assert isinstance(result, dict)
