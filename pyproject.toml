@@ -24,13 +24,13 @@ classifiers = [
 # The floors are the oldest versions the test suite passes with.
 dependencies = [
     "botocore>=1.31.0",
+    "jsonata-python>=0.7.0",
 ]
 
 [project.optional-dependencies]
-# sfnx.testing, for the tests of a project rather than what it deploys.
-testing = [
-    "jsonata-python>=0.7.0",
-]
+# Kept so that projects naming it still install: jsonata-python, which
+# sfnx.testing runs JSONata with, is a dependency of sfnx itself.
+testing = []
 
 [project.scripts]
 sfnx = "sfnx.cli:main"

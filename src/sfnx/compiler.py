@@ -53,6 +53,7 @@ from sfnx.jsontypes import (
 )
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
+from sfnx.syntax import facts
 from sfnx.translate import (
     VARIABLE,
     StateCall,
@@ -3591,8 +3592,6 @@ BARE = re.compile(r"\s*\$[^\W\d]\w*\s*")
 # A read of a variable or a path from it, which needs no parentheses where it
 # is written into another expression.
 PATH = re.compile(r"\$[^\W\d]\w*(?:\.\w+)*")
-# A JSONata string literal, in single or double quotes.
-QUOTED = r"'(?:[^'\\]|\\.)*'" + r'|"(?:[^"\\]|\\.)*"'
 # A call of a function that gives another value when evaluated again.
 TIMED = re.compile(r"\$(" + "|".join(sorted(VOLATILE)) + r")\(")
 # The context a Task and the state after it read alike.
@@ -3677,11 +3676,6 @@ def fold_into_catching_tasks(
             own = task.get("Assign", {})
             assert isinstance(own, dict)
             reads = {read for code in codes for read in VARIABLE.findall(code)}
-            # A string in the code, such as one a jsonata() expression writes,
-            # is not read, and a variable written in it stays as it is.
-            texts = [t for code in codes for t in re.findall(QUOTED, code)]
-            if any(re.search(rf"\${n}(?!\w)", t) for t in texts for n in own):
-                continue
             found = {n: assigned_value(v) for n, v in own.items() if n in reads}
             values = {n: v for n, v in found.items() if v is not None}
             if len(values) < len(found) or not all(
@@ -4675,17 +4669,13 @@ def holders_of(state: dict[str, object]) -> list[dict[str, object]]:
 def reads_as(state: dict[str, object], name: str, value: Expr) -> bool:
     """Whether a value can be written where a state reads the variable of a
     name: no expression in the state binds that name, or a name the value
-    reads, which would take them over, and no string in one spells the name,
-    as the text of jsonata() may, which is not a read and stays as it is."""
+    reads, which would take them over, no string in one spells the name, as
+    the text of jsonata() may, which is not a read and stays as it is, and
+    the parser reads each, as what one it cannot read binds is not known."""
     names = {name, *(read for read in VARIABLE.findall(value.code))}
-    codes = expressions_in(state)
-    spelled = rf"\${re.escape(name)}(?!\w)"
-    if any(re.search(spelled, t) for code in codes for t in re.findall(QUOTED, code)):
-        return False
-    return not any(
-        re.search(rf"\$({bound})\s*:=|function\s*\([^)]*\$({bound})\b", code)
-        for code in codes
-        for bound in map(re.escape, names)
+    found = [facts(code) for code in expressions_in(state)]
+    return all(
+        f is not None and name not in f.spelled and not f.bound & names for f in found
     )
 
 
