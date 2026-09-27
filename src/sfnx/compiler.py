@@ -30,6 +30,7 @@ from sfnx.expressions import (
     literal,
     operand,
     spelling,
+    template_of,
     variable,
     written,
 )
@@ -3733,6 +3734,7 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
     hand-writer binds it. Where a value put in place or another bound one
     reads such a name, which it means from before the state, each is put in
     place instead."""
+    template = template_of(template)
     if isinstance(template, dict):
         return {k: read_through(v, values) for k, v in template.items()}
     if isinstance(template, list):
@@ -3768,6 +3770,7 @@ def assigned_value(template: object) -> Expr | None:
     place: an expression, or a value written out, whose JSON is JSONata too.
     An object or an array with expressions among its values is no one
     expression."""
+    template = template_of(template)
     if isinstance(template, str) and template.startswith("{%"):
         code = template[2:-2].strip()
         precedence = ATOM if path_alone(code) else WRITTEN
@@ -4196,6 +4199,7 @@ def decide(
 
 def test(condition: object, known: Known) -> bool | None:
     """The result of a test of one known variable, or None for any other."""
+    condition = template_of(condition)
     if not (isinstance(condition, str) and condition.startswith("{%")):
         return None
     code = condition[2:-2].strip()
@@ -4456,6 +4460,7 @@ def read_as_values(
             }
         if isinstance(item, list):
             return [replaced(v) for v in item]
+        item = template_of(item)
         if not (used and isinstance(item, str) and item.startswith("{%")):
             return item
         code = item[2:-2].strip()
@@ -4490,6 +4495,7 @@ def read_as_values(
 def template_code(template: object) -> str:
     """The JSONata of an Assign value: an expression as it is, and a value
     written out as the JSON it is, with the expressions in it."""
+    template = template_of(template)
     if isinstance(template, dict):
         pairs = (f"{json.dumps(k)}: {template_code(v)}" for k, v in template.items())
         return "{" + ", ".join(pairs) + "}"
@@ -4515,6 +4521,7 @@ def both(first: object, second: object) -> object:
     the second where it is first, as `and` evaluates no more once one side
     is false, and is written into the test where it is second, after the
     first, which may fail."""
+    first, second = template_of(first), template_of(second)
     if isinstance(first, bool):
         return second if first else False
     tests = []
@@ -4583,7 +4590,8 @@ def fold_start(
     values = {name: value for name, value in values.items() if name in assign}
     if any(v.volatile or reads_own_context(v.code) for v in values.values()):
         return
-    if assign != {name: value.template for name, value in values.items()}:
+    as_written = {name: template_of(value) for name, value in assign.items()}
+    if as_written != {name: value.template for name, value in values.items()}:
         read = {name: assigned_value(template) for name, template in assign.items()}
         if not all(v is not None and v.defined for v in read.values()):
             return
@@ -4669,6 +4677,7 @@ def reads_as(state: dict[str, object], name: str, value: Expr) -> bool:
 
 def expressions_in(node: object) -> list[str]:
     """The JSONata of the {% %} strings in a state, past its Comment."""
+    node = template_of(node)
     if isinstance(node, dict):
         return [c for k, v in node.items() if k != "Comment" for c in expressions_in(v)]
     if isinstance(node, list):
@@ -4690,6 +4699,7 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
             return {k: v if k == "Comment" else replaced(v) for k, v in item.items()}
         if isinstance(item, list):
             return [replaced(v) for v in item]
+        item = template_of(item)
         if isinstance(item, str) and item.startswith("{%") and item.endswith("%}"):
             if lone_variable(item[2:-2].strip()) == name:
                 return value.template
@@ -4833,6 +4843,7 @@ def written_sum(template: object) -> object:
     """A template that is only a sum, difference or product of integers
     written out, as the value, as fold writes one in the source: 1 for
     0 + 1. Anything else stays as it is."""
+    template = template_of(template)
     found = SUM.fullmatch(template) if isinstance(template, str) else None
     if found is None:
         return template
@@ -4948,6 +4959,7 @@ def same_states(states: dict[str, dict[str, object]]) -> dict[str, str]:
         key = json.dumps(
             {**{k: v for k, v in state.items() if k != "Comment"}, "Comment": own},
             sort_keys=True,
+            default=template_of,
         )
         if any(reads_state_name(code) for code in expressions_in(state)):
             continue
@@ -5050,6 +5062,7 @@ def placed(value: object, mark: str) -> dict[str, object]:
         return step(expression("$states.input"), match.group(1)).code
 
     def rewrite(item: object) -> object:
+        item = template_of(item)
         if isinstance(item, str):
             return pattern.sub(read, item)
         if isinstance(item, dict):
@@ -5064,6 +5077,7 @@ def placed(value: object, mark: str) -> dict[str, object]:
 
 
 def strings(value: object) -> Iterator[str]:
+    value = template_of(value)
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
@@ -5113,6 +5127,15 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
         end_before_returns(definition)
         if definition == before:
             return
+
+
+def emitted(node: object) -> object:
+    """A definition as JSON: each Expr in a field as its template."""
+    if isinstance(node, dict):
+        return {k: emitted(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [emitted(v) for v in node]
+    return template_of(node)
 
 
 def compile_machine(
@@ -5167,6 +5190,8 @@ def compile_machine(
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
     optimize(definition, scope)
+    definition = emitted(definition)
+    assert isinstance(definition, dict)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
 
