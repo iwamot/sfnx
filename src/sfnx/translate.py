@@ -3256,16 +3256,16 @@ class Translator:
             self.accepts_task = True
         state: dict[str, object] = {"Type": "Task", "Resource": resource}
         if arguments is not None:
-            state["Arguments"] = arguments.template
+            state["Arguments"] = arguments
         elif called.kind in {"sdk", "optimized"}:
             # Step Functions requires Arguments for service integrations.
             state["Arguments"] = {}
         fields = {"timeout": "TimeoutSeconds", "heartbeat": "HeartbeatSeconds"}
         for option, name in fields.items():
             if option in options:
-                state[name] = options[option].template
+                state[name] = options[option]
         if "role" in options:
-            state["Credentials"] = {"RoleArn": options["role"].template}
+            state["Credentials"] = {"RoleArn": options["role"]}
         self.task = StateCall(node, called.name, state, retry_option(node))
         return expression("$states.result", type=called.result)
 

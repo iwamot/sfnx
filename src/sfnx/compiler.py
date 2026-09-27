@@ -431,7 +431,9 @@ class Scope:
         # already names the Pass that starts the loop.
         stepping = all(o.role == "loop step" for o in self.pending_origins)
         first = "next" if stepping else next(iter(pending))
-        assign = {self.spelling(k): value.template for k, value in pending.items()}
+        assign: dict[str, object] = {
+            self.spelling(k): value for k, value in pending.items()
+        }
         node = self.pending_node
         origins = self.pending_origins
         remarks = self.pending_remarks
@@ -480,7 +482,7 @@ class Scope:
         assign = state.get("Assign", {})
         assert isinstance(assign, dict)
         for name, value in folded.items():
-            assign[self.spelling(name)] = value.template
+            assign[self.spelling(name)] = value
         state["Assign"] = assign
         remark = "\n".join(r for r in (result.remark, *remarks) if r) or None
         origins = result.origins + origins
@@ -533,7 +535,7 @@ class Scope:
             assign = holder.get("Assign", {})
             assert isinstance(assign, dict)
             for name, value in pending.items():
-                assign[self.spelling(name)] = value.template
+                assign[self.spelling(name)] = value
             holder["Assign"] = assign
             self.describe(holder, origins, remarks)
         return True
@@ -1203,7 +1205,7 @@ class Scope:
             # The state's own Assign takes its result. A Catch leaves with the
             # declarations from before, as the assignment did not happen.
             self.flush()
-            assign = {self.spelling(name): value.template}
+            assign = {self.spelling(name): value}
             remark = self.remark
             added = self.add_call(name, call, {"Assign": assign}, target)
             self.result = Result(
@@ -1296,7 +1298,7 @@ class Scope:
                 whole = self.variable(copy, whole.type)
             values = [index_expr(whole, literal(i)) for i in range(len(names))]
         assign = {
-            self.spelling(name): value.template
+            self.spelling(name): value
             for name, value in zip(names, values, strict=True)
         }
         if call is not None:
@@ -1405,7 +1407,7 @@ class Scope:
         self.returns.append(value.type)
         self.describe_end(wait, carrier.remark, carrier.origins + located)
         wait.pop("Next", None)
-        wait["Output"] = value.template
+        wait["Output"] = value
         wait["End"] = True
         return True
 
@@ -1540,7 +1542,7 @@ class Scope:
         )
         state.pop("Assign", None)
         if value.code != "$states.result":
-            state["Output"] = value.template
+            state["Output"] = value
         state["End"] = True
         return True
 
@@ -1678,7 +1680,7 @@ class Scope:
         self.flush()
         self.returns.append(value.type)
         if call is None:
-            state = {"Type": "Succeed", "Output": value.template}
+            state: dict[str, object] = {"Type": "Succeed", "Output": value}
             added = self.add("return", state, node, origins)
             self.enclosing[added] = self.within()
             if value.defined and value.total:
@@ -1688,7 +1690,7 @@ class Scope:
         # unless the return makes something of it.
         ending: dict[str, object] = {}
         if value.code != "$states.result":
-            ending["Output"] = value.template
+            ending["Output"] = value
         self.add_call("return", call, {**ending, "End": True}, node)
 
     def add_call(
@@ -1980,7 +1982,7 @@ class Scope:
                 now.clear()
                 now.update(kept)
             processor, returned = self.processor(function, local, declared, None)
-        state: dict[str, object] = {"Type": "Map", "Items": items.template}
+        state: dict[str, object] = {"Type": "Map", "Items": items}
         state["ItemSelector"] = selector
         if "max_concurrency" in found:
             state["MaxConcurrency"] = self.count_option(
@@ -2110,7 +2112,7 @@ class Scope:
                     node.args[1],
                 )
             item_type = items.type.items if items.type else None
-            state["Items"] = items.template
+            state["Items"] = items
         else:
             state["ItemReader"] = self.literal_dict(
                 found["source"],
@@ -2282,7 +2284,7 @@ class Scope:
         if cause is not None:
             if cause.type is not None and cause.type.kinds != {STRING}:
                 cause = text(cause)
-            state["Cause"] = cause.template
+            state["Cause"] = cause
         self.flush()
         self.add("raise", state, node, origins)
 
@@ -2440,7 +2442,7 @@ class Scope:
             with self.translator.narrowed(failed):
                 condition = self.translator.condition(test)
                 when, unless = self.translator.narrowing(test)
-            rule: dict[str, object] = {"Condition": condition.template}
+            rule: dict[str, object] = {"Condition": condition}
             rules.append(rule)
             bodies.append((body, {**failed, **when}, rule))
             failed = {**failed, **unless}
@@ -2743,7 +2745,7 @@ class Scope:
             else:
                 condition = self.translator.condition(node.test)
                 when, unless = self.translator.narrowing(node.test)
-                rule: dict[str, object] = {"Condition": condition.template}
+                rule: dict[str, object] = {"Condition": condition}
                 state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
                 origins = [Origin(node, header=True)]
                 remark = self.remark
@@ -3077,7 +3079,7 @@ class Scope:
         start = self.save()
         comparison = ">" if down else "<"
         condition = binary(index, comparison, limit, COMPARE, of(BOOLEAN), True)
-        rule: dict[str, object] = {"Condition": condition.template}
+        rule: dict[str, object] = {"Condition": condition}
         state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
         origins = [Origin(node, header=True)]
         remark = self.remark
@@ -3146,12 +3148,11 @@ class Scope:
                     "wait takes seconds, or a timestamp as until=",
                     node.args[0],
                 )
-            field = {"Seconds": seconds}
+            field = {"Seconds": value}
         elif until and len(node.keywords) == 1 and not node.args:
             # A datetime is written as the timestamp text Timestamp takes.
             moment = self.translator.datetime_string(until[0].value)
             value = moment or self.translator.expr(until[0].value)
-            timestamp = value.template
             literal_timestamp = until[0].value
             if isinstance(literal_timestamp, ast.Constant) and isinstance(
                 literal_timestamp.value, str
@@ -3168,7 +3169,7 @@ class Scope:
                     "until takes a timestamp string",
                     until[0].value,
                 )
-            field = {"Timestamp": timestamp}
+            field = {"Timestamp": value}
         else:
             raise CompileError(
                 "wait takes seconds or until=: wait(10) or "
@@ -4171,7 +4172,8 @@ def assigned(known: Known, assign: object) -> Known:
     if not isinstance(assign, dict):
         return known
     result = dict(known)
-    for name, value in assign.items():
+    for name, leaf in assign.items():
+        value = template_of(leaf)
         if written(value) and not isinstance(value, (dict, list)):
             result[name] = value
         else:
@@ -4453,6 +4455,7 @@ def read_as_values(
     pattern = re.compile(r"\$(" + "|".join(map(re.escape, used)) + r")(?!\w)")
 
     def replaced(item: object, test: bool = False) -> object:
+        item = template_of(item)
         if isinstance(item, dict):
             return {
                 k: v if k == "Comment" else replaced(v, k == "Condition")
@@ -4460,7 +4463,6 @@ def read_as_values(
             }
         if isinstance(item, list):
             return [replaced(v) for v in item]
-        item = template_of(item)
         if not (used and isinstance(item, str) and item.startswith("{%")):
             return item
         code = item[2:-2].strip()
@@ -4695,11 +4697,11 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
     code = operand(value, ATOM)
 
     def replaced(item: object) -> object:
+        item = template_of(item)
         if isinstance(item, dict):
             return {k: v if k == "Comment" else replaced(v) for k, v in item.items()}
         if isinstance(item, list):
             return [replaced(v) for v in item]
-        item = template_of(item)
         if isinstance(item, str) and item.startswith("{%") and item.endswith("%}"):
             if lone_variable(item[2:-2].strip()) == name:
                 return value.template
