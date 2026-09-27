@@ -932,10 +932,13 @@ def test_a_list_the_task_assigns_goes_on_to_a_return_after_the_try_when_written(
     [
         ('n = 0\nraise Declined("r")', "r"),
         ('n = 3\nraise Declined(f"n is {n}")', "n is 3"),
+        # The Cause reads n in the text of jsonata(), where the start's value
+        # goes in its place.
+        ('n = 3\nraise Declined(jsonata("$string($n)"))', "{% $string(3) %}"),
     ],
 )
 def test_a_raise_after_assignments_that_cannot_fail_is_a_fail_alone(body, cause):
-    assert states(body) == {
+    assert states(body, CLASSES + "from sfnx import jsonata\n") == {
         "raise": {"Type": "Fail", "Error": "Declined", "Cause": cause}
     }
 
@@ -954,8 +957,8 @@ def test_a_raise_without_a_message_after_assignments_is_a_fail_alone():
         # A field of the context is in some states only, so reading one may
         # be undefined.
         'name = context["State"]["Name"]\nraise Declined("r")',
-        # jsonata() reads n by its name, which no expression replaces.
-        'n = 3\nraise Declined(jsonata("$string($n)"))',
+        # The text of jsonata() spells n in a string, which is not a read.
+        "n = 3\nraise Declined(jsonata(\"'$n'\"))",
     ],
 )
 def test_a_raise_after_assignments_keeps_their_pass_where_they_count(body):

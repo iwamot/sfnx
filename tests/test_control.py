@@ -1160,6 +1160,20 @@ def test_a_test_of_what_the_start_assigns_is_decided_there(body, expected):
     assert asl.run(compiled, {}) == expected
 
 
+def test_a_raise_after_the_test_the_start_decides_ends_without_its_pass():
+    """Nothing reads what the start assigns after the Fail, and none of its
+    values can fail."""
+    body = (
+        "n = 3\no: int | None = None\nif o is None:\n    o = 0\nelse:\n    n = 0\n"
+        'raise Declined(f"at {n}")'
+    )
+    classes = "class Declined(Exception):\n    pass\n\n\n"
+    (compiled,) = compile_source(classes + source(body)).values()
+    assert list(compiled["States"].values()) == [
+        {"Type": "Fail", "Error": "Declined", "Cause": "{% 'at ' & $string(3) %}"}
+    ]
+
+
 @pytest.mark.parametrize(
     "body, output",
     [

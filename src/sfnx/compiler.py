@@ -4276,11 +4276,12 @@ def fold_start(
     state's failure. The branches or the processor run before that Assign,
     so they read only values written in the source, which read the same in a
     child execution of a distributed map, whose context is its own. A
-    Succeed takes them in its Output where none can fail or be undefined, as
-    nothing reads what it does not; one follows the Pass where a Choice the
-    Pass decides was skipped. It runs after fold_into_catching_tasks, as the
-    catchers assign these values too, where that would count them among what
-    Python assigned before a statement that may fail."""
+    Succeed takes them in its Output, and a Fail in its Error and Cause,
+    where none can fail or be undefined, as nothing reads what they do not;
+    one follows the Pass where a Choice the Pass decides was skipped. It
+    runs after fold_into_catching_tasks, as the catchers assign these values
+    too, where that would count them among what Python assigned before a
+    statement that may fail."""
     if starting is None:
         return
     start, values = starting
@@ -4300,15 +4301,15 @@ def fold_start(
     following = opening["Next"]
     state = states[following]
     kind = state["Type"]
-    # A Succeed has no Assign: what it does not read ends with it, which is
-    # the Pass's Python meaning only where no value can fail. A Wait, a
-    # Parallel or a Map evaluates its Assign after it has run, where only a
-    # value that cannot fail fails nowhere else than Python's.
+    # A Succeed or a Fail has no Assign: what it does not read ends with it,
+    # which is the Pass's Python meaning only where no value can fail. A
+    # Wait, a Parallel or a Map evaluates its Assign after it has run, where
+    # only a value that cannot fail fails nowhere else than Python's.
     certain = all(v.defined and v.total and not v.volatile for v in values.values())
     if not (
         kind == "Choice"
         or (kind == "Task" and may_fold(state))
-        or (kind in {"Succeed", "Wait", "Parallel", "Map"} and certain)
+        or (kind in {"Succeed", "Fail", "Wait", "Parallel", "Map"} and certain)
     ):
         return
     inner = [state.get("Branches", []), state.get("ItemProcessor", {})]
@@ -4329,10 +4330,11 @@ def fold_start(
         return
     for name, value in values.items():
         substitute(state, name, value)
-    # A Succeed has no Assign to take them.
+    # A Succeed and a Fail have no Assign to take them.
     holders = {
         "Choice": [state, *state.get("Choices", [])],
         "Succeed": [],
+        "Fail": [],
     }.get(kind, [state, *state.get("Catch", [])])
     for holder in holders:
         own = holder.get("Assign", {})
