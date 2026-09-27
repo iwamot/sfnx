@@ -193,6 +193,8 @@ def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared(before):
         ("x != 3", False),
         ('"a" == "a"', True),
         ('"a" != "a"', False),
+        ("not True", False),
+        ("not (x > 3)", True),
     ],
 )
 def test_an_operation_on_values_written_in_the_source_is_its_value(value, output):
