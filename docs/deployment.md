@@ -20,10 +20,10 @@ A placeholder inside a string argument is an ordinary string to the compiler. A 
 
 ## Building the definitions to deploy
 
-`uvx sfnx` is for trying a file. A project that deploys the definitions compiles them from a locked environment, since the definition depends on the versions of sfnx, botocore and Python ([compatibility.md](compatibility.md#what-the-version-does-not-fix)). botocore comes in as a dependency of sfnx, so the lock file pins it along with sfnx:
+`uvx sfnx` is for trying a file. A project that deploys the definitions compiles them from a locked environment, since the definition depends on the versions of sfnx, botocore, jsonata-python and Python ([compatibility.md](compatibility.md#what-the-version-does-not-fix)). botocore and jsonata-python come in as dependencies of sfnx, so the lock file pins them along with sfnx:
 
 ```bash
-uv add sfnx          # records sfnx and botocore in uv.lock
+uv add sfnx          # records sfnx, botocore and jsonata-python in uv.lock
 uv python pin 3.13   # records the Python version in .python-version
 ```
 

@@ -228,6 +228,14 @@ def test_a_return_after_a_wait_reads_what_the_wait_assigns():
     }
 
 
+def test_a_return_whose_jsonata_cannot_be_read_is_left_as_it_is():
+    """Text the parser cannot read, such as JSONata newer than it knows, may
+    bind or spell any name, so nothing is written into it."""
+    body = 'wait(1)\nm = 2\nreturn jsonata("$m +")'
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    assert compiled["States"]["return"]["Output"] == "{% $m + %}"
+
+
 @pytest.mark.parametrize(
     "body, joined, passes",
     [

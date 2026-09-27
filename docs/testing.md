@@ -6,10 +6,10 @@ What happens inside a Task is up to the function you give; a run checks the defi
 
 ## Setup
 
-The runner evaluates JSONata with [jsonata-python](https://github.com/rayokota/jsonata-python), which the `testing` extra brings. Add it where the tests run, not to what you deploy, with a test runner such as pytest:
+The runner evaluates JSONata with [jsonata-python](https://github.com/rayokota/jsonata-python), which comes with sfnx. Add sfnx where the tests run, with a test runner such as pytest:
 
 ```bash
-uv add --dev "sfnx[testing]" pytest
+uv add --dev sfnx pytest
 ```
 
 ## A test

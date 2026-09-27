@@ -19,16 +19,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TypeGuard
 
-try:
-    import jsonata
-    from jsonata.functions import Functions
-    from jsonata.parser import Parser
-    from jsonata.utils import Utils
-except ModuleNotFoundError as exc:
-    raise ModuleNotFoundError(
-        "sfnx.testing evaluates JSONata with jsonata-python; install sfnx[testing]",
-        name=exc.name,
-    ) from exc
+import jsonata
+from jsonata.functions import Functions
+from jsonata.parser import Parser
+from jsonata.utils import Utils
 
 EXCEEDED = "The specified tolerated failure threshold was exceeded"
 MAP_RUN = "arn:aws:states:us-east-1:123456789012:mapRun:machine"
