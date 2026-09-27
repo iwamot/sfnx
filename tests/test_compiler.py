@@ -423,12 +423,14 @@ def test_a_value_that_cannot_fail_goes_in_the_return(value):
     ],
 )
 def test_a_comprehension_that_may_fail_keeps_its_pass(value):
-    # v may fail, and the return reads s while nothing after it reads v, so
-    # v needs a state where the return does not read it: the Wait assigns it.
-    body = f'{CERTAIN}v = {value}\ns = "a"\nwait(1)\nreturn [s, v]'
-    source = machine(body).replace("import state_machine", "import state_machine, wait")
-    definition = compile_one(source)
-    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Wait"]
+    # A Parallel takes the start only where none of it can fail, as its
+    # branches run before its Assign.
+    body = f'{CERTAIN}v = {value}\ns = "a"\nr = parallel(one)\nreturn [s, v, r]'
+    source = machine(body).replace(
+        "import state_machine", "import parallel, state_machine"
+    )
+    definition = compile_one(source + "\n\n\ndef one():\n    return 1\n")
+    assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Parallel"]
 
 
 def test_the_length_of_a_list_holding_an_expression_stays_an_expression():

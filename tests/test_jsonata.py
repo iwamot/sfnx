@@ -62,14 +62,16 @@ def test_jsonata_evaluates():
     assert asl.run(definition(body), execution_input) == ["00042", "1,234.50", [2, 4]]
 
 
-# The value comes from the input, and the Wait holds the expression that
-# reads it, as it is written.
-READ_AFTER_WAIT = '{name}: int = input["a"]\nwait(1)\nb = jsonata("{text}")\nreturn [b]'
+# The first Wait takes the value from the input, and the second holds the
+# expression that reads it, as it is written.
+READ_AFTER_WAIT = (
+    '{name}: int = input["a"]\nwait(1)\nwait(1)\nb = jsonata("{text}")\nreturn [b]'
+)
 
 
 def test_the_expression_reads_the_variables_it_names():
     compiled = definition(READ_AFTER_WAIT.format(name="a", text="$a + 1"))
-    assert compiled["States"]["wait"]["Assign"] == {"b": "{% $a + 1 %}"}
+    assert compiled["States"]["wait_2"]["Assign"] == {"b": "{% $a + 1 %}"}
     assert asl.run(compiled, {"a": 1}) == [2]
 
 
@@ -78,13 +80,13 @@ def test_the_expression_reads_a_variable_named_outside_ascii(name):
     # Step Functions variable names are Unicode identifiers, so an expression
     # written by hand reads one under whatever name it was declared with.
     compiled = definition(READ_AFTER_WAIT.format(name=name, text=f"${name} + 1"))
-    assert compiled["States"]["wait"]["Assign"] == {"b": f"{{% ${name} + 1 %}}"}
+    assert compiled["States"]["wait_2"]["Assign"] == {"b": f"{{% ${name} + 1 %}}"}
     assert asl.run(compiled, {"a": 1}) == [2]
 
 
 def test_the_expression_reads_a_variable_by_the_name_the_definition_gives_it():
     compiled = definition(READ_AFTER_WAIT.format(name="count", text="$count_val + 1"))
-    assert compiled["States"]["wait"]["Assign"] == {"b": "{% $count_val + 1 %}"}
+    assert compiled["States"]["wait_2"]["Assign"] == {"b": "{% $count_val + 1 %}"}
     assert asl.run(compiled, {"a": 1}) == [2]
 
 

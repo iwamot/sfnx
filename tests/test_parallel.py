@@ -125,15 +125,13 @@ def test_a_branch_assigns_names_of_its_own():
     """Step Functions rejects a branch that assigns a variable of the
     machine's, where Python keeps the two apart, so the branch's name is
     numbered."""
-    # The branch reads total after a Wait, which cannot take int(), which
-    # may fail, so the assignment keeps its state.
     body = (
         'total = 0\ndef f():\n    total = int("1")\n    wait(0)\n    return [total]\n'
         "r = parallel(f)\nreturn [total, r]"
     )
     branch = states(body)["r"]["Branches"][0]["States"]
-    assert list(branch) == ["f.total_2", "f.wait"]
-    assert list(branch["f.total_2"]["Assign"]) == ["total_2"]
+    assigned = {k for state in branch.values() for k in state.get("Assign", {})}
+    assert assigned == {"total_2"}
     assert run(body, {}) == [0, [[1]]]
     # The machine may assign the name after the branch too.
     body = (

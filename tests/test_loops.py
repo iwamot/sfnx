@@ -346,13 +346,14 @@ def test_while_narrows_after_the_loop():
 @pytest.mark.parametrize(
     "body, first",
     [
-        # What the loop copies or starts from is not pending, or is.
+        # What the loop copies or starts from is not pending, or is: the
+        # first Wait takes the start, and the second the loop's start.
         (
-            'items: list = input["items"]\nwait(1)\nfor item in items:\n    items = items + [item]\nreturn items',
+            'items: list = input["items"]\nwait(1)\nwait(1)\nfor item in items:\n    items = items + [item]\nreturn items',
             {"item_items": "{% $items %}", "item_index": 0},
         ),
         (
-            'n: float = input["n"]\nwait(1)\nfor i in range(n):\n    n = n - 1\nreturn n',
+            'n: float = input["n"]\nwait(1)\nwait(1)\nfor i in range(n):\n    n = n - 1\nreturn n',
             {"i_stop": "{% $n %}", "i": 0},
         ),
         # The start goes in the state before the loop, reading first as the

@@ -512,22 +512,24 @@ def test_certain_start_assignments_leave_the_try_body_to_the_catching_parallel(
     assert asl.run(compiled, {}) == output
 
 
-@pytest.mark.parametrize(
-    "body",
-    [
-        # Moved into the Wait, a key the input lacks would fail after it.
-        'fee = input["fee"]\nwait(1)\nreturn fee',
-        # The branches run before the Parallel's Assign, and only a value
-        # written in the source reads the same in a branch or a child
-        # execution of a distributed map.
-        "def one():\n    return fee\n\nfee = input\nr = parallel(one, one)\nreturn r",
-    ],
-)
-def test_assignments_that_start_the_machine_keep_their_pass_before_a_wait_or_a_parallel(
-    body,
-):
+def test_assignments_that_start_the_machine_keep_their_pass_before_a_parallel():
+    # The branches run before the Parallel's Assign, and only a value
+    # written in the source reads the same in a branch or a child execution
+    # of a distributed map.
+    body = "def one():\n    return fee\n\nfee = input\nr = parallel(one, one)\nreturn r"
     compiled = definition(body, FAN_OUT)
     assert compiled["States"][compiled["StartAt"]]["Type"] == "Pass"
+
+
+def test_a_wait_takes_assignments_that_start_the_machine_and_may_fail():
+    """A hand-writer spends no state to check the input first: a key the
+    input lacks fails when the wait is over, where Python fails before it,
+    which the table of differences lists."""
+    compiled = definition('fee = input["fee"]\nwait(1)\nreturn fee', FAN_OUT)
+    assert list(compiled["States"]) == ["wait"]
+    assert asl.run(compiled, {"fee": 3}) == 3
+    with pytest.raises(asl.Failure):
+        asl.run(compiled, {})
 
 
 def test_through_the_module():
