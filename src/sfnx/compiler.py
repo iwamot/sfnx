@@ -3776,12 +3776,16 @@ def assigned_value(template: object) -> Expr | None:
 
 
 def caught_reads(definition: dict[str, object], task: dict[str, object]) -> set[str]:
-    """The variables read on any way on from the catchers of a state: in the
-    catchers' own Assign and Output, and in every state they lead to."""
+    """The variables read on any way on from the catchers of a state that
+    take a failure of its Assign (those for States.ALL or
+    States.QueryEvaluationError; measured): in the catchers' own Assign and
+    Output, and in every state they lead to. A catcher for other errors never runs after a failing
+    Assign, so what it reads is not read after one."""
     states = definition["States"]
     assert isinstance(states, dict)
-    catchers = task["Catch"]
-    assert isinstance(catchers, list)
+    everything = task["Catch"]
+    assert isinstance(everything, list)
+    catchers = [c for c in everything if set(c["ErrorEquals"]) & EVALUATION_ERRORS]
     reads = {
         read
         for catcher in catchers
