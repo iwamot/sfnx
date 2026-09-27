@@ -27,6 +27,7 @@ from sfnx.expressions import (
     array,
     binary,
     call,
+    code_of,
     expression,
     literal,
     operand,
@@ -5170,6 +5171,7 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
     leaves a start Pass that fold_start can now fold. Each pass takes what it
     can in one go, and the first round of a loop is taken once, so the
     rounds end."""
+    assert not loose_expressions(definition)
     rounds = Rounds()
     while True:
         before = copy.deepcopy(definition)
@@ -5196,6 +5198,32 @@ def emitted(node: object) -> object:
     if isinstance(node, list):
         return [emitted(v) for v in node]
     return template_of(node)
+
+
+def from_asl(node: object) -> object:
+    """A definition written as ASL, as the passes read one: each {% %} string
+    outside a Comment as an Expr, whose properties are not known, written as
+    it was."""
+    if isinstance(node, dict):
+        return {k: v if k == "Comment" else from_asl(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [from_asl(v) for v in node]
+    code = code_of(node)
+    return node if code is None else replace(expression(code), template=node)
+
+
+def loose_expressions(node: object) -> list[str]:
+    """The {% %} strings of a definition outside an Expr and a Comment, which
+    the passes do not read: the compiler writes each expression as an Expr,
+    and a definition written as ASL comes in through from_asl."""
+    if isinstance(node, Expr):
+        return []
+    if isinstance(node, dict):
+        found = [loose_expressions(v) for k, v in node.items() if k != "Comment"]
+        return [text for texts in found for text in texts]
+    if isinstance(node, list):
+        return [text for item in node for text in loose_expressions(item)]
+    return [] if code_of(node) is None else [str(node)]
 
 
 def compile_machine(

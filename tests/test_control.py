@@ -14,6 +14,7 @@ from sfnx.compiler import (
     definitions,
     drop_dead_assignments,
     emitted,
+    from_asl,
     grouped,
     read_as_values,
     thread_choices,
@@ -947,7 +948,9 @@ def test_a_choice_reads_what_the_transition_assigns(condition, values, read):
         ],
         "Default": "d",
     }
-    found = read_as_values(choice, values)
+    lifted = from_asl(values)
+    assert isinstance(lifted, dict)
+    found = read_as_values(from_asl(choice), lifted)
     if read is None:
         assert found is None
         return
@@ -1077,8 +1080,10 @@ def test_a_rule_the_catcher_skips_to_reads_no_state_s_own_states(read, moved):
             "r": {"Type": "Succeed", "Output": "{% $x %}"},
         },
     }
-    thread_choices(definition, Rounds())
-    catcher = definition["States"]["t"]["Catch"][0]
+    lifted = from_asl(definition)
+    assert isinstance(lifted, dict)
+    thread_choices(lifted, Rounds())
+    catcher = lifted["States"]["t"]["Catch"][0]
     assert (catcher["Next"] == "r") == moved
 
 
@@ -1511,9 +1516,13 @@ WAIT = {"Type": "Wait", "Seconds": 1}
 
 
 def dropped(states: dict, start: str | None = None) -> dict:
-    definition = {"StartAt": start or next(iter(states)), "States": states}
+    written = {"StartAt": start or next(iter(states)), "States": states}
+    definition = from_asl(written)
+    assert isinstance(definition, dict)
     drop_dead_assignments(definition)
-    return definition
+    emitted_definition = emitted(definition)
+    assert isinstance(emitted_definition, dict)
+    return emitted_definition
 
 
 def test_an_assignment_nothing_reads_goes_with_its_pass():
