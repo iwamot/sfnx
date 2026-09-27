@@ -1296,3 +1296,33 @@ def test_a_return_after_a_wait_reads_a_function_of_a_value_that_is_never_undefin
     compiled = definition(body)
     assert list(compiled["States"]) == ["wait"]
     assert asl.run(compiled, {"s": "abc"}) == [3, 1]
+
+
+@pytest.mark.parametrize(
+    "branch, returned, ends",
+    [
+        ("wait(1)", "[x, 1]", True),
+        # The Wait assigns x, which the Output would read from before it.
+        ('wait(1)\n    x = input["y"]', "[x, 1]", False),
+        # The State of the context names the state it is read in.
+        ("wait(1)", 'context["State"]["Name"]', False),
+    ],
+)
+def test_a_wait_before_a_return_other_ways_share_ends_with_it(branch, returned, ends):
+    """The Wait evaluates its Output when the wait is over (measured), where
+    the Succeed the other way still takes would."""
+    body = (
+        'x: int = input.get("x", 0)\nif input["a"]:\n'
+        '    x = task("arn:aws:states:::lambda:invoke", {"FunctionName": "f"})'
+        '["StatusCode"]\n'
+        f"else:\n    {branch}\nreturn {returned}"
+    )
+    header = "from sfnx import context, state_machine, task, wait\n\n\n"
+    source = (
+        header + "@state_machine\ndef pay(input):\n" + textwrap.indent(body, "    ")
+    )
+    (compiled,) = compile_source(source).values()
+    assert ("End" in compiled["States"]["wait"]) == ends
+    assert "return" in compiled["States"]
+    if ends:
+        assert asl.run(compiled, {"a": False, "x": 4}) == [4, 1]
