@@ -1208,3 +1208,31 @@ def test_a_return_after_a_wait_keeps_its_state_where_it_must(body):
     )
     (compiled,) = compile_source(source).values()
     assert "End" not in compiled["States"]["wait"]
+
+
+SELF = 'names: list[str] = input.get("names", [])\nwait(1)\nnames = names + ["x"]\n'
+
+
+def test_a_return_after_a_wait_reads_what_reads_its_own_name():
+    """names + ["x"] reads the names from before, as the Wait's Output does."""
+    compiled = definition(SELF + "return names")
+    assert list(compiled["States"]) == ["wait"]
+    assert asl.run(compiled, {"names": ["a"]}) == ["a", "x"]
+
+
+def test_a_return_after_a_wait_that_reads_a_name_in_jsonata_keeps_its_state():
+    """The text of jsonata() reads names by its name, the new value."""
+    body = SELF + 'return jsonata("$names")'
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    assert list(compiled["States"]) == ["wait", "return"]
+    assert asl.run(compiled, {"names": ["a"]}) == ["a", "x"]
+
+
+def test_a_raise_after_a_wait_reads_what_reads_its_own_name():
+    body = SELF + "raise Declined(str(len(names)))"
+    classes = "class Declined(Exception):\n    pass\n\n\n"
+    (compiled,) = compile_source(classes + source(body)).values()
+    assert [s["Type"] for s in compiled["States"].values()] == ["Wait", "Fail"]
+    assert compiled["States"]["raise"]["Cause"] == (
+        "{% $string($count($append($names, ['x']))) %}"
+    )

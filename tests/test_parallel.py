@@ -203,7 +203,8 @@ def test_unpacking():
         "a": 1,
         "b": "{% $states.context.Execution.Input.b %}",
     }
-    assert compiled["b"]["Assign"] == {"b": "{% $a %}", "a": "{% $b %}"}
+    # The return reads each as the value the other held.
+    assert compiled["return"]["Output"] == ["{% $b %}", "{% $a %}"]
     assert run('a, b = 1, input["b"]\nb, a = a, b\nreturn [a, b]', {"b": 2}) == [2, 1]
     assert states("pair = [1, 2]\na, b = pair\nreturn a")["a"]["Assign"] == {
         "a": "{% $pair[0] %}",
