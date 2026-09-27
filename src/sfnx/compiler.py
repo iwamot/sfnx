@@ -4314,8 +4314,10 @@ def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
     Choice. JSONata's `and` evaluates no more once one side is false
     (measured), so a test reached only through `c` is not evaluated
     otherwise. Not where such an expression gives another value each time
-    it is evaluated, where the second reads the state it is in, or binds a
-    name it would read. The second stays for the other ways into it."""
+    it is evaluated, where the second reads the state it is in, binds a
+    name it would read, or spells one in a string, as the text of jsonata()
+    may, which is not a read and stays as it is. The second stays for the
+    other ways into it."""
     states = definition["States"]
     assert isinstance(states, dict)
     taken = True
@@ -4444,12 +4446,7 @@ def read_as_values(
         CHANGING.search(code) for code in used.values()
     ):
         return None
-    names = {*used, *(r for code in used.values() for r in VARIABLE.findall(code))}
-    if any(
-        re.search(rf"\$({bound})\s*:=|function\s*\([^)]*\$({bound})\b", code)
-        for code in codes
-        for bound in map(re.escape, names)
-    ):
+    if not all(reads_as(choice, n, expression(code)) for n, code in used.items()):
         return None
     pattern = re.compile(r"\$(" + "|".join(map(re.escape, used)) + r")(?!\w)")
 
