@@ -412,13 +412,29 @@ def call(
     )
 
 
+def template_of(leaf: object) -> object:
+    """What a field of a state holds as JSON: an Expr's template, and a value
+    written out as it is."""
+    return leaf.template if isinstance(leaf, Expr) else leaf
+
+
+def code_of(leaf: object) -> str | None:
+    """The JSONata of a field that holds one expression, an Expr or a {% %}
+    string, or None for a value written out or one with expressions inside."""
+    template = template_of(leaf)
+    if isinstance(template, str) and template.startswith("{%"):
+        return template[2:-2].strip()
+    return None
+
+
 def written(template: object) -> bool:
     """Whether a template is a value written out, with no expression in it."""
+    template = template_of(template)
     if isinstance(template, dict):
         return all(written(v) for v in template.values())
     if isinstance(template, list):
         return all(written(v) for v in template)
-    return not (isinstance(template, str) and template.startswith("{%"))
+    return code_of(template) is None
 
 
 def binary(
