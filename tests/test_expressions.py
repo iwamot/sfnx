@@ -1,6 +1,6 @@
 import pytest
 
-from sfnx.compiler import as_expr, composed, emitted
+from sfnx.compiler import as_expr, composed, emitted, from_asl, loose_expressions
 from sfnx.expressions import (
     CHANGES,
     Expr,
@@ -74,3 +74,36 @@ def test_a_field_is_an_expr_as_it_is_or_as_its_template():
     assert as_expr(leaf) is leaf
     assert as_expr("{% $x %}").code == "$x"
     assert as_expr({"k": "{% $x %}", "n": 1}).code == '{"k": $x, "n": 1}'
+
+
+ASL = {
+    "StartAt": "p",
+    "States": {
+        "p": {
+            "Type": "Pass",
+            "Comment": "{% not an expression %}",
+            "Assign": {"x": "{%  $a  %}", "y": [1, "{% $b %}"], "z": "text"},
+            "Next": "c",
+        },
+        "c": {
+            "Type": "Choice",
+            "Choices": [{"Condition": "{% $x > 1 %}", "Next": "r"}],
+            "Default": "r",
+        },
+        "r": {"Type": "Succeed", "Output": {"k": "{% $y %}"}},
+    },
+}
+
+
+def test_a_definition_written_as_asl_reads_in_and_writes_out_as_it_was():
+    read = from_asl(ASL)
+    assert loose_expressions(ASL) == [
+        "{%  $a  %}",
+        "{% $b %}",
+        "{% $x > 1 %}",
+        "{% $y %}",
+    ]
+    assert loose_expressions(read) == []
+    assert emitted(read) == ASL
+    assert isinstance(read, dict)
+    assert as_expr(read["States"]["p"]["Assign"]["x"]).code == "$a"
