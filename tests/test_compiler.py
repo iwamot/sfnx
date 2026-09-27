@@ -242,9 +242,9 @@ def test_joining_text_cannot_fail_so_it_goes_in_the_return():
         # c reads a, which read as its expression would give another value.
         ("a = random.random()\nc, d = a, 1\nreturn [c, d]", ["Pass", "Succeed"]),
         # The text of jsonata() reads x by its name, which no expression
-        # replaces.
+        # replaces, and spells it in a string, which stays as it is.
         (
-            'x = 1\nc, d = jsonata("$x + 1"), 2\nreturn [c, d]',
+            "x = 1\nc, d = jsonata(\"'$x' & $string($x)\"), 2\nreturn [c, d]",
             ["Pass", "Pass", "Succeed"],
         ),
     ],

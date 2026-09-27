@@ -204,14 +204,14 @@ def test_dict_loops_over_keys():
 def test_a_list_the_body_changes_is_copied_first():
     body = 'items: list = input["items"]\nfor item in items:\n    items = items + [item]\nreturn items'
     compiled = states(body)
-    assert compiled["item_items"]["Assign"] == {
-        "item_items": "{% $items %}",
-        "item_index": 0,
-    }
+    # The copy goes in the state before the loop, reading items as the
+    # expression that state assigns it.
+    assert compiled["items"]["Assign"]["item_items"] == f"{{% {INPUT}.items %}}"
     assert (
         compiled["for"]["Choices"][0]["Condition"]
         == "{% $item_index < $count($item_items) %}"
     )
+    assert run(body, {"items": [1, 2]}) == [1, 2, 1, 2]
 
 
 def test_a_range_stop_the_body_changes_is_copied_first():
@@ -349,9 +349,11 @@ def test_while_narrows_after_the_loop():
             'n: float = input["n"]\nwait(1)\nfor i in range(n):\n    n = n - 1\nreturn n',
             {"i_stop": "{% $n %}", "i": 0},
         ),
+        # The start goes in the state before the loop, reading first as the
+        # expression that state assigns it.
         (
             'first: float = input["first"]\nfor i in range(first, 10):\n    wait(i)\nreturn 1',
-            {"i": "{% $first %}"},
+            {"first": f"{{% {INPUT}.first %}}", "i": f"{{% {INPUT}.first %}}"},
         ),
     ],
 )
@@ -903,3 +905,51 @@ def test_a_loop_over_a_list_written_in_the_source_goes_into_its_body():
     assert start["Next"] == "wait"
     assert compiled["for"]["Choices"][0]["Condition"] == "{% $region_index < 2 %}"
     assert run(body, {}) == 1
+
+
+RETRY = (
+    "attempts = 0\nwhile True:\n    attempts = attempts + 1\n"
+    f'    r = task("{PUBLISH}", {{"Message": "m"}})\n'
+    '    if r["MessageId"] == "ok" or attempts > 2:\n        break\n'
+    "return attempts"
+)
+
+
+def test_the_first_statement_of_a_loop_goes_in_each_way_into_it():
+    """The way in and the way back each assign it, so no round of the loop
+    passes through a Pass of its own."""
+    compiled = states(RETRY)
+    assert [s["Type"] for s in compiled.values()] == [
+        "Pass",
+        "Task",
+        "Choice",
+        "Succeed",
+    ]
+    assert compiled["attempts"]["Assign"] == {"attempts": 1}
+    assert compiled["if"]["Assign"] == {"attempts": "{% $attempts + 1 %}"}
+    answers = iter(["no", "no", "ok"])
+    tasks = {"r": lambda arguments: {"MessageId": next(answers)}}
+    assert run(RETRY, {}, tasks) == 3
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # A Catch would take a failure of the Task's Assign.
+        (
+            'n: int = input["n"]\nwhile True:\n    try:\n'
+            f'        task("{PUBLISH}", {{"Message": "m"}})\n'
+            "    except Exception:\n        pass\n    n = n * 2\n"
+            "    if n > 8:\n        break\nreturn n"
+        ),
+        # The way in assigns x a value that may fail, which Python evaluates
+        # before the loop's x + 1 takes its place.
+        (
+            'x: int = input["x"]\nwhile True:\n    x = x + 1\n    wait(1)\n'
+            "    if x > 3:\n        break\nreturn x"
+        ),
+    ],
+)
+def test_a_statement_a_way_into_it_cannot_hold_keeps_its_pass(body):
+    compiled = states(body)
+    assert "Pass" in [s["Type"] for s in compiled.values()]

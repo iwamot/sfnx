@@ -255,34 +255,35 @@ def count(input):
             ],
         ),
         # The second loop starts in the first one's Choice, which only its
-        # Default leads on from, and each body's first assignments go in the
-        # rule that leads there. The if the first body starts with and the
-        # second loop's test are rules of that Choice, each spanning both.
-        "for": ([], [(header, None), (counting, "loop start"), (counting, None)]),
+        # Default leads on from. The if the first body starts with is a rule
+        # of that Choice, and what follows it in the body, which each way
+        # back into the loop's test passes, goes in each rule that leads
+        # back, spanning it. The last loop's first statement goes likewise in
+        # each way into its test.
+        "for": ([], [(header, None), (counting, "loop start")]),
         "for[0]": (
             [],
             [
                 (header, "loop variables"),
                 (test, None),
+                ("kept = kept + [row]", None),
+                (header, "loop step"),
                 ('row = row["next"]', None),
                 ("flagged = True", None),
             ],
         ),
-        "for[1]": ([], [(header, "loop variables"), (test, None)]),
-        "for[2]": (
+        "for[1]": (
             [],
             [
-                (header, None),
-                (counting, "loop start"),
-                ("kept = kept + [i]", None),
-                (counting, "loop step"),
+                (header, "loop variables"),
+                (test, None),
+                ("kept = kept + [row]", None),
+                (header, "loop step"),
             ],
         ),
-        "kept": ([], [("kept = kept + [row]", None), (header, "loop step")]),
-        "for_2": ([], [(counting, None)]),
+        "for_2": ([], [(counting, None), ("kept = kept[:-1]", None)]),
         "for_2[0]": ([], [("kept = kept + [i]", None), (counting, "loop step")]),
-        "kept_2": ([], [("kept = kept[:-1]", None)]),
-        "if_2": ([], [("if len(kept) < 3:", None)]),
+        "if_2": ([], [("if len(kept) < 3:", None), ("kept = kept[:-1]", None)]),
         "return": ([], [("return kept", None)]),
     }
 

@@ -227,12 +227,12 @@ def test_assignments_after_a_wait_are_its_assign():
         ('wait(1)\nx = context["State"]["EnteredTime"]', None, ["x"]),
         ('wait(1)\nx = context["State"]["Name"]', None, ["x"]),
         ("wait(1)\nx = context", None, ["x"]),
-        # What comes before a loop joins the Wait; the body the loop leads back
-        # to keeps its own states.
+        # What comes before a loop joins the Wait, and the first statement of
+        # the body the loop leads back to goes in each way into it.
         (
             "wait(1)\nx = 0\nwhile True:\n    x = x + 1\n    if x > 2:\n        break\n    wait(1)",
-            {"x": 0},
-            ["x"],
+            {"x": 1},
+            [],
         ),
     ],
 )
@@ -279,7 +279,7 @@ def test_what_a_wait_assigns(body, joined, passes):
         # Unless every branch returns, when only the Default leads there.
         ('if input["a"]:\n    return 0\ny = 2', None, {"y": 2}, []),
         # An else that put its assignments in the Choice takes what follows
-        # too, unless it reads what they assign.
+        # too, which reads what they assign as the expressions they assign.
         (
             'if input["a"]:\n    return 0\nelse:\n    x = 1\ny = 2',
             None,
@@ -289,8 +289,8 @@ def test_what_a_wait_assigns(body, joined, passes):
         (
             'if input["a"]:\n    return 0\nelse:\n    x = 1\ny = x + 1',
             None,
-            {"x": 1},
-            ["y"],
+            {"x": 1, "y": 2},
+            [],
         ),
         # The time and a random value read the same in the Choice.
         ('if input["a"]:\n    x = str(uuid.uuid4())', {"x": "{% $uuid() %}"}, None, []),
