@@ -72,8 +72,9 @@ MAX_WAIT = 99_999_999
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 # The functions whose calls are states of their own.
 STATE_CALLS = ("task", "activity", "parallel", "inline_map", "distributed_map")
-# The errors of a retrier that runs a state again when its Output fails.
-RETRIED = frozenset({EVERYTHING, "States.QueryEvaluationError"})
+# The errors a catcher or a retrier matches when a state's Assign or Output
+# fails.
+EVALUATION_ERRORS = frozenset({EVERYTHING, "States.QueryEvaluationError"})
 # Context a state and the Pass after it read alike. The State part, its name
 # and when it was entered, differs, and so does the whole object.
 SHARED_CONTEXT = re.compile(r"\$states\.context(?!\.(Execution|StateMachine|Map)\b)")
@@ -3527,15 +3528,23 @@ def may_fold(state: dict[str, object]) -> bool:
     """Whether what follows a Task, a Parallel or a Map can go in its Assign
     or its Output: its failure there ends the execution, as the failure of a
     state after it would."""
-    return "Catch" not in state and not retries_evaluation(state)
+    return not takes_evaluation(state, "Catch") and not retries_evaluation(state)
 
 
 def retries_evaluation(state: dict[str, object]) -> bool:
     """Whether a retrier of a state takes a failure of its Assign or its
     Output, which would call the state again."""
-    retriers = state.get("Retry", [])
-    assert isinstance(retriers, list)
-    return bool({e for retrier in retriers for e in retrier["ErrorEquals"]} & RETRIED)
+    return takes_evaluation(state, "Retry")
+
+
+def takes_evaluation(state: dict[str, object], field: str) -> bool:
+    """Whether a catcher or a retrier of a state takes a failure of its
+    Assign or its Output: only States.ALL and States.QueryEvaluationError
+    do (measured)."""
+    handlers = state.get(field, [])
+    assert isinstance(handlers, list)
+    errors = {e for handler in handlers for e in handler["ErrorEquals"]}
+    return bool(errors & EVALUATION_ERRORS)
 
 
 # A read of a variable or a path from it, which needs no parentheses where it

@@ -967,6 +967,29 @@ def test_what_the_known_value_decides(value, test, kept, result):
     assert asl.run(compiled, {}, {"invoke": lambda arguments: {}}) == result
 
 
+@pytest.mark.parametrize(
+    "caught, kept",
+    [
+        # The Catch does not take a failure of the Task's Assign, so the
+        # rule's assignment goes in it.
+        ("Declined", False),
+        # The Catch would take it, where the Choice lets it end the execution.
+        ("Exception", True),
+    ],
+)
+def test_a_task_takes_the_assignments_of_a_rule_its_catch_would_not_take(caught, kept):
+    body = (
+        f'n = input["n"]\nflag = "a"\ntry:\n    {CHARGE}\nexcept {caught}:\n'
+        f'    flag = "b"\nif flag == "a":\n    x = n + 1\n    {CHARGE}\n'
+        "    return x\nreturn 0"
+    )
+    compiled = flagged(body)
+    states = compiled["States"]
+    assert any(s["Type"] == "Choice" for s in states.values()) == kept
+    ok = {"invoke": lambda arguments: {}, "invoke_2": lambda arguments: {}}
+    assert asl.run(compiled, {"n": 1}, ok) == 2
+
+
 PAST_A_CHOICE = (
     'status = "new"\nprefix = input["prefix"]\ntry:\n'
     f"    found = {CHARGE}\n"

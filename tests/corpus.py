@@ -280,6 +280,16 @@ try:
 except Exception:
     return "not retried"
 """
+CATCH_MISSES = """\
+def f(n):
+    return {"k": n}
+
+try:
+    rs = inline_map(f, [0])
+except Declined:
+    return "caught"
+return 1 / rs[0]["k"]
+"""
 RULE_ASSIGNS = """\
 x: float = input["x"]
 if x > 1:
@@ -900,6 +910,20 @@ CASES: tuple[Case, ...] = (
         "1; CPython has no context and no retries",
         python=False,
         backs="A `States.TaskFailed` retrier does not match a failing `Output`",
+        states=("Map", "Succeed"),
+    ),
+    Case(
+        "catch-for-another-error-misses-a-failing-output",
+        "catch",
+        CATCH_MISSES,
+        {},
+        Error(QUERY_ERROR),
+        "the return after the try goes in the Output of the Map, whose Catch "
+        "for Declined does not take the Output's failure, so the execution "
+        "fails as the Succeed's failure would; CPython raises "
+        "ZeroDivisionError",
+        python=False,
+        backs="A Catch or a retrier for other errors does not take it",
         states=("Map", "Succeed"),
     ),
     Case(
