@@ -63,21 +63,22 @@ def test_for_over_a_list_is_a_counter_and_a_choice():
 
 def test_what_follows_a_loop_goes_in_its_choice():
     """Only the Default leads out of a loop without break, and the Choice's
-    own Assign applies only there."""
-    body = 'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    n = n + 1\ndone = n * 2\nreturn [done]'
+    own Assign applies only there. The return does not read done, which
+    Python evaluates, so the Choice assigns it."""
+    body = 'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    n = n + 1\ndone = n * 2\nreturn [n]'
     compiled = states(body)
     assert compiled["for"]["Assign"] == {"done": "{% $n * 2 %}"}
-    assert run(body, {"xs": [1, 2]}) == [4]
+    assert run(body, {"xs": [1, 2]}) == [2]
     body = (
         'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    if x > 1:\n        break\n'
-        "    n = n + 1\ndone = n * 2\nreturn [done]"
+        "    n = n + 1\ndone = n * 2\nreturn [n]"
     )
     # A break joins the Default after the loop, so each takes it.
     compiled = states(body)
     assert compiled["for"]["Assign"] == {"done": "{% $n * 2 %}"}
     # The if the body starts with is a rule of the loop's Choice.
     assert compiled["for"]["Choices"][0]["Assign"] == {"done": "{% $n * 2 %}"}
-    assert run(body, {"xs": [1, 2]}) == [2]
+    assert run(body, {"xs": [1, 2]}) == [1]
 
 
 def test_enumerate_names_the_counter():

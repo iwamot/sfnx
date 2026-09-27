@@ -730,13 +730,13 @@ def test_a_value_bound_once_is_not_read_by_another_put_in_place():
     reads, so both are put in place."""
     body = (
         'n: float = input["n"]\ntry:\n'
-        f"    {CHARGE}\n    n = n + 1\n    m = n * 2\n"
+        f"    {CHARGE}\n    m = n * 2\n    n = n + 1\n"
         '    return n * n + m\nexcept Exception:\n    return "caught"'
     )
     compiled = states(body)
     ending = next(s for s in compiled.values() if s.get("End"))
     assert ":=" not in ending["Output"]
-    assert run(body, {"n": 2}, {"invoke": lambda arguments: {}}) == 15
+    assert run(body, {"n": 2}, {"invoke": lambda arguments: {}}) == 13
 
 
 def test_values_bound_once_do_not_read_each_other():
@@ -744,12 +744,12 @@ def test_values_bound_once_do_not_read_each_other():
     twice, binding them would give m the new n: both are put in place."""
     body = (
         'n: float = input["n"]\ntry:\n'
-        f"    {CHARGE}\n    n = n + 1\n    m = n * 2\n"
+        f"    {CHARGE}\n    m = n * 2\n    n = n + 1\n"
         '    return m * m + n * n\nexcept Exception:\n    return "caught"'
     )
     ending = next(s for s in states(body).values() if s.get("End"))
     assert ":=" not in ending["Output"]
-    assert run(body, {"n": 2}, {"invoke": lambda arguments: {}}) == 45
+    assert run(body, {"n": 2}, {"invoke": lambda arguments: {}}) == 25
 
 
 def test_an_assignment_the_catcher_leads_to_as_well_keeps_its_pass():
