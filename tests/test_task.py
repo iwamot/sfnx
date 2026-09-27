@@ -387,6 +387,26 @@ def test_certain_assignments_that_start_the_machine_go_in_a_wait_parallel_or_map
     assert asl.run(compiled, {}, {}) == [2, "f"]
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        f'    task("{LAMBDA}", {{"FunctionName": name}})\n',
+        f'    task("{LAMBDA}", {{"FunctionName": name}}, retry=[{{"ErrorEquals": [Exception]}}])\n',
+    ],
+)
+def test_certain_assignments_that_start_the_machine_go_in_a_catching_task(call):
+    """None of them can fail, so neither the Catch nor a retrier has a
+    failure of the Task's Assign to take, and the catcher assigns them too."""
+    body = f'fee = 2\nname = "f"\ntry:\n{call}except Exception:\n    return fee\nreturn name'
+    compiled = definition(body)
+    state = compiled["States"][compiled["StartAt"]]
+    assert state["Type"] == "Task"
+    assert state["Arguments"] == {"FunctionName": "f"}
+    assert state["Assign"] == {"fee": 2, "name": "f"}
+    [catcher] = state["Catch"]
+    assert catcher["Assign"] == {"fee": 2, "name": "f"}
+
+
 def test_certain_assignments_that_start_the_machine_go_in_the_catchers_too():
     body = (
         "def one():\n    return 1\n\n"

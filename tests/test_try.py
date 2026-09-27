@@ -652,7 +652,12 @@ def test_an_except_clause_that_reads_only_what_follows_the_failure_takes_the_ass
     )
     compiled = states(body)
     task = next(n for n, s in compiled.items() if s["Type"] == "Task")
-    assert ("n" not in compiled[task]["Assign"]) == kept
+    read = [
+        s
+        for s in compiled.values()
+        if s["Type"] == "Pass" and isinstance(s["Assign"].get("n"), str)
+    ]
+    assert bool(read) == kept
     failing = {task: lambda arguments: {"Payload": {}}}
     if result is None:
         with pytest.raises(asl.Failure) as failure:
