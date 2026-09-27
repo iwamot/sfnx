@@ -1282,13 +1282,14 @@ def test_a_raise_after_a_wait_reads_what_reads_its_own_name():
         # as the assignment would.
         ('n: int = input.get("n", 0)\nwait(1)\nn = n + 1\nreturn [n, 1]', True),
         ('n: int = input.get("n", 0)\nwait(1)\nn = n + 1\nreturn {"n": n}', True),
-        # Two that may fail could fail in another order.
+        # Both may fail, and the return reads each every time: the Output
+        # fails where Python does, though maybe on the other first.
         (
             (
                 'n: int = input.get("n", 0)\nk: int = input.get("k", 0)\nwait(1)\n'
                 "n = n + 1\nk = k * 2\nreturn [k, n]"
             ),
-            False,
+            True,
         ),
         # A missing key is undefined, which a list drops without failing.
         ('wait(1)\nx = input["x"]\nreturn [x, 1]', False),
