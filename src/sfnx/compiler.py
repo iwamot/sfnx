@@ -1363,7 +1363,9 @@ class Scope:
         ):
             return False
         value = self.read_as(value_node, dict(pending))
-        if value.variables & pending.keys() or not self.holds_still([value], wait):
+        if self.read_by_name(value_node, pending) or not self.holds_still(
+            [value], wait
+        ):
             return False
         located = self.take_pending(origins or [self.here()])
         self.carrier = None
@@ -1404,11 +1406,23 @@ class Scope:
         if any(v.volatile for v in values) or not self.holds_still(values, {}):
             return False
         value = self.read_as(value_node, dict(pending))
-        if value.variables & pending.keys():
+        if self.read_by_name(value_node, pending):
             return False
         located = self.take_pending(origins or [self.here()])
         self.finish(value, None, node, located)
         return True
+
+    def read_by_name(self, value_node: ast.expr, pending: dict[str, Expr]) -> bool:
+        """Whether a value reads a pending variable where no expression can
+        take its place, as the text of jsonata() reads a variable by its
+        name. A pending expression that reads its own name, as that of
+        `n = n + 1` does, reads the value from before, which the state that
+        ends the path in their place reads too, as none of them is assigned."""
+        marks = {
+            name: expression(f"$sfnx_pending_{i}_", type=value.type)
+            for i, (name, value) in enumerate(pending.items())
+        }
+        return bool(self.read_as(value_node, marks).variables & pending.keys())
 
     def take_pending(self, origins: list[Origin]) -> list[Origin]:
         """Clear the pending assignments for a state that ends the path in
@@ -2215,7 +2229,7 @@ class Scope:
         cause = None
         if message is not None:
             cause = self.read_as(message, dict(pending))
-            if cause.variables & pending.keys():
+            if self.read_by_name(message, pending):
                 return False
         return cause, self.take_pending([self.here()])
 

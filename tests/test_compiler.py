@@ -164,10 +164,12 @@ def test_a_swap_reads_the_pending_values_in_the_same_state():
     ],
 )
 def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared(before):
+    """The swap does not share the first Pass, so the return right after it
+    reads the values the first Pass assigns, each in the other's place."""
     body = f"{before}\na, b = b, a\nreturn [a, b]"
     definition = compile_one("import random\n" + machine(body))
-    types = [s["Type"] for s in definition["States"].values()]
-    assert types == ["Pass", "Pass", "Succeed"]
+    assert definition["States"]["a"]["Assign"]["b"] == 2
+    assert definition["States"]["return"]["Output"] == ["{% $b %}", "{% $a %}"]
 
 
 @pytest.mark.parametrize(
