@@ -123,8 +123,23 @@ def test_a_first_value_nothing_reads_goes(first):
     lists."""
     body = f'n = {first}\ns = "a"\nn = 0\nreturn [n, s]'
     definition = compile_one("import random\n" + machine(body))
-    assert all("n" not in s.get("Assign", {}) for s in definition["States"].values())
+    # What is left of the start, s = "a", goes in the return, whatever the
+    # first n was.
+    assert list(definition["States"]) == ["return"]
     assert asl.run(definition, {}) == [0, "a"]
+
+
+@pytest.mark.parametrize(
+    "first",
+    # A random value, which the Choice would evaluate again in its test, and
+    # the State of the context, which names the state it is read in.
+    ["random.random()", 'context["State"]["Name"]'],
+)
+def test_a_start_value_the_next_state_would_read_otherwise_keeps_its_pass(first):
+    body = f'n = {first}\nif n == "x":\n    return 1\nreturn [n]'
+    source = "import random\nfrom sfnx import context\n" + machine(body)
+    definition = compile_one(source)
+    assert definition["States"][definition["StartAt"]]["Type"] == "Pass"
 
 
 @pytest.mark.parametrize(
