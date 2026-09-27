@@ -410,6 +410,7 @@ class Scope:
             raise CompileError(str(exc), node) from exc
 
     def flush(self) -> None:
+        holding = self.holds_pending()
         carrier, self.carrier = self.carrier, None
         result = self.following()
         self.result = None
@@ -434,13 +435,8 @@ class Scope:
         if carrier is not None and self.joins(carrier, list(pending.values())):
             self.hold(carrier, assign, origins, remarks)
             return
-        if (
-            result is not None
-            and not self.opening
-            and folded.keys() == pending.keys()
-            and (self.may_fold(result.state) or all_written(list(folded.values())))
-            and self.holds_still(list(folded.values()), result.state)
-        ):
+        if holding:
+            assert result is not None
             self.result = self.fold(result, folded, origins, remarks)
             return
         if self.choosing():
@@ -1385,9 +1381,12 @@ class Scope:
         compute: nothing reads them after the return, so the Pass goes.
         Python evaluates each even when the return does not read it, so they
         fail where Python's would, as fails_in_place says. A value that changes
-        on evaluation, or that reads the state it is in, keeps the Pass."""
+        on evaluation, or that reads the state it is in, keeps the Pass. After
+        a Task, a Parallel or a Map that can hold them, the return is left to
+        end_with_result, which ends on that state; after one that cannot, as
+        a Catch would take their failure, the Succeed reads them as well."""
         pending = self.pending
-        if not pending or self.following() is not None:
+        if not pending or self.holds_pending():
             return False
         if any(self.makes_state(n) for n in ast.walk(value_node)):
             return False
@@ -1402,6 +1401,21 @@ class Scope:
         located = self.take_pending(origins or [self.here()])
         self.finish(value, None, node, located)
         return True
+
+    def holds_pending(self) -> bool:
+        """Whether the Task, the Parallel or the Map just added takes the
+        pending assignments in its Assign when they are flushed, as flush
+        decides."""
+        result = self.following()
+        if result is None:
+            return False
+        folded = list(self.folded.values())
+        return (
+            not self.opening
+            and self.folded.keys() == self.pending.keys()
+            and (self.may_fold(result.state) or all_written(folded))
+            and self.holds_still(folded, result.state)
+        )
 
     def fails_in_place(self, value_node: ast.expr, pending: dict[str, Expr]) -> bool:
         """Whether a return that reads the pending values as their expressions,
