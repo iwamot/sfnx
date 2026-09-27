@@ -1955,20 +1955,26 @@ class Scope:
         parameters = function.args.args
         bindings = dict(self.bindings) if local else {}
         pending: dict[str, Expr] = {}
+        # The ItemSelector gives each parameter the item or its index, which
+        # an array always holds, so reading one is never undefined.
+        given = [
+            replace(step(expression("$states.input"), p.arg), defined=True, total=True)
+            for p in parameters
+        ]
         binds = mark is None and makes_states(
             function, self.module.names, {**self.module.functions, **self.functions}
         )
-        for parameter, kind in zip(parameters, declared, strict=True):
+        for parameter, kind, read in zip(parameters, declared, given, strict=True):
             name = parameter.arg
             if binds:
                 bindings[name] = self.variable(name, kind)
-                pending[name] = step(expression("$states.input"), name)
+                pending[name] = read
             elif mark is not None:
-                bindings[name] = replace(expression(f"${mark}{name}"), type=kind)
-            else:
                 bindings[name] = replace(
-                    step(expression("$states.input"), name), type=kind
+                    expression(f"${mark}{name}"), type=kind, defined=True, total=True
                 )
+            else:
+                bindings[name] = replace(read, type=kind)
         scope = self.child(
             function, local, bindings, self.parameters if local else set()
         )
