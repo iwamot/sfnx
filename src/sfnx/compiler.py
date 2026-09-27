@@ -595,17 +595,28 @@ class Scope:
             commented(holder, remark)
         holder["Assign"] = assign
 
-    def defer(self, name: str, value: Expr, node: ast.AST, origin: Origin) -> None:
+    def defer(
+        self,
+        name: str,
+        value: Expr,
+        node: ast.AST,
+        origin: Origin,
+        folded: Expr | None = None,
+    ) -> None:
         """A value for the Pass the pending assignments share, and where in the
         source it comes from. Right after a Task, a Parallel or a Map, a value
         that reads nothing pending and nothing the state assigns reads the same
         in the state's Assign, so it may go there, as flush decides. An
-        assignment that reads what the state assigns records how before it
-        comes here, and that record stays."""
+        assignment that reads what the state assigns gives how it reads there
+        as folded. What an earlier assignment of the name put there goes, as
+        the new value replaces it: a, b = b, a would read a's new value in
+        place of the one the state assigned."""
+        self.folded.pop(name, None)
         result = self.following()
-        if (
+        if folded is not None:
+            self.folded[name] = folded
+        elif (
             result is not None
-            and name not in self.folded
             and not value.variables & (self.pending.keys() | result.values.keys())
             and not value.volatile
         ):
@@ -1228,17 +1239,16 @@ class Scope:
             self.flush()
             reads = []
         result = self.following()
+        folded = None
         if result is not None and all(read in self.folded for read in reads):
             substituted = {**result.values, **{r: self.folded[r] for r in reads}}
             folded = self.read_result(Result({}, substituted, [], None), value_node)
-            if folded is not None:
-                self.folded[name] = folded
         error = self.catching()
         if error is not None and all(read in self.caught for read in reads):
             error_output = expression("$states.errorOutput", type=ERROR_OUTPUT)
             substituted = {error: error_output, **{r: self.caught[r] for r in reads}}
             self.caught[name] = self.read_as(value_node, substituted)
-        self.defer(name, value, target, self.here())
+        self.defer(name, value, target, self.here(), folded)
         self.hold_remark()
         self.bindings[name] = self.variable(name, known)
         self.partial.discard(name)

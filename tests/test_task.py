@@ -197,6 +197,25 @@ def test_an_assignment_that_could_differ_keeps_its_pass(body):
 
 
 @pytest.mark.parametrize(
+    "rest, expected",
+    [
+        # The swap reads n0 as the Task assigned it, not as 2.
+        ("n0, n1 = n1, n0\nreturn [n0, n1]", [2, 7]),
+        ('n1, n2 = input["x"], 5\nreturn [n0, n1, n2]', [7, 9, 5]),
+    ],
+)
+def test_an_unpacking_after_a_task_replaces_what_an_earlier_one_assigned(
+    rest, expected
+):
+    """n1 = 2 goes in the Task's Assign; the unpacking assigns n1 again, and
+    its value replaces that one there."""
+    body = f'n0: int = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]\nn1 = 2\n{rest}'
+    compiled = definition(body)
+    tasks = {"n0": lambda arguments: {"Payload": 7}}
+    assert asl.run(compiled, {"x": 9}, tasks) == expected
+
+
+@pytest.mark.parametrize(
     "value, code",
     [("str(uuid.uuid4())", "$uuid()"), ("time.time()", "$millis() / 1000")],
 )
