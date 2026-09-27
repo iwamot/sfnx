@@ -4884,19 +4884,32 @@ def read_what_it_assigns(
     execution, as the Succeed's would, and where the return reads nothing
     of $states, which is the Succeed's own there, nor the time, a random
     value or $eval, which a jsonata() expression may read in ways not known
-    here, nor what the state assigns as such a value, which the Output
-    would evaluate again. The Output reads what the state assigns as the
-    expressions it assigns, as it is evaluated with the values from before
-    it; the Assign stays, as Python evaluates what the return does not
-    read. A return whose every expression is a variable alone goes in
-    after a Catch or a retrier too: a variable neither fails nor is
-    undefined, and one the state assigns reads the expression its Assign
-    evaluates alike, so the Output fails only where the Assign does, which
-    the Catch or the retrier takes as it would without the Output."""
+    here. The Output reads what the state assigns as read_assigned says. A
+    return whose every expression is a variable alone goes in after a
+    Catch or a retrier too: a variable neither fails nor is undefined, and
+    one the state assigns reads the expression its Assign evaluates alike,
+    so the Output fails only where the Assign does, which the Catch or the
+    retrier takes as it would without the Output."""
     if not (may_fold(state) or all(BARE.fullmatch(c) for c in codes)) or any(
         changes_or_reads_the_state(c) for c in codes
     ):
         return None
+    return read_assigned(state, output, codes)
+
+
+def read_assigned(
+    state: dict[str, object], output: object, codes: list[str]
+) -> object | None:
+    """An Output with what the state assigns read as the expressions it
+    assigns, as the Output is evaluated with the values from before the
+    state, or None where one cannot be read so: a value that is no one
+    expression, one that reads the time, a random value or $eval, which the
+    Output would evaluate again, or a name the Output binds itself. The
+    state's Assign stays, as Python evaluates what the return does not
+    read, and drop_dead_assignments keeps an assignment whose expression
+    the Output reads in its place, so a value that fails or is undefined
+    fails in the Assign, where Python fails, even where the Output would
+    drop it."""
     own = assigns(state)
     reads = {read for code in codes for read in VARIABLE.findall(code)}
     found = {n: assigned_value(v) for n, v in own.items() if n in reads}
@@ -4922,9 +4935,11 @@ def end_before_returns(definition: dict[str, object]) -> None:
     expression, so it cannot fail where the Succeed would not; one with
     expressions goes as read_what_it_assigns says. A Wait takes any Output
     so, as it evaluates it when the wait is over (measured), where the
-    Succeed would, and has no Catch, unless the Output reads what the Wait
-    assigns, which it would read from before the Wait, or the State of the
-    context, which names the state it is read in."""
+    Succeed would, and has no Catch, unless the Output reads the State of
+    the context, which names the state it is read in. It reads what the
+    Wait assigns as the expressions the Wait assigns, as it would read it
+    from before the Wait, and keeps the Succeed where one cannot be read so,
+    as read_assigned says."""
     states = definition["States"]
     assert isinstance(states, dict)
     for state in states.values():
@@ -4943,12 +4958,12 @@ def end_before_returns(definition: dict[str, object]) -> None:
                 output = read_what_it_assigns(state, output, codes)
                 if output is None:
                     continue
-        elif any(
-            SHARED_CONTEXT.search(code)
-            or any(re.search(rf"\${re.escape(n)}(?!\w)", code) for n in assigns(state))
-            for code in codes
-        ):
+        elif any(SHARED_CONTEXT.search(code) for code in codes):
             continue
+        else:
+            output = read_assigned(state, output, codes)
+            if output is None:
+                continue
         del state["Next"]
         state["Output"] = output
         state["End"] = True
