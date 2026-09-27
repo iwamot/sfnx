@@ -1815,6 +1815,7 @@ class Scope:
         fold_start(definition, scope.starting)
         spread_passes(definition)
         thread_choices(definition, rounds=True)
+        fold_start(definition, scope.starting)
         merge_choices(definition)
         take_in_choices(definition)
         share_states(definition)
@@ -4392,15 +4393,20 @@ def fold_start(
     child execution of a distributed map, whose context is its own. A
     Succeed takes them in its Output, and a Fail in its Error and Cause,
     where none can fail or be undefined, as nothing reads what they do not;
-    one follows the Pass where a Choice the Pass decides was skipped. It
-    runs after fold_into_catching_tasks, as the catchers assign these values
-    too, where that would count them among what Python assigned before a
-    statement that may fail."""
+    one follows the Pass where a Choice the Pass decides was skipped, or,
+    once thread_choices has run, where the first round of a loop leaves it,
+    so this runs again then. It runs after fold_into_catching_tasks, as the
+    catchers assign these values too, where that would count them among what
+    Python assigned before a statement that may fail."""
     if starting is None:
         return
     start, values = starting
     states = definition["States"]
     assert isinstance(states, dict)
+    # Called again once decided Choices are gone, the Pass may already be in
+    # the state after it.
+    if start not in states:
+        return
     opening = states[start]
     # A decided Choice after the Pass hands the Pass the assignments of the
     # way it takes, which the values recorded here no longer describe: the
@@ -4964,6 +4970,7 @@ def compile_machine(
     fold_start(definition, scope.starting)
     spread_passes(definition)
     thread_choices(definition, rounds=True)
+    fold_start(definition, scope.starting)
     merge_choices(definition)
     take_in_choices(definition)
     share_states(definition)

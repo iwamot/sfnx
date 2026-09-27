@@ -990,6 +990,20 @@ def test_the_way_into_a_loop_takes_its_first_round_once(
     assert run(body, execution_input) == output
 
 
+@pytest.mark.parametrize(
+    "end, kind",
+    [("return [c, 1]", "Succeed"), ('raise Stopped(f"c is {c}")', "Fail")],
+)
+def test_a_loop_its_first_round_leaves_ends_without_the_pass_before_it(end, kind):
+    """The first round leaves the loop, so the start leads straight to the
+    return or the raise, which takes the values written in the source that
+    it reads."""
+    body = f"c = 0\nwhile True:\n    c = c + 1\n    if c > 0:\n        break\n    wait(1)\n{end}"
+    program = "class Stopped(Exception):\n    pass\n\n\n" + source(body)
+    ((_, compiled),) = compile_source(program).items()
+    assert [s["Type"] for s in compiled["States"].values()] == [kind]
+
+
 def test_the_way_into_a_loop_keeps_a_round_that_reads_a_value_it_cannot_read():
     """A dict holding an expression is no one expression to read d as."""
     body = (
