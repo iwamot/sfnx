@@ -856,11 +856,12 @@ CASES: tuple[Case, ...] = (
         {},
         Error(QUERY_ERROR),
         "the except reads the result, which a failing Assign would not assign, "
-        "so the statement that fails keeps its Pass, which no Catch covers; "
-        "CPython runs the except, a difference the language reference lists",
+        "so the statement that fails stays out of the Parallel, in the Output "
+        "of the return after it, which no Catch covers; CPython runs the "
+        "except, a difference the language reference lists",
         python=False,
         backs="A failing `Assign` assigns nothing, the state's result included",
-        states=("Parallel", "Pass", "Succeed", "Succeed"),
+        states=("Parallel", "Succeed", "Succeed"),
     ),
     Case(
         "catch-sets-the-flag-a-choice-tests",

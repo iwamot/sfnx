@@ -970,3 +970,17 @@ def test_a_raise_after_assignments_keeps_their_pass_where_they_count(body):
     preamble = CLASSES + "from sfnx import jsonata\n"
     compiled = states(body, preamble)
     assert [s["Type"] for s in compiled.values()] == ["Pass", "Fail"]
+
+
+def test_a_return_after_a_catching_task_reads_what_it_cannot_hold():
+    """The except reads r, which a failing Assign of the Task would not
+    assign, so what follows the Task stays out of it; the Succeed reads it
+    as its expression, where it fails as a Pass would."""
+    body = (
+        f'r = {{}}\ntry:\n    r = {CHARGE}\n    y = r["Payload"]["n"]\n    return y\n'
+        "except Declined:\n    return r"
+    )
+    compiled = states(body)
+    assert [s["Type"] for s in compiled.values()] == ["Task", "Succeed", "Succeed"]
+    [task] = [n for n, s in compiled.items() if s["Type"] == "Task"]
+    assert run(body, {}, {task: lambda arguments: {"Payload": {"n": 3}}}) == 3
