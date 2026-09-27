@@ -19,6 +19,7 @@ from sfnx.errors import EVERYTHING, caught, raised, retriers
 from sfnx.expressions import (
     ADD,
     ATOM,
+    CHANGES,
     COMPARE,
     OPAQUE,
     WRITTEN,
@@ -3734,14 +3735,16 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
     variable's name first, so that it is written and evaluated once, as a
     hand-writer binds it. Where a value put in place or another bound one
     reads such a name, which it means from before the state, each is put in
-    place instead."""
-    template = template_of(template)
+    place instead. The expression it writes is an Expr, whose properties
+    are composed from the field's and the values', as composed says."""
+    leaf = template
+    template = template_of(leaf)
     if isinstance(template, dict):
         return {k: read_through(v, values) for k, v in template.items()}
     if isinstance(template, list):
         return [read_through(v, values) for v in template]
     if not (isinstance(template, str) and template.startswith("{%")):
-        return template
+        return leaf
     code = template[2:-2].strip()
     reads = {n: len(re.findall(rf"\${n}(?!\w)", code)) for n in values}
     bound = [n for n, v in values.items() if reads[n] > 1 and v.precedence < ATOM]
@@ -3752,7 +3755,7 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
         placed = {n: v for n, v in values.items() if reads[n]}
         bound = []
     if not bound and len(placed) == 1 and lone_variable(code) == next(iter(placed)):
-        return next(iter(placed.values())).template
+        return next(iter(placed.values()))
     if placed:
         # All at once: a value put in place may read the name of another from
         # before the state, which is not to be put in place again.
@@ -3763,7 +3766,41 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
     if bound:
         bindings = "".join(f"${n} := {values[n].code}; " for n in bound)
         code = f"({bindings}{code})"
-    return "{% " + code + " %}"
+    return composed(leaf, code, [v for n, v in values.items() if reads[n]])
+
+
+def composed(leaf: object, code: str, values: list[Expr]) -> Expr:
+    """The Expr of code written from a field's expression, leaf, with values
+    read in place of variables it reads. The field's expression was judged
+    with variables, which are never undefined and fail for nothing, in their
+    place, so the code is never undefined where the field's expression is
+    not and no value is, fails for no value where the field's expression
+    fails for none and each value is never undefined and fails for none,
+    and changes on evaluation where the field's expression or a value does.
+    A field that holds a template, whose properties are not known, gives
+    the code none of them."""
+    precedence = ATOM if path_alone(code) else WRITTEN
+    read = frozenset(names_read(code))
+    if not isinstance(leaf, Expr):
+        return expression(code, read, precedence, volatile=CHANGES * changes(code))
+    return expression(
+        code,
+        read,
+        precedence,
+        leaf.type,
+        leaf.boolean,
+        volatile=max([leaf.volatile, *(v.volatile for v in values)]),
+        defined=leaf.defined and all(v.defined for v in values),
+        total=leaf.total and all(v.total and v.defined for v in values),
+    )
+
+
+def as_expr(leaf: object) -> Expr:
+    """A field as an Expr: the Expr it holds, or its template as an
+    expression whose properties are not known."""
+    if isinstance(leaf, Expr):
+        return leaf
+    return assigned_value(leaf) or expression(template_code(leaf))
 
 
 def assigned_value(template: object) -> Expr | None:
@@ -3779,7 +3816,7 @@ def assigned_value(template: object) -> Expr | None:
     if isinstance(template, (dict, list)):
         if not written(template):
             return None
-        code = json.dumps(template, ensure_ascii=False)
+        code = json.dumps(template, ensure_ascii=False, default=template_of)
         return Expr(code, template, defined=True, total=True)
     return literal(template)
 
@@ -4454,8 +4491,10 @@ def read_as_values(
         return None
     pattern = re.compile(r"\$(" + "|".join(map(re.escape, used)) + r")(?!\w)")
 
-    def replaced(item: object, test: bool = False) -> object:
-        item = template_of(item)
+    read = [as_expr(values[n]) for n in used]
+
+    def replaced(leaf: object, test: bool = False) -> object:
+        item = template_of(leaf)
         if isinstance(item, dict):
             return {
                 k: v if k == "Comment" else replaced(v, k == "Condition")
@@ -4464,13 +4503,16 @@ def read_as_values(
         if isinstance(item, list):
             return [replaced(v) for v in item]
         if not (used and isinstance(item, str) and item.startswith("{%")):
-            return item
+            return leaf
         code = item[2:-2].strip()
         # An Assign value that is only the variable is the value as written;
         # a Condition stays an expression.
         whole = lone_variable(code)
         if whole in used and not test:
             return values[whole]
+        return composed(leaf, written_in(code), read)
+
+    def written_in(code: str) -> str:
         counts = Counter(m[1] for m in pattern.finditer(code))
         # A value read more than once is bound once in a block, as a
         # hand-writer binds a long one, where the values bound before it
@@ -4478,13 +4520,13 @@ def read_as_values(
         once = [n for n in used if counts[n] > 1]
         bound = {r for n in once for r in names_read(used[n])}
         if not once or bound & set(once):
-            return "{% " + pattern.sub(lambda m: grouped(used[m[1]]), code) + " %}"
+            return pattern.sub(lambda m: grouped(used[m[1]]), code)
         inline = [n for n in used if counts[n] == 1]
         if inline:
             single = re.compile(r"\$(" + "|".join(map(re.escape, inline)) + r")(?!\w)")
             code = single.sub(lambda m: grouped(used[m[1]]), code)
         bindings = "".join(f"${n} := {used[n]}; " for n in once)
-        return "{% (" + bindings + code + ") %}"
+        return "(" + bindings + code + ")"
 
     rules = replaced(choice["Choices"])
     default = choice["Default"]
@@ -4534,7 +4576,7 @@ def both(first: object, second: object) -> object:
         assert isinstance(condition, str)
         code = condition[2:-2].strip()
         tests.append(f"({code})" if looser_than_and(code) else code)
-    return "{% " + " and ".join(tests) + " %}"
+    return composed(None, " and ".join(tests), [])
 
 
 def all_written(values: list[Expr]) -> bool:
@@ -4696,17 +4738,18 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
     pattern = re.compile(rf"\${re.escape(name)}(?!\w)")
     code = operand(value, ATOM)
 
-    def replaced(item: object) -> object:
-        item = template_of(item)
+    def replaced(leaf: object) -> object:
+        item = template_of(leaf)
         if isinstance(item, dict):
             return {k: v if k == "Comment" else replaced(v) for k, v in item.items()}
         if isinstance(item, list):
             return [replaced(v) for v in item]
         if isinstance(item, str) and item.startswith("{%") and item.endswith("%}"):
             if lone_variable(item[2:-2].strip()) == name:
-                return value.template
-            return pattern.sub(lambda _: code, item)
-        return item
+                return value
+            written = pattern.sub(lambda _: code, item)
+            return composed(leaf, written[2:-2].strip(), [value])
+        return leaf
 
     for key, field_value in list(node.items()):
         if key != "Comment":
@@ -4850,8 +4893,7 @@ def written_sum(template: object) -> object:
     if found is None:
         return template
     left, right = literal(int(found[1])), literal(int(found[3]))
-    folded = binary(left, found[2], right, ADD, of(NUMBER))
-    return folded.template
+    return binary(left, found[2], right, ADD, of(NUMBER))
 
 
 def read_what_it_assigns(
@@ -5127,7 +5169,9 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
         take_in_choices(definition, rounds)
         share_states(definition)
         end_before_returns(definition)
-        if definition == before:
+        # A round that writes the same definition changes nothing, though it
+        # may hold an Expr where a template was.
+        if emitted(definition) == emitted(before):
             return
 
 
