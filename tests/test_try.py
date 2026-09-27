@@ -948,6 +948,23 @@ def test_a_raise_after_assignments_that_cannot_fail_is_a_fail_alone(body, cause)
     }
 
 
+@pytest.mark.parametrize(
+    "rest, cause",
+    [
+        ('n0, n1 = n1, n0\nraise Declined("s")', "s"),
+        # The message reads n1 as the n0 the Task assigns before the Fail.
+        ('n0, n1 = n1, n0\nraise Declined(f"n1 is {n1}")', "n1 is 7"),
+    ],
+)
+def test_a_raise_after_assignments_after_a_task_is_a_fail_alone(rest, cause):
+    body = f'n1 = 2\nn0: int = {CHARGE}["Payload"]\n{rest}'
+    compiled = states(body)
+    assert [s["Type"] for s in compiled.values()] == ["Task", "Fail"]
+    with pytest.raises(asl.Failure) as failure:
+        run(body, {}, {"n0": lambda arguments: {"Payload": 7}})
+    assert (failure.value.error, failure.value.cause) == ("Declined", cause)
+
+
 def test_a_raise_without_a_message_after_assignments_is_a_fail_alone():
     assert states("n = 0\nraise Declined()") == {
         "raise": {"Type": "Fail", "Error": "Declined"}
