@@ -4678,16 +4678,6 @@ def fold_start(
     others = [name for name in leading(states).get(following, []) if name != start]
     if others or not all(reads_as(state, name, values[name]) for name in values):
         return
-    # A name the state assigns too drops the value from the start, which
-    # Python evaluates, so only one that neither fails nor is undefined may go.
-    for holder in holders_of(state):
-        own = holder.get("Assign", {})
-        assert isinstance(own, dict)
-        if any(
-            name in own and not (value.defined and value.total)
-            for name, value in values.items()
-        ):
-            return
     for name, value in values.items():
         substitute(state, name, value)
     for holder in holders_of(state):

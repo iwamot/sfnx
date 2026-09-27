@@ -196,30 +196,23 @@ def test_an_assignment_that_could_differ_keeps_its_pass(body):
     assert any(state["Type"] == "Pass" for state in compiled.values())
 
 
-@pytest.mark.parametrize(
-    "body, expected",
-    [
-        # The Choice rule of the if assigns n too, and the other way reads
-        # the value from the input.
-        (
-            (
-                'n = input["n"]\nif input["big"]:\n    n = 10\n'
-                f'    task("{LAMBDA}", {{"FunctionName": "f"}})\n    return n\nreturn n'
-            ),
-            10,
-        ),
-    ],
-)
-def test_a_start_value_that_may_fail_is_not_dropped_by_the_state_after_it(
-    body, expected
-):
-    """Python fails on the missing key before anything else, so the value
-    from the input keeps its Pass where the state after it assigns n too."""
+def test_a_start_value_a_way_assigns_again_is_read_only_on_the_others():
+    """The Choice rule of the if assigns n too, so nothing reads the value
+    from the input on that way, and it goes in the Choice: a hand-writer
+    reads the input where it is used rather than checking it first. A
+    missing key fails only on the way that reads it, which the table of
+    differences lists."""
+    body = (
+        'n = input["n"]\nif input["big"]:\n    n = 10\n'
+        f'    task("{LAMBDA}", {{"FunctionName": "f"}})\n    return n\nreturn n'
+    )
     compiled = definition(body)
+    assert compiled["States"][compiled["StartAt"]]["Type"] == "Choice"
     tasks = {n: lambda arguments: {"Payload": 5} for n in compiled["States"]}
+    assert asl.run(compiled, {"big": True}, tasks) == 10
     with pytest.raises(asl.Failure):
-        asl.run(compiled, {"big": True}, tasks)
-    assert asl.run(compiled, {"n": 1, "big": True}, tasks) == expected
+        asl.run(compiled, {"big": False}, tasks)
+    assert asl.run(compiled, {"n": 1, "big": False}, tasks) == 1
 
 
 def test_a_start_value_the_task_replaces_before_anything_reads_it_goes():
