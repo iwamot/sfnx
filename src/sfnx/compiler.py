@@ -1343,8 +1343,8 @@ class Scope:
         evaluated when the wait is over (measured), where Python returns, so
         it reads the time as the return does and fails where it would.
         Assignments pending in between are read as their expressions, where
-        none of them can fail, be undefined or change on evaluation, or the
-        return is that variable, as for a return right after them."""
+        none changes on evaluation and they fail where Python's would, as
+        fails_in_place says, as for a return right after them."""
         # The Wait carries what follows it until a flush, which assigns in it
         # and ends the carrying, so while it carries it has no Assign.
         carrier = self.carrier
@@ -1354,12 +1354,8 @@ class Scope:
         if any(self.makes_state(n) for n in ast.walk(value_node)):
             return False
         pending = self.pending
-        # The return of the variable itself fails in the Output where the
-        # Pass would.
-        whole = value_node.id if isinstance(value_node, ast.Name) else None
-        if not all(
-            ((v.defined and v.total) or name == whole) and not v.volatile
-            for name, v in pending.items()
+        if not self.fails_in_place(value_node, pending) or any(
+            v.volatile for v in pending.values()
         ):
             return False
         value = self.read_as(value_node, dict(pending))
@@ -1387,20 +1383,15 @@ class Scope:
         Parallel or Map before them to hold them, as a Succeed whose Output
         reads each as its expression, as a hand-writer returns what they
         compute: nothing reads them after the return, so the Pass goes.
-        Python evaluates each even when the return does not read it, so each
-        neither fails nor is undefined, unless the return is that variable
-        itself, whose Output fails where the Pass would. A value that changes
+        Python evaluates each even when the return does not read it, so they
+        fail where Python's would, as fails_in_place says. A value that changes
         on evaluation, or that reads the state it is in, keeps the Pass."""
         pending = self.pending
         if not pending or self.following() is not None:
             return False
         if any(self.makes_state(n) for n in ast.walk(value_node)):
             return False
-        whole = value_node.id if isinstance(value_node, ast.Name) else None
-        if not all(
-            (value.defined and value.total) or name == whole
-            for name, value in pending.items()
-        ):
+        if not self.fails_in_place(value_node, pending):
             return False
         values = list(pending.values())
         if any(v.volatile for v in values) or not self.holds_still(values, {}):
@@ -1411,6 +1402,26 @@ class Scope:
         located = self.take_pending(origins or [self.here()])
         self.finish(value, None, node, located)
         return True
+
+    def fails_in_place(self, value_node: ast.expr, pending: dict[str, Expr]) -> bool:
+        """Whether a return that reads the pending values as their expressions,
+        in the place of the assignments, fails where Python does, which
+        evaluates each even when the return does not read it: each neither
+        fails nor is undefined, the return is that variable itself, whose
+        Output fails where the Pass would, or the return reads the only one
+        that may fail every time it is evaluated, and it is never undefined,
+        which a list or a dict would drop without failing. Two that may fail
+        could fail in another order."""
+        whole = value_node.id if isinstance(value_node, ast.Name) else None
+        uncertain = [
+            name
+            for name, value in pending.items()
+            if not (value.defined and value.total) and name != whole
+        ]
+        if not uncertain:
+            return True
+        [name, *others] = uncertain
+        return not others and pending[name].defined and always_reads(value_node, name)
 
     def read_by_name(self, value_node: ast.expr, pending: dict[str, Expr]) -> bool:
         """Whether a value reads a pending variable where no expression can
@@ -3226,11 +3237,17 @@ def always_reads(node: ast.AST, name: str) -> bool:
     the JSONata it compiles to: through the test of a conditional
     expression, the first operand of and / or, the operand of not, the first
     two operands of a comparison, both operands of arithmetic, what a
-    subscript or an attribute reads from, and the first argument of a few
-    built-in functions. Other places, such as a default of get(), JSONata may
-    not evaluate."""
+    subscript or an attribute reads from, the first argument of a few
+    built-in functions, and the items of a list and the keys and values of a
+    dict written out, which a constructor evaluates each. Other places, such
+    as a default of get(), JSONata may not evaluate."""
     if isinstance(node, ast.Name):
         return node.id == name
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return any(always_reads(item, name) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        parts = [*(k for k in node.keys if k is not None), *node.values]
+        return any(always_reads(part, name) for part in parts)
     if isinstance(node, ast.IfExp):
         return always_reads(node.test, name)
     if isinstance(node, ast.BoolOp):

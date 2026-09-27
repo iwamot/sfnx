@@ -190,7 +190,9 @@ def test_wait_through_the_module():
 
 
 def test_assignments_after_a_wait_are_its_assign():
-    body = 'n = input["n"]\nwait(1)\n# counted\nn = n + 1\nm = 2\nreturn n + m'
+    # The return does not read n, which Python evaluates, so the Wait
+    # assigns it.
+    body = 'n = input["n"]\nwait(1)\n# counted\nn = n + 1\nm = 2\nreturn m'
     compiled = definition(body)
     assert compiled["States"]["wait"] == {
         "Type": "Wait",
@@ -199,7 +201,7 @@ def test_assignments_after_a_wait_are_its_assign():
         "Assign": {"n": "{% $n + 1 %}", "m": 2},
         "Next": "return",
     }
-    assert asl.run(compiled, {"n": 0}) == 3
+    assert asl.run(compiled, {"n": 0}) == 2
 
 
 @pytest.mark.parametrize(
@@ -454,7 +456,7 @@ def test_types_join_after_branches():
     with pytest.raises(CompileError, match=re.escape("x may be number | string")):
         definition(body)
     body = 'if input["a"]:\n    x = 1\nelse:\n    x = 2\nreturn x + input["b"]'
-    assert definition(body)["States"]["return"]["Output"] == f"{{% $x + {INPUT}.b %}}"
+    assert asl.run(definition(body), {"a": False, "b": 1}) == 3
 
 
 def test_declarations_join_after_branches():
@@ -1132,6 +1134,12 @@ def test_an_if_whose_branch_calls_a_function_directly_keeps_its_choice():
         ("max(x, 1)", False),
         ("d.get(k, x)", False),
         ("[x for a in b]", False),
+        # A constructor evaluates each item, key and value.
+        ("[a, x]", True),
+        ("(a, x)", True),
+        ('{"k": x}', True),
+        ("{x: 1}", True),
+        ("[a, b]", False),
     ],
 )
 def test_where_an_expression_always_reads_a_variable(code, reads):
@@ -1236,3 +1244,46 @@ def test_a_raise_after_a_wait_reads_what_reads_its_own_name():
     assert compiled["States"]["raise"]["Cause"] == (
         "{% $string($count($append($names, ['x']))) %}"
     )
+
+
+@pytest.mark.parametrize(
+    "body, ends",
+    [
+        # n + 1 may fail, and the return reads it every time, where it fails
+        # as the assignment would.
+        ('n: int = input.get("n", 0)\nwait(1)\nn = n + 1\nreturn [n, 1]', True),
+        ('n: int = input.get("n", 0)\nwait(1)\nn = n + 1\nreturn {"n": n}', True),
+        # Two that may fail could fail in another order.
+        (
+            (
+                'n: int = input.get("n", 0)\nk: int = input.get("k", 0)\nwait(1)\n'
+                "n = n + 1\nk = k * 2\nreturn [k, n]"
+            ),
+            False,
+        ),
+        # A missing key is undefined, which a list drops without failing.
+        ('wait(1)\nx = input["x"]\nreturn [x, 1]', False),
+        # The return reads n in one branch only.
+        (
+            (
+                'n: int = input.get("n", 0)\nwait(1)\nn = n + 1\n'
+                'return n if input["a"] else 0'
+            ),
+            False,
+        ),
+    ],
+)
+def test_a_return_after_a_wait_reads_a_value_that_may_fail_where_it_fails(body, ends):
+    compiled = definition(body)
+    assert ("End" in compiled["States"]["wait"]) == ends
+
+
+def test_a_return_reads_a_value_that_may_fail_where_it_fails():
+    """The Succeed's Output fails where the assignment would, so the Pass
+    goes."""
+    body = 'n: int = input.get("n", 0)\nm = n * 2\nreturn [m, 1]'
+    compiled = definition(body)
+    assert list(compiled["States"]) == ["return"]
+    assert asl.run(compiled, {"n": 3}) == [6, 1]
+    with pytest.raises(asl.Failure):
+        asl.run(compiled, {"n": "a"})

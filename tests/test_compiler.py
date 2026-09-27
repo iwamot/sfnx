@@ -335,8 +335,8 @@ CERTAIN = (
 def test_a_value_that_cannot_fail_goes_in_the_return(value):
     """$count gives 0 for nothing and a comprehension is a list even of
     nothing, so where the list, the conditions and the element cannot fail,
-    the value is the return's."""
-    body = f'{CERTAIN}v = {value}\ns = "a"\nreturn [v, s]'
+    the return, which does not read it, ends without its Pass."""
+    body = f'{CERTAIN}v = {value}\ns = "a"\nreturn s'
     assert list(compile_one(machine(body))["States"]) == ["return"]
 
 
@@ -352,7 +352,8 @@ def test_a_value_that_cannot_fail_goes_in_the_return(value):
     ],
 )
 def test_a_comprehension_that_may_fail_keeps_its_pass(value):
-    body = f'{CERTAIN}v = {value}\ns = "a"\nreturn [v, s]'
+    # Python evaluates v, which the return does not read.
+    body = f'{CERTAIN}v = {value}\ns = "a"\nreturn s'
     definition = compile_one(machine(body))
     assert [s["Type"] for s in definition["States"].values()] == ["Pass", "Succeed"]
 
