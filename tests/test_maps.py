@@ -497,3 +497,23 @@ def test_a_parameter_assigned_again_before_a_task_goes_in_it():
     assert [s["Type"] for s in processor.values()] == ["Task"]
     tasks = {"f.r": lambda arguments: arguments["Payload"]["n"]}
     assert run(body, {}, tasks) == [6, 7]
+
+
+@pytest.mark.parametrize(
+    "function, output",
+    [
+        ("def f(x, k):\n    t = 0\n    x, k = k, x\n    return 0\n\n", [0, 0]),
+        ("def f(x, k):\n    y = x\n    x = k\n    return [x, y]\n\n", [[9, 5], [9, 6]]),
+    ],
+)
+def test_a_parameter_of_a_distributed_map_assigned_again_is_never_undefined(
+    function, output
+):
+    """A field of the ItemSelector that is undefined fails the Map
+    (measured on an inline map), so each child's input holds every
+    parameter."""
+    body = function + 'return distributed_map(f, [5, 6], args={"k": 9})'
+    compiled = states(body)
+    processor = compiled["return"]["ItemProcessor"]["States"]
+    assert [s["Type"] for s in processor.values()] == ["Succeed"]
+    assert run(body, {}) == output

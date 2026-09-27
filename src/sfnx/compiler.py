@@ -2096,9 +2096,16 @@ class Scope:
                 **arguments,
             }
             state["ItemSelector"] = selector
-            bindings[parameters[0]] = replace(step(read, parameters[0]), type=item_type)
+            # A field of the ItemSelector that is undefined fails the Map
+            # (measured on an inline map, whose ItemSelector is the same
+            # field), so each child's input holds every parameter.
+            given = {
+                name: replace(step(read, name), defined=True, total=True)
+                for name in parameters
+            }
+            bindings[parameters[0]] = replace(given[parameters[0]], type=item_type)
             for name in parameters[1:]:
-                bindings[name] = step(read, name)
+                bindings[name] = given[name]
         for parameter in function.args.args:
             self.check_variable(parameter.arg, parameter)
             declared = annotate(parameter.annotation, self.module)
