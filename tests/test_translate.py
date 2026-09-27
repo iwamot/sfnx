@@ -2283,3 +2283,20 @@ def test_and_keeps_null():
     body = 'xs: list[int] | None = input["xs"]\nreturn (xs and [1]) + [2]'
     with pytest.raises(CompileError, match="may be"):
         definition(body)
+
+
+@pytest.mark.parametrize(
+    "expression_text, defined",
+    [
+        # k or k binds k once and reads the variable, which holds k.
+        ("k or k", True),
+        ('input["k"] or input["k"]', False),
+    ],
+)
+def test_a_value_bound_once_keeps_whether_it_is_undefined(expression_text, defined):
+    source = (
+        "from sfnx import state_machine\n\n\n@state_machine\ndef pay(input):\n"
+        f'    k: int = input.get("k", 0)\n    t = {expression_text}\n    return 1\n'
+    )
+    (compiled,) = compile_source(source).values()
+    assert (list(compiled["States"]) == ["return"]) == defined

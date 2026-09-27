@@ -1934,9 +1934,16 @@ class Translator:
             name = unused("v", taken)
             taken.add(name)
             bindings.append((name, value))
+            # Reading the variable reads the value bound, which block()
+            # counts where it may fail.
             arguments.append(
                 expression(
-                    "$" + name, value.variables, type=value.type, boolean=value.boolean
+                    "$" + name,
+                    value.variables,
+                    type=value.type,
+                    boolean=value.boolean,
+                    defined=value.defined,
+                    total=True,
                 )
             )
         self.inner.extend(name for name, _ in bindings)

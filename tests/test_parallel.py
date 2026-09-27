@@ -130,8 +130,10 @@ def test_a_branch_assigns_names_of_its_own():
     """Step Functions rejects a branch that assigns a variable of the
     machine's, where Python keeps the two apart, so the branch's name is
     numbered."""
+    # The branch's return does not read total, which int() may fail on, so
+    # the assignment keeps its state.
     body = (
-        'total = 0\ndef f():\n    total = int("1")\n    return [total]\n'
+        'total = 0\ndef f():\n    total = int("1")\n    return [1]\n'
         "r = parallel(f)\nreturn [total, r]"
     )
     branch = states(body)["r"]["Branches"][0]["States"]
