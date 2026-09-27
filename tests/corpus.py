@@ -302,7 +302,7 @@ else:
 return y
 """
 COUNTED_DOWN = """\
-n: float = input["n"]
+n: float = input.get("n", 0)
 if n > 0:
     n = n - 1
     if n > 0:

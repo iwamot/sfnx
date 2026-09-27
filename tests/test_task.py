@@ -197,6 +197,40 @@ def test_an_assignment_that_could_differ_keeps_its_pass(body):
 
 
 @pytest.mark.parametrize(
+    "body, expected",
+    [
+        # The Task assigns n its result, which would drop the value from the
+        # input in its Assign.
+        (
+            (
+                f'n = input["n"]\nn = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]\n'
+                f'task("{LAMBDA}", {{"FunctionName": "g"}})\nreturn n'
+            ),
+            5,
+        ),
+        # So does the Choice rule of the if.
+        (
+            (
+                'n = input["n"]\nif input["big"]:\n    n = 10\n'
+                f'    task("{LAMBDA}", {{"FunctionName": "f"}})\n    return n\nreturn n'
+            ),
+            10,
+        ),
+    ],
+)
+def test_a_start_value_that_may_fail_is_not_dropped_by_the_state_after_it(
+    body, expected
+):
+    """Python fails on the missing key before anything else, so the value
+    from the input keeps its Pass where the state after it assigns n too."""
+    compiled = definition(body)
+    tasks = {n: lambda arguments: {"Payload": 5} for n in compiled["States"]}
+    with pytest.raises(asl.Failure):
+        asl.run(compiled, {"big": True}, tasks)
+    assert asl.run(compiled, {"n": 1, "big": True}, tasks) == expected
+
+
+@pytest.mark.parametrize(
     "rest, expected",
     [
         # The swap reads n0 as the Task assigned it, not as 2.

@@ -851,6 +851,12 @@ def test_a_choice_that_leads_back_to_itself_is_taken_in_once():
             {"a": "{% $x + 1 %}"},
             "($a := $x + 1; $a > 1 and $a < 5)",
         ),
+        # A value read once goes in its place beside the block of another.
+        (
+            "$a > 1 and $a < 5 and $b < 3",
+            {"a": "{% $x + 1 %}", "b": "{% $y - 1 %}"},
+            "($a := $x + 1; $a > 1 and $a < 5 and ($y - 1) < 3)",
+        ),
         # A block would bind a before b, which reads the a from before.
         (
             "$a > $b and $a < 5 and $b < 5",
