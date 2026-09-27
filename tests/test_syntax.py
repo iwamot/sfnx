@@ -1,9 +1,13 @@
 import pytest
 
 from sfnx.syntax import (
+    atomic,
     changes,
     facts,
+    lone_variable,
+    looser_than_and,
     names_read,
+    path_alone,
     reads_own_context,
     reads_own_states,
     reads_state_name,
@@ -64,6 +68,55 @@ def test_states_read(code, own, context, name):
 )
 def test_changes(code, changing):
     assert changes(code) == changing
+
+
+@pytest.mark.parametrize(
+    "code, lone, path, operand",
+    [
+        ("$x", "x", True, True),
+        (" $x ", "x", True, True),
+        ("$states", "states", True, True),
+        ("$a.b.c", None, True, True),
+        # A filter makes more than the variable or the path.
+        ("$x[0]", None, False, False),
+        ("$a.b[0]", None, False, False),
+        # The context and the root are no variables, but read as one operand.
+        ("$", None, False, True),
+        ("$count($x)", None, False, True),
+        ("($v := 1; $v)", None, False, True),
+        ("'s'", None, False, True),
+        ("1.5", None, False, True),
+        ("true", None, False, True),
+        # A negative number, a built array or object, and an operator do not.
+        ("-1", None, False, False),
+        ("[1, 2]", None, False, False),
+        ('{"k": 1}', None, False, False),
+        ("$a + 1", None, False, False),
+        # Parentheses in strings are text, and two groups are not one.
+        ("('(') + (')')", None, False, False),
+        ("$f(", None, False, False),
+    ],
+)
+def test_shapes(code, lone, path, operand):
+    assert lone_variable(code) == lone
+    assert path_alone(code) == path
+    assert atomic(code) == operand
+
+
+@pytest.mark.parametrize(
+    "code, loose",
+    [
+        ("$a or $b", True),
+        ("$a ? 1 : 2", True),
+        ("$v := 1", True),
+        ("$a and $b", False),
+        ("($a or $b)", False),
+        ("$a = 'or'", False),
+        ("$f(", True),
+    ],
+)
+def test_looser_than_and(code, loose):
+    assert looser_than_and(code) == loose
 
 
 @pytest.mark.parametrize(

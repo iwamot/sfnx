@@ -43,9 +43,8 @@ def facts(code: str) -> Facts | None:
     """The facts of the code, or None where the parser cannot read it: the
     text of jsonata() may not be JSONata, which Step Functions rejects when
     it validates the definition, or may be JSONata newer than the parser."""
-    try:
-        tree = Parser().parse(code)
-    except JException:
+    tree = tree_of(code)
+    if tree is None:
         return None
     bound: set[str] = set()
     spelled: set[str] = set()
@@ -85,7 +84,7 @@ def facts(code: str) -> Facts | None:
 def fields(head: Parser.Symbol, steps: list[Parser.Symbol]) -> tuple[str, ...]:
     """The plain names that follow $states in a path, none where the path
     filters $states itself."""
-    if head.stages or head.predicate or binds(head):
+    if filtered(head):
         return ()
     names: list[str] = []
     for step in steps:
@@ -93,6 +92,74 @@ def fields(head: Parser.Symbol, steps: list[Parser.Symbol]) -> tuple[str, ...]:
             break
         names.append(text(step))
     return tuple(names)
+
+
+@cache
+def tree_of(code: str) -> Parser.Symbol | None:
+    """The syntax tree of the code, or None where the parser cannot read it."""
+    try:
+        return Parser().parse(code)
+    except JException:
+        return None
+
+
+def filtered(node: Parser.Symbol) -> bool:
+    """Whether a node carries filters or @ and # bindings of its own."""
+    return bool(node.stages or node.predicate or binds(node))
+
+
+def lone_variable(code: str) -> str | None:
+    """The name of the variable the code is, where it is one alone."""
+    tree = tree_of(code)
+    return text(tree) if tree is not None and named(tree) else None
+
+
+def path_alone(code: str) -> bool:
+    """Whether the code is a variable, or a path of plain names from one,
+    with no filters: what a hand-writer reads again where it is needed
+    rather than binding it first."""
+    tree = tree_of(code)
+    if tree is None or tree.type != "path":
+        return tree is not None and named(tree)
+    assert tree.steps is not None
+    head, *steps = tree.steps
+    return named(head) and all(s.type == "name" and not filtered(s) for s in steps)
+
+
+def named(node: Parser.Symbol) -> bool:
+    """Whether a node is a variable with a name, unfiltered: not the context
+    $ or the root $$."""
+    return (
+        node.type == "variable" and not filtered(node) and node.value not in {"", "$"}
+    )
+
+
+def atomic(code: str) -> bool:
+    """Whether the code reads as one operand wherever it is written, needing
+    no parentheses: a path alone, a string, a number that is not negative,
+    true, false or null, a function call or a block, with no filters of its
+    own. An array or an object it builds is put in parentheses, as one
+    followed by a step reads otherwise."""
+    if path_alone(code):
+        return True
+    tree = tree_of(code)
+    if tree is None or filtered(tree):
+        return False
+    if tree.type == "number":
+        return not code.lstrip().startswith("-")
+    return tree.type in {"variable", "string", "value", "function", "block"}
+
+
+def looser_than_and(code: str) -> bool:
+    """Whether the code needs parentheses beside `and`: its outermost
+    operator binds looser, as `or`, a conditional and := do, or the parser
+    cannot read it."""
+    tree = tree_of(code)
+    return (
+        tree is None
+        or tree.type in {"condition", "bind"}
+        or (tree.type == "binary" and tree.value == "or")
+    )
 
 
 def names_read(code: str) -> frozenset[str]:
