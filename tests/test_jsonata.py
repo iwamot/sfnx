@@ -12,7 +12,7 @@ INPUT = "$states.context.Execution.Input"
 
 
 def definition(body: str) -> dict:
-    source = "from sfnx import jsonata, state_machine\n\n\n@state_machine\n"
+    source = "from sfnx import jsonata, state_machine, wait\n\n\n@state_machine\n"
     source += "def pay(input):\n" + textwrap.indent(body, "    ")
     (compiled,) = compile_source(source).values()
     return compiled
@@ -62,27 +62,30 @@ def test_jsonata_evaluates():
     assert asl.run(definition(body), execution_input) == ["00042", "1,234.50", [2, 4]]
 
 
+# The value comes from the input, and the Wait holds the expression that
+# reads it, as it is written.
+READ_AFTER_WAIT = '{name}: int = input["a"]\nwait(1)\nb = jsonata("{text}")\nreturn [b]'
+
+
 def test_the_expression_reads_the_variables_it_names():
-    compiled = definition('a = 1\nb = jsonata("$a + 1")\nreturn b')
-    assert list(compiled["States"]) == ["a", "b", "return"]
-    assert compiled["States"]["b"]["Assign"] == {"b": "{% $a + 1 %}"}
-    assert asl.run(compiled, {}) == 2
+    compiled = definition(READ_AFTER_WAIT.format(name="a", text="$a + 1"))
+    assert compiled["States"]["wait"]["Assign"] == {"b": "{% $a + 1 %}"}
+    assert asl.run(compiled, {"a": 1}) == [2]
 
 
 @pytest.mark.parametrize("name", ["値", "café", "aé"])
 def test_the_expression_reads_a_variable_named_outside_ascii(name):
     # Step Functions variable names are Unicode identifiers, so an expression
     # written by hand reads one under whatever name it was declared with.
-    compiled = definition(f'{name} = 1\nb = jsonata("${name} + 1")\nreturn b')
-    assert list(compiled["States"]) == [name, "b", "return"]
-    assert compiled["States"]["b"]["Assign"] == {"b": f"{{% ${name} + 1 %}}"}
-    assert asl.run(compiled, {}) == 2
+    compiled = definition(READ_AFTER_WAIT.format(name=name, text=f"${name} + 1"))
+    assert compiled["States"]["wait"]["Assign"] == {"b": f"{{% ${name} + 1 %}}"}
+    assert asl.run(compiled, {"a": 1}) == [2]
 
 
 def test_the_expression_reads_a_variable_by_the_name_the_definition_gives_it():
-    compiled = definition('count = 1\nb = jsonata("$count_val + 1")\nreturn b')
-    assert list(compiled["States"]) == ["count", "b", "return"]
-    assert asl.run(compiled, {}) == 2
+    compiled = definition(READ_AFTER_WAIT.format(name="count", text="$count_val + 1"))
+    assert compiled["States"]["wait"]["Assign"] == {"b": "{% $count_val + 1 %}"}
+    assert asl.run(compiled, {"a": 1}) == [2]
 
 
 def test_a_function_the_expression_calls_is_not_a_variable():
@@ -222,3 +225,30 @@ def test_a_string_in_the_text_that_spells_a_starting_variable_stays_as_it_is():
     and the text is not read: '$n' is a string, not n."""
     compiled = definition("n = 3\nreturn jsonata(\"'$n' & $string($n)\")")
     assert asl.run(compiled, {}) == "$n3"
+
+
+@pytest.mark.parametrize(
+    "first, text, execution_input, output",
+    [
+        # A string that spells x is not a read of it, and stays as it is.
+        ("x = 1", "'$x' & $string($x)", {}, "$x1"),
+        # A dict holding an expression is no one expression to read x as.
+        ('x = {"a": input["a"]}', "$x.a + 1", {"a": 1}, 2),
+        # The text binds x itself, which the value would take over.
+        ("x = 1", "($x := 2; $x)", {}, 2),
+    ],
+)
+def test_an_assignment_the_state_before_cannot_read_keeps_its_state(
+    first, text, execution_input, output
+):
+    body = f'{first}\ny = jsonata("{text}")\nreturn [y, 1]'
+    compiled = definition(body)
+    assert [s["Type"] for s in compiled["States"].values()][:2] == ["Pass", "Pass"]
+    assert asl.run(compiled, execution_input) == [output, 1]
+
+
+def test_a_return_of_a_value_that_changes_keeps_its_pass():
+    """The return is the variable itself, whose value changes on each
+    evaluation, so the Pass evaluates it once, as Python does."""
+    compiled = definition('b = jsonata("$random()")\nreturn b')
+    assert [s["Type"] for s in compiled["States"].values()] == ["Pass", "Succeed"]

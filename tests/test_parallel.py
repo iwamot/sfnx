@@ -208,10 +208,14 @@ def test_unpacking():
     # The return reads each as the value the other held.
     assert compiled["return"]["Output"] == ["{% $b %}", "{% $a %}"]
     assert run('a, b = 1, input["b"]\nb, a = a, b\nreturn [a, b]', {"b": 2}) == [2, 1]
-    assert states("pair = [1, 2]\na, b = pair\nreturn a")["a"]["Assign"] == {
-        "a": "{% $pair[0] %}",
-        "b": "{% $pair[1] %}",
+    # The unpacking goes in the state that assigns pair, reading it as the
+    # list written there.
+    assert states("pair = [1, 2]\na, b = pair\nreturn a")["pair"]["Assign"] == {
+        "pair": [1, 2],
+        "a": "{% [1, 2][0] %}",
+        "b": "{% [1, 2][1] %}",
     }
+    assert run("pair = [1, 2]\na, b = pair\nreturn a", {}) == 1
 
 
 def test_unpacking_keeps_a_value_that_changes():

@@ -1798,6 +1798,7 @@ class Scope:
         thread_choices(definition)
         fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
         fold_start(definition, scope.starting)
+        spread_passes(definition)
         thread_choices(definition)
         merge_choices(definition)
         take_in_choices(definition)
@@ -4474,6 +4475,134 @@ def share_states(definition: dict[str, object]) -> None:
                         holder[key] = shared[holder[key]]
 
 
+def spread_passes(definition: dict[str, object]) -> None:
+    """A Pass every way into which can hold its assignments, in the Assign of
+    each of them, as a hand-writer copies an assignment into each branch: the
+    first statement of a loop's body, which the way in and the way back both
+    lead to, is assigned on each instead of in a state of its own, which each
+    round of the loop would pass through. A way can hold them where its
+    Assign runs only on that way and a failure there ends the execution, as
+    the Pass's would: a Pass, a Wait, a Choice rule, a Choice's own Assign for
+    its Default, a catcher, and a Task, a Parallel or a Map whose failure
+    there no Catch or retrier takes, or that holds only values written in the
+    source. The values read what the way assigns as the expressions it
+    assigns them, and one it assigns too gives way where it is written in the
+    source, which has nothing to evaluate. Values that read $states, other
+    than the context the two share, the time, a random value or $eval, or
+    that spell a name the way assigns in a string, keep the Pass, and so do
+    those that read what the way assigns where that reads such a value."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    spread = True
+    while spread:
+        spread = False
+        for name, state in states.items():
+            if (
+                state["Type"] != "Pass"
+                or set(state) - {"Type", "Comment", "Assign", "Next"}
+                or "Assign" not in state
+                or name == definition["StartAt"]
+            ):
+                continue
+            assign = state["Assign"]
+            assert isinstance(assign, dict)
+            codes = expressions_in(assign)
+            if any(changes_or_reads_the_state(c) for c in codes):
+                continue
+            ways = [
+                (holder, key, owner)
+                for owner in states.values()
+                for holder in [
+                    owner,
+                    *owner.get("Choices", []),
+                    *owner.get("Catch", []),
+                ]
+                for key in ("Next", "Default")
+                if holder.get(key) == name
+            ]
+            merged = [
+                way_assign(holder, owner, assign, codes) for holder, _, owner in ways
+            ]
+            if not ways or any(m is None for m in merged):
+                continue
+            for (holder, key, _), values in zip(ways, merged, strict=True):
+                holder["Assign"] = values
+                holder[key] = state["Next"]
+                comment = joined_comments(holder.get("Comment"), state.get("Comment"))
+                if comment is not None:
+                    holder["Comment"] = comment
+            del states[name]
+            spread = True
+            break
+
+
+def changes_or_reads_the_state(code: str) -> bool:
+    """Whether code reads $states other than the context all states share,
+    or gives another value when evaluated again: the time, a random value,
+    or $eval, which a jsonata() expression may call and which reads
+    variables by the names in its text."""
+    return bool(
+        "$states" in SAME_CONTEXT.sub("", code)
+        or TIMED.search(code)
+        or re.search(r"\$eval\s*\(", code)
+    )
+
+
+def way_assign(
+    holder: dict[str, object],
+    owner: dict[str, object],
+    assign: dict[str, object],
+    codes: list[str],
+) -> dict[str, object] | None:
+    """The Assign of a way into a Pass with the Pass's assignments in it, as
+    spread_passes says, or None where the way cannot hold them."""
+    # Only a Pass, a Wait, a Choice, a Task, a Parallel or a Map has a Next;
+    # of them, only the last three may have a Catch or a retrier.
+    if (
+        holder is owner
+        and owner["Type"] in {"Task", "Parallel", "Map"}
+        and not (may_fold(owner) or written(assign))
+    ):
+        return None
+    own = assigns(holder)
+    reads = {read for code in codes for read in VARIABLE.findall(code)}
+    found = {n: assigned_value(v) for n, v in own.items() if n in reads or n in assign}
+    if any(v is None for v in found.values()):
+        return None
+    values = {n: v for n, v in found.items() if v is not None}
+    # A name both assign drops the way's value, which must have nothing to
+    # evaluate.
+    if any(not (values[n].defined and values[n].total) for n in own if n in assign):
+        return None
+    read = {n: v for n, v in values.items() if n in reads}
+    # A value read again in the Pass's place would give another value.
+    if any(changes_or_reads_the_state(v.code) for v in read.values()):
+        return None
+    # A string that spells a name, or a binding of one, keeps the Pass.
+    pass_state: dict[str, object] = {"Assign": assign}
+    if not all(reads_as(pass_state, n, v) for n, v in read.items()):
+        return None
+    moved = {k: written_sum(read_through(v, read)) for k, v in assign.items()}
+    return {**{k: v for k, v in own.items() if k not in assign}, **moved}
+
+
+# An expression that is only an operation on two integers written out, as
+# reading a value written in the source into `$n + 1` gives.
+SUM = re.compile(r"\{% (-?\d+) ([-+*]) (-?\d+) %\}")
+
+
+def written_sum(template: object) -> object:
+    """A template that is only a sum, difference or product of integers
+    written out, as the value, as fold writes one in the source: 1 for
+    0 + 1. Anything else stays as it is."""
+    found = SUM.fullmatch(template) if isinstance(template, str) else None
+    if found is None:
+        return template
+    left, right = literal(int(found[1])), literal(int(found[3]))
+    folded = binary(left, found[2], right, ADD, of(NUMBER))
+    return folded.template
+
+
 def end_before_returns(definition: dict[str, object]) -> None:
     """A Task, a Parallel or a Map that goes on to a Succeed returning a value
     written in the source ends the machine or the branch itself, with that
@@ -4730,6 +4859,7 @@ def compile_machine(
     thread_choices(definition)
     fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
     fold_start(definition, scope.starting)
+    spread_passes(definition)
     thread_choices(definition)
     merge_choices(definition)
     take_in_choices(definition)
