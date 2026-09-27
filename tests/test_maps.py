@@ -466,3 +466,34 @@ def test_module_level_functions_see_none_of_the_machine():
             'rate = 1\nreturn inline_map(scale, input["xs"])',
             "\n\ndef scale(x):\n    return x * rate\n",
         )
+
+
+@pytest.mark.parametrize(
+    "function, output",
+    [
+        ("def f(x):\n    t = 0\n    x = 0\n    return 0\n\n", [0, 0]),
+        ("def f(x):\n    y = x\n    x = 0\n    return [x, y]\n\n", [[0, 5], [0, 6]]),
+        ("def f(x, i):\n    i = i + 1\n    return [x, i]\n\n", [[5, 1], [6, 2]]),
+    ],
+)
+def test_a_parameter_assigned_again_is_never_undefined(function, output):
+    """The ItemSelector gives each parameter the item or its index, so the
+    first value of one assigned again cannot be undefined, and the return
+    ends the function without a Pass."""
+    body = function + "return inline_map(f, [5, 6])"
+    compiled = states(body)
+    processor = compiled["return"]["ItemProcessor"]["States"]
+    assert [s["Type"] for s in processor.values()] == ["Succeed"]
+    assert run(body, {}) == output
+
+
+def test_a_parameter_assigned_again_before_a_task_goes_in_it():
+    body = (
+        "def f(x):\n    x = x + 1\n"
+        f'    r = task("{LAMBDA}", {{"FunctionName": "g", "Payload": {{"n": x}}}})\n'
+        "    return r\n\nreturn inline_map(f, [5, 6])"
+    )
+    processor = states(body)["return"]["ItemProcessor"]["States"]
+    assert [s["Type"] for s in processor.values()] == ["Task"]
+    tasks = {"f.r": lambda arguments: arguments["Payload"]["n"]}
+    assert run(body, {}, tasks) == [6, 7]
