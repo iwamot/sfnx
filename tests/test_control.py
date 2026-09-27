@@ -13,11 +13,13 @@ from sfnx.compiler import (
     compile_source,
     definitions,
     drop_dead_assignments,
+    emitted,
     grouped,
     read_as_values,
     thread_choices,
 )
 from sfnx.diagnostics import CompileError
+from sfnx.expressions import template_of
 from sfnx.locations import PREFIX
 from tests import asl, truthy
 
@@ -951,6 +953,8 @@ def test_a_choice_reads_what_the_transition_assigns(condition, values, read):
         return
     assert found is not None
     rules, default, own = found
+    rules = emitted(rules)
+    assert isinstance(rules, list)
     assert rules[0]["Condition"] == f"{{% {read} %}}"
     assert rules[0]["Assign"] == {"c": values["a"]}
     assert (default, own) == ("d", {})
@@ -986,7 +990,7 @@ def test_a_value_read_in_place_of_a_variable_is_grouped_where_it_must_be(code, g
     ],
 )
 def test_two_tests_are_joined_with_and(second, joined):
-    assert both("{% $a %}", f"{{% {second} %}}") == f"{{% {joined} %}}"
+    assert template_of(both("{% $a %}", f"{{% {second} %}}")) == f"{{% {joined} %}}"
 
 
 FLAGGED = (
