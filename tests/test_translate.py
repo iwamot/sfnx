@@ -246,6 +246,21 @@ def test_append_is_undefined_only_of_two_values_that_may_be(first, second, defin
     assert call("append", [first, second], None).defined is defined
 
 
+@pytest.mark.parametrize(
+    "function, arguments, defined",
+    [
+        ("length", [expression("$s", defined=True)], True),
+        ("pad", [expression("$s", defined=True), literal(3)], True),
+        # The argument may be undefined, which gives undefined.
+        ("length", [expression("$s")], False),
+        # $substring of a number gives undefined (measured).
+        ("substring", [expression("$s", defined=True), literal(1)], False),
+    ],
+)
+def test_a_function_of_values_that_are_never_undefined(function, arguments, defined):
+    assert call(function, arguments, None).defined is defined
+
+
 def test_inferred_types_flow_through_variables():
     # z may be undefined, so the assignments keep their Pass and the return
     # reads the variables.

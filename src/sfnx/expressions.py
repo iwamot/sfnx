@@ -106,6 +106,38 @@ TOTAL = frozenset({"exists", "type", "not", "boolean", "count", "keys", "append"
 # Functions that give a value for any argument, undefined included: 0 and
 # false (measured).
 DEFINED = frozenset({"exists", "count"})
+# Functions that give a value or fail for any arguments that are not
+# undefined, of every JSON type (measured). $substring of a number,
+# $fromMillis of a string, $split by a number and $replace with a number
+# give undefined, so they are not among them.
+KEEP_DEFINED = frozenset(
+    {
+        "abs",
+        "base64decode",
+        "base64encode",
+        "boolean",
+        "ceil",
+        "contains",
+        "floor",
+        "formatNumber",
+        "join",
+        "length",
+        "lowercase",
+        "not",
+        "number",
+        "pad",
+        "power",
+        "reverse",
+        "round",
+        "sqrt",
+        "string",
+        "sum",
+        "toMillis",
+        "trim",
+        "type",
+        "uppercase",
+    }
+)
 # & writes any value as text, so it fails for none.
 TOTAL_OPERATORS = frozenset({"=", "!=", "in", "and", "or", "&"})
 # The integers a double holds exactly, which JSONata computes with as Python
@@ -130,11 +162,12 @@ class Expr:
     defined says the code never gives undefined, which fails an Assign or an
     Output but passes through a test such as $type() without failing: a
     literal, a variable, which no Assign leaves undefined, d.get(), $exists(),
-    $count(), $append() of such a value, a comprehension, and lists and dicts
-    of such values. total says evaluating the code fails for no value: a
-    literal, a variable, a path step, $exists(), $type(), $not(), $boolean(),
-    $count(), $keys(), $append(), =, !=, in, and and or, and conditionals,
-    blocks, lists, dicts and comprehensions of them.
+    $count(), $append() of such a value, the functions of KEEP_DEFINED of
+    such values, a comprehension, and lists and dicts of such values. total
+    says evaluating the code fails for no value: a literal, a variable, a
+    path step, $exists(), $type(), $not(), $boolean(), $count(), $keys(),
+    $append(), =, !=, in, and and or, and conditionals, blocks, lists, dicts
+    and comprehensions of them.
     """
 
     code: str
@@ -371,7 +404,8 @@ def call(
         volatile=volatile,
         # $append of nothing and a value gives the value (measured).
         defined=function in DEFINED
-        or (function == "append" and any(a.defined for a in arguments)),
+        or (function == "append" and any(a.defined for a in arguments))
+        or (function in KEEP_DEFINED and all(a.defined for a in arguments)),
         total=function in TOTAL and all(a.total for a in arguments),
     )
 
