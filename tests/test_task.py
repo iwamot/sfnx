@@ -91,9 +91,8 @@ R = f'r = task("{LAMBDA}", {{"FunctionName": "f"}}'
         # What could differ between the Task and the state after it.
         R + ')\nreturn [r, jsonata("$random()")]',
         R + ')\nreturn [r, context["State"]["Name"]]',
-        # Another state comes between, or several paths lead to the return.
+        # Another state comes between.
         R + ")\nwait(1)\nreturn r",
-        f"if input['a']:\n    {R})\nelse:\n    {R})\nreturn r",
     ],
 )
 def test_a_return_that_could_fail_or_read_otherwise_keeps_its_state(body):
@@ -874,3 +873,65 @@ def test_assignments_that_start_the_machine_keep_their_pass(body):
     compiled = definition(body, "from sfnx import state_machine, task")
     first = compiled["States"][compiled["StartAt"]]
     assert first["Type"] == "Pass"
+
+
+@pytest.mark.parametrize(
+    "returned, output",
+    [
+        ("r", "{% $states.result %}"),
+        # The Output reads what the Task assigns as the expression it
+        # assigns, as it is evaluated with the values from before the Task.
+        ('[r["Payload"], 1]', ["{% $states.result.Payload %}", 1]),
+    ],
+)
+def test_each_task_before_a_return_several_paths_share_ends_with_it(returned, output):
+    body = (
+        f"if input['a']:\n    {R})\nelse:\n    r = task(\"{LAMBDA}\", "
+        f'{{"FunctionName": "g"}})\nreturn {returned}'
+    )
+    compiled = states(body)
+    tasks = [s for s in compiled.values() if s["Type"] == "Task"]
+    assert len(tasks) == 2 and all(t["Output"] == output and t["End"] for t in tasks)
+    assert "return" not in compiled
+
+
+def test_a_task_before_a_shared_return_keeps_what_the_return_does_not_read():
+    """Python evaluates n, which may fail, where the return does not read
+    it, so the Task keeps its Assign."""
+    body = (
+        f"if input['a']:\n    {R})\n    n = r['Payload'] + 1\nelse:\n"
+        f'    r = task("{LAMBDA}", {{"FunctionName": "g"}})\nreturn r'
+    )
+    compiled = states(body)
+    [first] = [
+        s
+        for s in compiled.values()
+        if s.get("Arguments", {}).get("FunctionName") == "f"
+    ]
+    assert "n" in first["Assign"] and first.get("End")
+
+
+@pytest.mark.parametrize(
+    "after, returned",
+    [
+        # A dict holding an expression is no one expression to read d as.
+        ("\n    d = {'a': r['Payload']}", "d"),
+        # The text binds r itself, which the value would take over.
+        ("", 'jsonata("($r := 2; $r)")'),
+    ],
+)
+def test_a_task_before_a_shared_return_it_cannot_read_keeps_going_on(after, returned):
+    body = (
+        f"if input['a']:\n    {R}){after}\nelse:\n"
+        f'    r = task("{LAMBDA}", {{"FunctionName": "g"}})\n    d = r\n'
+        f"return {returned}"
+    )
+    (compiled,) = compile_source(
+        source(body, "from sfnx import jsonata, state_machine, task")
+    ).values()
+    [first] = [
+        s
+        for s in compiled["States"].values()
+        if s.get("Arguments", {}).get("FunctionName") == "f"
+    ]
+    assert "End" not in first
