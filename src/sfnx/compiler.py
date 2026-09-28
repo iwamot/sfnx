@@ -3638,7 +3638,7 @@ def same_tries(
 def read_through(
     template: object,
     values: dict[str, Expr],
-    around: frozenset[tuple[str, int]] = frozenset(),
+    around: Expr | None = None,
 ) -> object:
     """A template that reads each variable as the value a state before it
     assigns, as the Assign of that state evaluates it: a value read once, or
@@ -3651,7 +3651,7 @@ def read_through(
     of an object or an array reads what the whole around it reads."""
     leaf = template
     template = template_of(leaf)
-    around = leaf.reads if isinstance(leaf, Expr) else around
+    around = leaf if isinstance(leaf, Expr) else around
     if isinstance(template, dict):
         return {k: read_through(v, values, around) for k, v in template.items()}
     if isinstance(template, list):
@@ -3689,7 +3689,7 @@ def composed(
     code: str,
     values: list[Expr],
     shape: object = None,
-    around: frozenset[tuple[str, int]] = frozenset(),
+    around: Expr | None = None,
 ) -> Expr:
     """The Expr of code written from a field's expression, leaf, with values
     read in place of variables it reads. The field's expression was judged
@@ -3703,14 +3703,23 @@ def composed(
     array with expressions among its values, shape is that template. The
     code reads, of each variable, the assignments the field's expression
     read, or, for a part of an object or an array, what the whole around it
-    read, and those each value read."""
+    read, and those each value read. So too it fails where a value that may
+    fail or be undefined fails, and where the field's expression does, unless
+    that is never undefined and fails for no value."""
     precedence = ATOM if path_alone(code) else WRITTEN
     read = frozenset(names_read(code))
+    failing = [v.fails for v in values if not (v.defined and v.total)]
     if not isinstance(leaf, Expr):
         found = expression(code, read, precedence, volatile=CHANGES * changes(code))
-        carried = around.union(*(v.reads for v in values))
+        outer = around.reads if around is not None else frozenset()
+        carried = outer.union(*(v.reads for v in values))
         found = replace(
-            found, reads=frozenset(pair for pair in carried if pair[0] in read)
+            found,
+            reads=frozenset(pair for pair in carried if pair[0] in read),
+            sees=around.sees if around is not None else frozenset(),
+            fails=frozenset().union(
+                around.fails if around is not None else frozenset(), *failing
+            ),
         )
     else:
         found = expression(
@@ -3728,16 +3737,24 @@ def composed(
             found,
             reads=frozenset(pair for pair in carried if pair[0] in read),
             defines=leaf.defines,
+            sees=leaf.sees,
+            excepts=leaf.excepts,
+            fails=frozenset().union(
+                frozenset() if leaf.defined and leaf.total else leaf.fails, *failing
+            ),
         )
     return found if shape is None else replace(found, template=shape)
 
 
 def in_place_of(leaf: object, value: object) -> object:
     """A value written whole where a field read only a variable: the value,
-    as the assignment the field is the value of, if any."""
+    as the assignment the field is the value of, if any, which fails where
+    the value fails."""
     if not isinstance(value, Expr):
         return value
-    return replace(value, defines=leaf.defines if isinstance(leaf, Expr) else None)
+    if not isinstance(leaf, Expr):
+        return replace(value, defines=None)
+    return replace(value, defines=leaf.defines, sees=leaf.sees, excepts=leaf.excepts)
 
 
 def as_expr(leaf: object) -> Expr:
@@ -3770,6 +3787,30 @@ def assigned_value(template: object) -> Expr | None:
         code = json.dumps(template, ensure_ascii=False, default=template_of)
         return Expr(code, template, defined=True, total=True)
     return literal(template)
+
+
+def live_reads(states: dict[str, dict[str, object]]) -> dict[str, set[str]]:
+    """The variables read on a way from each state, before a state on it
+    assigns them again: what the state's own expressions read, and what is
+    read after each way out that the way does not assign."""
+    reads = {
+        name: {r for c in expressions_in(state) for r in names_read(c)}
+        for name, state in states.items()
+    }
+    live: dict[str, set[str]] = {name: set() for name in states}
+    settled = False
+    while not settled:
+        settled = True
+        for name, state in states.items():
+            after = set()
+            for holder, target in ways_out(state):
+                following = live[target] if target is not None else set()
+                after |= following - assigns(holder).keys()
+            found = reads[name] | after
+            if found != live[name]:
+                live[name] = found
+                settled = False
+    return live
 
 
 def excepted(state: dict[str, object], live: dict[str, set[str]]) -> set[str]:
@@ -4043,25 +4084,7 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
     changed = True
     while changed:
         changed = False
-        reads = {
-            name: {r for c in expressions_in(state) for r in names_read(c)}
-            for name, state in states.items()
-        }
-        live: dict[str, set[str]] = {name: set() for name in states}
-        settled = False
-        while not settled:
-            settled = True
-            for name, state in states.items():
-                after = set()
-                for holder, target in ways_out(state):
-                    own = holder.get("Assign", {})
-                    assert isinstance(own, dict)
-                    following = live[target] if target is not None else set()
-                    after |= following - own.keys()
-                found = reads[name] | after
-                if found != live[name]:
-                    live[name] = found
-                    settled = False
+        live = live_reads(states)
         codes = expressions_in(states)
         for state in states.values():
             for holder, target in ways_out(state):
@@ -4470,10 +4493,10 @@ def read_as_values(
     def replaced(
         leaf: object,
         test: bool = False,
-        around: frozenset[tuple[str, int]] = frozenset(),
+        around: Expr | None = None,
     ) -> object:
         item = template_of(leaf)
-        around = leaf.reads if isinstance(leaf, Expr) else around
+        around = leaf if isinstance(leaf, Expr) else around
         if isinstance(item, dict):
             return {
                 k: v if k == "Comment" else replaced(v, k == "Condition", around)
@@ -4554,8 +4577,14 @@ def both(first: object, second: object) -> object:
         assert isinstance(condition, str)
         code = condition[2:-2].strip()
         tests.append(f"({code})" if looser_than_and(code) else code)
-    read = [c.reads for c in (first, second) if isinstance(c, Expr)]
-    return composed(None, " and ".join(tests), [], around=frozenset().union(*read))
+    parts = [c for c in (first, second) if isinstance(c, Expr)]
+    found = composed(None, " and ".join(tests), [])
+    return replace(
+        found,
+        reads=frozenset().union(*(c.reads for c in parts)),
+        sees=frozenset().union(*(c.sees for c in parts)),
+        fails=frozenset().union(*(c.fails for c in parts)),
+    )
 
 
 def all_written(values: list[Expr]) -> bool:
@@ -4704,11 +4733,9 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
     pattern = re.compile(rf"\${re.escape(name)}(?!\w)")
     code = operand(value, ATOM)
 
-    def replaced(
-        leaf: object, around: frozenset[tuple[str, int]] = frozenset()
-    ) -> object:
+    def replaced(leaf: object, around: Expr | None = None) -> object:
         item = template_of(leaf)
-        around = leaf.reads if isinstance(leaf, Expr) else around
+        around = leaf if isinstance(leaf, Expr) else around
         if isinstance(item, dict):
             return {
                 k: v if k == "Comment" else replaced(v, around) for k, v in item.items()
@@ -5232,12 +5259,16 @@ def note_reads(definition: dict[str, object]) -> None:
     assert isinstance(states, dict)
     numbers = itertools.count(INITIAL + 1)
     for state in states.values():
+        catchers = state.get("Catch", [])
+        assert isinstance(catchers, list)
         for holder, _ in ways_out(state):
             assign = assigns(holder)
             for key, value in assign.items():
                 found = value if isinstance(value, Expr) else assigned_value(value)
                 if found is not None:
-                    assign[key] = replace(found, defines=next(numbers))
+                    number = next(numbers)
+                    excepts = any(holder is catcher for catcher in catchers)
+                    assign[key] = replace(found, defines=number, excepts=excepts)
     entry = reaching(definition)
     for name, state in states.items():
         at = entry.get(name)
@@ -5248,7 +5279,8 @@ def note_reads(definition: dict[str, object]) -> None:
             pairs = frozenset(
                 (n, d) for n in names_read(value.code) for d in reaching_of(at, n)
             )
-            return replace(value, reads=pairs)
+            seen = frozenset((n, d) for n, numbers in at.items() for d in numbers)
+            return replace(value, reads=pairs, sees=seen, fails=frozenset({seen}))
 
         annotated = each_expression(state, read)
         assert isinstance(annotated, dict)
@@ -5315,8 +5347,9 @@ def each_expression(node: object, change: Callable[[Expr], Expr]) -> object:
 def misread(definition: dict[str, object]) -> list[str]:
     """Each read of a variable that an assignment reaches that note_reads did
     not note for it: where a pass moved an expression, or an assignment,
-    so that the variable holds another value there than Python's. A read or
-    an assignment the passes wrote without its note is not judged."""
+    so that the variable holds another value there than Python's, and each
+    read on a catcher's way that miscaught finds. A read or an assignment
+    the passes wrote without its note is not judged."""
     found: list[str] = []
     states = definition["States"]
     assert isinstance(states, dict)
@@ -5339,6 +5372,72 @@ def misread(definition: dict[str, object]) -> list[str]:
             return value
 
         each_expression(state, check)
+    live = live_reads(states)
+    for name, state in states.items():
+        at = entry.get(name)
+        if at is not None:
+            found += miscaught(name, state, at, live)
+    return found
+
+
+def after(value: Expr, failing: Expr) -> bool:
+    """Whether Python evaluates value after failing fails: in the except
+    clause, or after the try on the catcher's way, where the assignment
+    failing makes reaches it on the way the try body completes."""
+    if value.excepts:
+        return True
+    return failing.defines is not None and any(
+        number == failing.defines for _, number in value.sees
+    )
+
+
+def miscaught(
+    name: str, state: dict[str, object], at: Reaching, live: dict[str, set[str]]
+) -> list[str]:
+    """Each variable the way from a catcher for a failing expression reads
+    that holds another value there than Python holds at a place it fails at
+    where an expression of the state's Assign or Output fails: the state's
+    Assign assigns nothing when it fails (measured), so the catcher's way
+    reads the values from before the state, and the catcher's own, where
+    Python's except clause reads what the statements before the failing one
+    assigned. What the catcher assigns that Python assigns after the failure
+    too, as the except clause does, is not compared."""
+    found: list[str] = []
+    catchers = state.get("Catch", [])
+    assert isinstance(catchers, list)
+    failing = [
+        value
+        for value in [*assigns(state).values(), state.get("Output")]
+        if isinstance(value, Expr) and not (value.defined and value.total)
+    ]
+    for catcher in catchers:
+        if not set(catcher["ErrorEquals"]) & EVALUATION_ERRORS:
+            continue
+        caught = dict(at)
+        for key, value in assigns(catcher).items():
+            number = value.defines if isinstance(value, Expr) else None
+            caught[key] = frozenset({UNKNOWN if number is None else number})
+        own = {k: v for k, v in catcher.items() if k != "Next"}
+        read = {r for c in expressions_in(own) for r in names_read(c)}
+        read |= live[catcher["Next"]]
+        for value in failing:
+            clause = {
+                key
+                for key, assigned in assigns(catcher).items()
+                if isinstance(assigned, Expr) and after(assigned, value)
+            }
+            for seen in value.fails:
+                held: dict[str, set[int]] = {}
+                for variable_name, number in seen:
+                    held.setdefault(variable_name, set()).add(number)
+                for read_name in sorted(read - clause):
+                    python = held.get(read_name, {INITIAL})
+                    wrong = reaching_of(caught, read_name) - python - {UNKNOWN}
+                    if wrong:
+                        found.append(
+                            f"{name}: the except clause reads {read_name} of "
+                            f"{sorted(wrong)} where {value.code} fails"
+                        )
     return found
 
 

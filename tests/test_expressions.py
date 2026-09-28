@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from sfnx.compiler import as_expr, composed, emitted, from_asl, loose_expressions
@@ -55,6 +57,26 @@ def test_a_value_read_in_place_passes_its_properties_on(value, defined, total):
     leaf = exact("$x = 1", True, True)
     code = composed(leaf, f"{value.code} = 1", [value])
     assert (code.defined, code.total) == (defined, total)
+
+
+HERE = frozenset({("a", 1)})
+THERE = frozenset({("a", 2)})
+
+
+@pytest.mark.parametrize(
+    "leaf, value, fails",
+    [
+        # Code that fails for no value fails only where the value fails.
+        (exact("$x = 1", True, True), exact("$y + 1", True, False), {THERE}),
+        (exact("$x = 1", True, True), exact("$y", True, True), set()),
+        # Code that may fail fails where it was and where the value fails.
+        (exact("$x + 1", True, False), exact("$y + 1", True, False), {HERE, THERE}),
+    ],
+)
+def test_a_value_read_in_place_fails_where_it_failed(leaf, value, fails):
+    leaf = replace(leaf, fails=frozenset({HERE}))
+    value = replace(value, fails=frozenset({THERE}))
+    assert composed(leaf, "$y + 1 = 1", [value]).fails == fails
 
 
 def test_a_value_that_changes_makes_the_code_change():

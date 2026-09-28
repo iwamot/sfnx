@@ -902,3 +902,47 @@ def test_a_read_that_sees_the_value_from_before_the_state_is_reported():
     Assign gives it."""
     [found] = misread(assigning(True))
     assert found.startswith("a: $a reads a of [0]")
+
+
+def excepting(merged: bool) -> dict:
+    """a = 1, then b = the result of a call, which may fail, in a try whose
+    except clause returns a, as the statements build them: a Pass, then a
+    Task. merged puts the Pass's Assign in the Task's, where a failure of
+    b's value leaves a unassigned, as a pass that got it wrong would."""
+    task = {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "Arguments": {"FunctionName": "f"},
+        "Assign": {"b": "{% $number($states.result.Payload) %}"},
+        "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "caught"}],
+        "Next": "r",
+    }
+    written = {
+        "StartAt": "a",
+        "States": {
+            "a": {"Type": "Pass", "Assign": {"a": 1}, "Next": "b"},
+            "b": task,
+            "caught": {"Type": "Succeed", "Output": "{% $a %}"},
+            "r": {"Type": "Succeed", "Output": "{% $b %}"},
+        },
+    }
+    definition = from_asl(written)
+    assert isinstance(definition, dict)
+    note_reads(definition)
+    states = definition["States"]
+    if merged:
+        states["b"]["Assign"] = {**states["a"]["Assign"], **states["b"]["Assign"]}
+        definition["StartAt"] = "b"
+        del states["a"]
+    return definition
+
+
+def test_an_except_clause_that_sees_what_python_sees_is_not_reported():
+    assert misread(excepting(False)) == []
+
+
+def test_an_except_clause_that_misses_an_assignment_before_the_failure_is_reported():
+    """Python assigns a before the call fails; the Task's Assign assigns
+    nothing when b's value fails, so the catcher's way reads a unassigned."""
+    found = "b: the except clause reads a of [0] where $number($states.result.Payload) fails"
+    assert found in misread(excepting(True))
