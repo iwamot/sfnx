@@ -3732,6 +3732,21 @@ def assigned_value(template: object) -> Expr | None:
     return literal(template)
 
 
+def excepted(state: dict[str, object], live: dict[str, set[str]]) -> set[str]:
+    """What the ways on from a state's catchers for a failure of an
+    expression read of what the state assigns: inside a try, a statement
+    after the state may go in its Assign or its Output, and the except
+    clause then sees what the state assigned before it failed, as Python's
+    does."""
+    catchers = state.get("Catch", [])
+    assert isinstance(catchers, list)
+    found: set[str] = set()
+    for catcher in catchers:
+        if set(catcher["ErrorEquals"]) & EVALUATION_ERRORS:
+            found |= live[catcher["Next"]] - assigns(catcher).keys()
+    return found
+
+
 def caught_reads(definition: dict[str, object], task: dict[str, object]) -> set[str]:
     """The variables read on any way on from the catchers of a state that
     take a failure of its Assign (those for States.ALL or
@@ -3978,7 +3993,9 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
     whose expression another value reads in its place, as y = [x for x in
     xs] reads xs = input["xs"]: Python reads the variable there, and the
     expression read in place may not fail where the assignment would, as a
-    comprehension gives [] for a missing key."""
+    comprehension gives [] for a missing key. A Task's, a Parallel's or a
+    Map's own assignment that an except clause reads stays, as excepted
+    says, even where nothing after the state reads it."""
     states = definition["States"]
     assert isinstance(states, dict)
     if any("eval" in names_read(c) for c in expressions_in(states)):
@@ -4012,6 +4029,8 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
                 if not isinstance(own, dict):
                     continue
                 following = live[target] if target is not None else set()
+                if holder is state:
+                    following = following | excepted(state, live)
                 dead = [
                     k for k in own if k not in following and not copied(own[k], codes)
                 ]

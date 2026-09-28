@@ -1125,3 +1125,24 @@ def test_a_return_after_a_catching_task_reads_what_it_cannot_hold():
     assert [s["Type"] for s in compiled.values()] == ["Task", "Succeed", "Succeed"]
     [task] = [n for n, s in compiled.items() if s["Type"] == "Task"]
     assert run(body, {}, {task: lambda arguments: {"Payload": {"n": 3}}}) == 3
+
+
+def test_an_assignment_the_except_reads_stays_in_the_state_before_a_failure():
+    """l0 is assigned before the statement that fails, so the except clause
+    reads the Parallel's result, as Python's does; the Parallel keeps the
+    assignment, and the statement that fails, which would lose it with the
+    Assign, is not put in the Parallel. Its failure then ends the execution,
+    which the table of differences lists, rather than giving the old l0."""
+    body = (
+        'l0: list = input["l0"]\n\ndef one():\n    return 1\n\n'
+        "try:\n    l0 = parallel(one)\n"
+        '    n = {"a": 1}["c"]\n    return n\n'
+        "except Exception:\n    pass\nreturn l0"
+    )
+    preamble = "from sfnx import parallel\n"
+    (compiled,) = compile_source(source(body, preamble)).values()
+    [state] = [s for s in compiled["States"].values() if s["Type"] == "Parallel"]
+    assert "l0" in state["Assign"]
+    with pytest.raises(asl.Failure) as failure:
+        asl.run(compiled, {"l0": []})
+    assert failure.value.error == "States.QueryEvaluationError"
