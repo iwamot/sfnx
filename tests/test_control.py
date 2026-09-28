@@ -1560,6 +1560,24 @@ def test_a_wait_before_a_return_other_ways_share_ends_with_it(branch, returned, 
         assert asl.run(compiled, {"a": False, "x": 4, "y": 4}) == [8, 1]
 
 
+def test_a_wait_before_a_return_other_ways_share_ends_with_it_past_the_task():
+    """The Task part of the context is the Wait's as it is the Succeed's: no
+    token in either, as neither is a Task."""
+    body = (
+        'if input["a"]:\n'
+        '    task("arn:aws:states:::lambda:invoke", {"FunctionName": "f"},'
+        ' retry=[{"ErrorEquals": [Exception]}])\n'
+        'else:\n    wait(1)\nreturn jsonata("$states.context.Task.Token")'
+    )
+    header = "from sfnx import jsonata, state_machine, task, wait\n\n\n"
+    source = (
+        header + "@state_machine\ndef pay(input):\n" + textwrap.indent(body, "    ")
+    )
+    (compiled,) = compile_source(source).values()
+    assert "End" in compiled["States"]["wait"]
+    assert "return" in compiled["States"]
+
+
 WAIT = {"Type": "Wait", "Seconds": 1}
 
 
