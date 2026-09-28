@@ -709,8 +709,7 @@ class Scope:
             if node.value is None:
                 self.end_without_value(node, [self.here()])
             elif not (
-                self.end_after_wait(node.value, node)
-                or self.return_pending(node.value, node)
+                self.return_pending(node.value, node)
                 or self.end_with_result(node.value)
             ):
                 self.finish(*self.translator.statement_value(node.value), node)
@@ -1366,52 +1365,10 @@ class Scope:
         when it can, and a Succeed does otherwise."""
         none = ast.copy_location(ast.Constant(None), node)
         if not (
-            self.end_after_wait(none, node, origins)
-            or self.return_pending(none, node, origins)
+            self.return_pending(none, node, origins)
             or self.end_with_result(none, origins)
         ):
             self.finish(literal(None), None, node, origins)
-
-    def end_after_wait(
-        self,
-        value_node: ast.expr,
-        node: ast.AST,
-        origins: list[Origin] | None = None,
-    ) -> bool:
-        """A return right after a Wait, or right after assignments that would
-        go in its Assign, as the Wait's Output and End: the Output is
-        evaluated when the wait is over (measured), where Python returns, so
-        it reads the time as the return does and fails where it would.
-        Assignments pending in between are read as their expressions, where
-        none changes on evaluation and they fail where Python's would, as
-        fails_in_place says, as for a return right after them."""
-        # The Wait carries what follows it until a flush, which assigns in it
-        # and ends the carrying, so while it carries it has no Assign.
-        carrier = self.carrier
-        if carrier is None or carrier.holder.get("Type") != "Wait":
-            return False
-        wait = carrier.holder
-        if any(self.makes_state(n) for n in ast.walk(value_node)):
-            return False
-        pending = self.pending
-        if not self.fails_in_place(value_node, pending) or any(
-            v.volatile for v in pending.values()
-        ):
-            return False
-        value = self.read_as(value_node, dict(pending))
-        if self.read_by_name(value_node, pending) or not self.holds_still(
-            [value], wait
-        ):
-            return False
-        located = self.take_pending(origins or [self.here()])
-        self.carrier = None
-        self.graph.tails = []
-        self.returns.append(value.type)
-        self.describe_end(wait, carrier.remark, carrier.origins + located)
-        wait.pop("Next", None)
-        wait["Output"] = value
-        wait["End"] = True
-        return True
 
     def return_pending(
         self,
