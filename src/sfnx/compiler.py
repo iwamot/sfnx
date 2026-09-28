@@ -380,6 +380,9 @@ class Scope:
         # source each state's Comment points into.
         self.current: ast.stmt | None = None
         self.locations: Locations | None = None
+        # Whether the passes rewrite the states it builds, as they do but for
+        # the tests that compare a definition before and after them.
+        self.optimizing = True
 
     def spelling(self, name: str) -> str:
         return spelling(name, self.module.spellings)
@@ -1800,6 +1803,7 @@ class Scope:
         )
         scope.labels = self.labels
         scope.locations = self.locations
+        scope.optimizing = self.optimizing
         scope.flags = flags(function)
         if local:
             scope.functions = dict(self.functions)
@@ -1817,7 +1821,8 @@ class Scope:
         if scope.graph.reachable:
             scope.end_without_value(function, [ended(function)])
         definition = scope.graph.definition()
-        optimize(definition, scope)
+        if scope.optimizing:
+            optimize(definition, scope)
         docstring = ast.get_docstring(function)
         if docstring:
             definition = {"Comment": docstring, **definition}
@@ -5224,6 +5229,7 @@ def compile_machine(
     options: dict[str, object],
     context: Module,
     locations: Locations | None,
+    optimizing: bool = True,
 ) -> dict[str, object]:
     arguments = function.args
     if (
@@ -5263,6 +5269,7 @@ def compile_machine(
         set(),
     )
     scope.locations = locations
+    scope.optimizing = optimizing
     scope.flags = flags(function)
     scope.block(function.body)
     if graph.reachable:
@@ -5270,7 +5277,8 @@ def compile_machine(
     docstring = ast.get_docstring(function)
     comment = {"Comment": docstring} if docstring else {}
     definition = graph.definition()
-    optimize(definition, scope)
+    if optimizing:
+        optimize(definition, scope)
     definition = emitted(definition)
     assert isinstance(definition, dict)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
@@ -5297,17 +5305,20 @@ def compile_file(path: str | Path) -> dict[str, dict[str, object]]:
 
 
 def definitions(
-    source: str, filename: str, located: bool
+    source: str, filename: str, located: bool, optimizing: bool = True
 ) -> dict[str, dict[str, object]]:
     """The state machines of a module, each state's Comment ending with the
     lines of the file it comes from when located is set, as the CLI's
-    --source-locations asks."""
+    --source-locations asks. Without optimizing, the passes leave the states
+    as the statements build them, for the tests that compare the two."""
     locations = Locations(source, filename) if located else None
     try:
         tree = ast.parse(source, filename)
         context = module(tree, source)
         return {
-            function.name: compile_machine(function, options, context, locations)
+            function.name: compile_machine(
+                function, options, context, locations, optimizing
+            )
             for function, options in machines(tree, context)
         }
     except SyntaxError as exc:

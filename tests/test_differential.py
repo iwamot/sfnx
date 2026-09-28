@@ -8,14 +8,15 @@ States.ExceedToleratedFailureThreshold in Step Functions, so the CPython side
 raises that error for it too."""
 
 import textwrap
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from sfnx import ExceedToleratedFailureThreshold, distributed_map
-from sfnx.compiler import compile_source
+from sfnx import ExceedToleratedFailureThreshold, distributed_map, testing
+from sfnx.compiler import compile_source, definitions
 from tests import asl
 from tests.corpus import same
 
@@ -69,6 +70,7 @@ DECLARED = {
     KEY: (),
 }
 LAMBDA = "arn:aws:states:::lambda:invoke"
+VOLATILE_IMPORTS = "import random\nimport uuid\nfrom datetime import datetime\n"
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,10 @@ class Program:
     # Whether a caught error's message is read, which a Lambda function in
     # Step Functions writes as JSON of its own.
     messages: bool = True
+    # Whether statements read the time or a random value, or call a Task
+    # with a retrier, which CPython runs otherwise than a definition, so
+    # only the definitions before and after the passes compare them.
+    volatile: bool = False
     serial: int = 0
     lines: list[str] = field(default_factory=list)
 
@@ -416,6 +422,8 @@ class Program:
             forms += ["enumerate", "zip", "items"]
             forms += ["forever", "try", "wait"]
             forms += ["parallel", "map", "distributed"]
+        if self.volatile:
+            forms += ["random", "uuid", "now", "retry"]
         form = self.pick(forms)
         targets = [kind for kind, names in env.assignable.items() if names]
         inner = replace(env, depth=env.depth + 1)
@@ -453,6 +461,19 @@ class Program:
                 self.emit(indent, f'{name}: int = {call}["Payload"]')
             else:
                 self.emit(indent, call)
+        elif form == "random" and env.assignable[NUMBER]:
+            name = self.pick(env.assignable[NUMBER])
+            self.emit(indent, f"{name}: int = int(random.random() * 4)")
+        elif form in ("uuid", "now") and env.assignable[STRING]:
+            name = self.pick(env.assignable[STRING])
+            made = "uuid.uuid4()" if form == "uuid" else "datetime.now()"
+            self.emit(indent, f"{name} = str({made})")
+        elif form == "retry" and env.assignable[NUMBER]:
+            name = self.pick(env.assignable[NUMBER])
+            payload = self.number(env, 1)
+            retry = '[{"ErrorEquals": [Declined], "MaxAttempts": 1}]'
+            call = f'task("{LAMBDA}", {{"FunctionName": "f", "Payload": {{"n": {payload}}}}}, retry={retry})'
+            self.emit(indent, f'{name}: int = {call}["Payload"]')
         elif form == "if":
             return self.branch(env, indent)
         elif form == "none" and env.assignable[OPTIONAL]:
@@ -629,7 +650,8 @@ class Program:
         env = Env(dict(DECLARED), dict(DECLARED), RESULT)
         ends = self.block(env, 0)
         body = PRELUDE + "\n".join(self.lines) + "\n" + ("" if ends else RESULT)
-        return HEADER + textwrap.indent(body + "\n", "    ")
+        imports = VOLATILE_IMPORTS if self.volatile else ""
+        return imports + HEADER + textwrap.indent(body + "\n", "    ")
 
 
 def lambda_payload(arguments: object) -> int:
@@ -731,3 +753,82 @@ def test_cpython_and_the_compiled_definition_agree(data):
     assert expected[0] == actual[0] and same(expected[1], actual[1]), (
         f"{program}\ninput: {execution_input}\nCPython: {expected}\nASL: {actual}"
     )
+
+
+@dataclass
+class Run:
+    """What a definition did: its output or its error, the Tasks it called in
+    order, as each resource with its arguments, and how often it called each
+    function that gives another value on each call."""
+
+    output: object
+    error: str | None
+    calls: list[tuple[str, object]]
+    counts: Counter[str]
+
+
+def in_definition(
+    program: str, execution_input: object, optimizing: bool, varying: bool
+) -> Run:
+    """The run of the definition before or after the passes. The functions
+    that give another value on each call give the next of a sequence where
+    varying is set, and always the same value otherwise."""
+    (definition,) = definitions(program, "<program>", False, optimizing).values()
+    counts: Counter[str] = Counter()
+
+    def counted(name: str, value: Callable[[int], object]) -> Callable[..., object]:
+        def give(*_: object) -> object:
+            counts[name] += 1
+            return value(counts[name] if varying else 0)
+
+        return give
+
+    functions = {
+        "random": counted("random", lambda k: k % 10 / 10),
+        "uuid": counted("uuid", lambda k: f"u{k}"),
+        "now": counted("now", lambda k: f"2026-01-01T00:00:{k % 60:02}.000Z"),
+        "millis": counted("millis", lambda k: 1767225600000 + k),
+    }
+    execution = testing.run(
+        definition,
+        execution_input,
+        lambda call: Lambda.invoke(call.arguments),
+        functions=functions,
+    )
+    calls = [(c.resource, c.arguments) for c in execution.calls]
+    output = None if execution.error is not None else execution.output
+    return Run(output, execution.error, calls, counts)
+
+
+@settings(
+    max_examples=200,
+    derandomize=True,
+    database=None,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+@given(st.data())
+def test_the_passes_keep_what_the_definition_does(data):
+    """The passes give the definition the output or the error it had, call
+    the same Tasks with the same arguments in the same order, and call each
+    function that gives another value on each call no more often: one whose
+    value nothing reads is not called. The passes here neither drop nor
+    merge a Task; one that did would need the calls compared otherwise. The
+    inputs have every key, so no value the passes leave unevaluated would
+    have failed, as the table of differences lists. Where such a function
+    gives the next value of a sequence, a definition that calls it as often
+    reads the same values in the same order."""
+    program = Program(data, volatile=True).source()
+    execution_input = data.draw(INPUTS)
+    before = in_definition(program, execution_input, False, False)
+    after = in_definition(program, execution_input, True, False)
+    shown = f"{program}\ninput: {execution_input}\nbefore: {before}\nafter: {after}"
+    assert after.error == before.error, shown
+    assert same(before.output, after.output), shown
+    assert after.calls == before.calls, shown
+    assert all(after.counts[n] <= before.counts[n] for n in after.counts), shown
+    before = in_definition(program, execution_input, False, True)
+    after = in_definition(program, execution_input, True, True)
+    if after.counts == before.counts:
+        assert after.error == before.error, shown
+        assert same(before.output, after.output), shown
