@@ -56,10 +56,10 @@
           "Next": "raise"
         }
       ],
-      "Next": "for",
       "Assign": {
         "item_index": "{% $item_index + 1 %}"
-      }
+      },
+      "Next": "for"
     },
     "raise": {
       "Type": "Fail",

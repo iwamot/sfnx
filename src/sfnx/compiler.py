@@ -4821,7 +4821,8 @@ def spread_passes(definition: dict[str, object]) -> None:
             if not ways or any(m is None for m in merged):
                 continue
             for (holder, key, _), values in zip(ways, merged, strict=True):
-                holder["Assign"] = values
+                assert values is not None
+                assign_before(holder, key, values)
                 holder[key] = state["Next"]
                 comment = joined_comments(holder.get("Comment"), state.get("Comment"))
                 if comment is not None:
@@ -4837,6 +4838,23 @@ def changes_or_reads_the_state(code: str) -> bool:
     or $eval, which a jsonata() expression may call and which reads
     variables by the names in its text."""
     return reads_own_states(code) or changes(code)
+
+
+def assign_before(
+    holder: dict[str, object], key: str, values: dict[str, object]
+) -> None:
+    """The Assign of a state or a rule set to values: where it has none, just
+    before the transition of key, as the fields are written where they come
+    from the source."""
+    if "Assign" in holder:
+        holder["Assign"] = values
+        return
+    fields = list(holder.items())
+    holder.clear()
+    for field_key, value in fields:
+        if field_key == key:
+            holder["Assign"] = values
+        holder[field_key] = value
 
 
 def way_assign(

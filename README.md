@@ -144,10 +144,10 @@ The definition has the states a person would write by hand, named after what the
           "Next": "raise"
         }
       ],
-      "Next": "for",
       "Assign": {
         "item_index": "{% $item_index + 1 %}"
-      }
+      },
+      "Next": "for"
     },
     "raise": {
       "Type": "Fail",

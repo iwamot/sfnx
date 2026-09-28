@@ -3,7 +3,14 @@ import textwrap
 
 import pytest
 
-from sfnx.compiler import compile_source, emitted, expressions_in, from_asl, way_assign
+from sfnx.compiler import (
+    assign_before,
+    compile_source,
+    emitted,
+    expressions_in,
+    from_asl,
+    way_assign,
+)
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import expression
 from tests import asl
@@ -1094,3 +1101,23 @@ def test_a_loop_that_never_ends_compiles():
     body = "x = 0\nwhile x < 5:\n    x = 0\nreturn x"
     compiled = states(body)
     assert any(s["Type"] == "Choice" for s in compiled.values())
+
+
+@pytest.mark.parametrize(
+    "holder, assign",
+    [
+        # A rule without an Assign takes one just before its Next.
+        (
+            {"Condition": "{% $x %}", "Next": "p"},
+            {"Condition": "{% $x %}", "Assign": {"y": 1}, "Next": "p"},
+        ),
+        # One with an Assign keeps it where it is.
+        (
+            {"Assign": {"y": 0}, "Condition": "{% $x %}", "Next": "p"},
+            {"Assign": {"y": 1}, "Condition": "{% $x %}", "Next": "p"},
+        ),
+    ],
+)
+def test_an_assign_goes_before_the_transition(holder, assign):
+    assign_before(holder, "Next", {"y": 1})
+    assert list(holder.items()) == list(assign.items())
