@@ -3,7 +3,7 @@ import textwrap
 
 import pytest
 
-from sfnx.compiler import changed_states, compile_source
+from sfnx.compiler import changed_states, compile_source, definitions
 from sfnx.diagnostics import CompileError
 from tests import asl
 
@@ -751,3 +751,48 @@ def test_nothing_is_logged_where_debug_is_off(caplog):
     with caplog.at_level(logging.INFO, logger="sfnx.passes"):
         compile_one(machine(TESTED))
     assert caplog.records == []
+
+
+UNOPTIMIZED = """\
+from sfnx import inline_map, state_machine
+
+
+@state_machine
+def main(input):
+    def first(item: dict):
+        x = item["x"]
+        if x is None:
+            return 0
+        return 1
+
+    x = input["x"]
+    if x is None:
+        return [0]
+    return inline_map(first, input["items"])
+"""
+
+
+@pytest.mark.parametrize(
+    "optimizing, machine_states, processor_states",
+    [
+        # The start Pass of the machine and of the Map processor stays.
+        (
+            False,
+            ["x", "if", "return", "return_2"],
+            ["first.x_2", "first.if", "first.return", "first.return_2"],
+        ),
+        # fold_start takes each in the Choice after it.
+        (
+            True,
+            ["if", "return", "return_2"],
+            ["first.if", "first.return", "first.return_2"],
+        ),
+    ],
+)
+def test_the_passes_run_unless_told_not_to(
+    optimizing, machine_states, processor_states
+):
+    (definition,) = definitions(UNOPTIMIZED, "<string>", False, optimizing).values()
+    states = definition["States"]
+    assert list(states) == machine_states
+    assert list(states["return_2"]["ItemProcessor"]["States"]) == processor_states

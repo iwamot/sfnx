@@ -1551,6 +1551,21 @@ def test_an_assignment_nothing_reads_goes_with_its_pass():
     assert list(definition["States"]) == ["w", "r"]
 
 
+def test_a_pass_left_with_nothing_to_do_after_the_start_goes():
+    definition = dropped(
+        {
+            "w": {**WAIT, "Next": "p"},
+            "p": {"Type": "Pass", "Assign": {"x": 1}, "Next": "r"},
+            "r": {"Type": "Succeed"},
+        }
+    )
+    # The way into the Pass leads past it, and the machine still starts at
+    # the Wait.
+    assert definition["StartAt"] == "w"
+    assert definition["States"]["w"]["Next"] == "r"
+    assert list(definition["States"]) == ["w", "r"]
+
+
 def test_an_assignment_assigned_again_before_any_read_goes():
     definition = dropped(
         {
