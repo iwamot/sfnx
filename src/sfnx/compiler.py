@@ -4773,8 +4773,10 @@ def spread_passes(definition: dict[str, object]) -> None:
     its Default, a catcher, and a Task, a Parallel or a Map whose failure
     there no Catch or retrier takes, or that holds only values written in the
     source. The values read what the way assigns as the expressions it
-    assigns them, and one it assigns too gives way where it is written in the
-    source, which has nothing to evaluate. The time and a random value go
+    assigns them. Where the Pass assigns a name the way assigns too, the
+    way's value goes, as nothing reads it after the Pass, unless the Pass
+    reads it and it may be undefined, which could pass through a test such
+    as $type() where the way's Assign would fail. The time and a random value go
     too: each copy is on its own way, so a run evaluates one of them once,
     as it would the Pass, and a way's Assign runs where the Pass would, a
     Task's and a Wait's when it ends (measured); the syntax tree says which
