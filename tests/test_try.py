@@ -138,6 +138,21 @@ def test_tasks_in_branches_loops_and_handlers():
     assert "Catch" not in compiled["publish_3"]
 
 
+def test_a_value_that_changes_is_evaluated_once_where_the_catch_takes_the_return():
+    """The Pass after the Task goes in its Assign and the return in its
+    Output, which the Catch takes a failure of too; the return reads the
+    variable, not the $random() the Assign evaluates, as Python reads the
+    one value the variable holds."""
+    body = (
+        f'try:\n    n = {CHARGE}["Payload"]\n    n = int(random.random() * 4)\n'
+        "    return n\nexcept Exception:\n    raise"
+    )
+    (compiled,) = compile_source(source(body, "import random\n" + CLASSES)).values()
+    drawn = iter([0.3, 0.9])
+    with asl.replaced(random=lambda *arguments: next(drawn)):
+        assert asl.run(compiled, {}, {"n": lambda arguments: {"Payload": 0}}) == 1
+
+
 def test_else_is_not_caught():
     body = f"try:\n    {NOTIFY}\nexcept Declined:\n    return 1\nelse:\n    {NOTIFY}\nreturn 0"
     compiled = states(body)
