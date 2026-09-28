@@ -371,6 +371,9 @@ class Scope:
         # Whether the passes rewrite the states it builds, as they do but for
         # the tests that compare a definition before and after them.
         self.optimizing = True
+        # Whether a read the passes made see another assignment fails the
+        # compile, for the tests.
+        self.checking = False
 
     def spelling(self, name: str) -> str:
         return spelling(name, self.module.spellings)
@@ -1765,6 +1768,7 @@ class Scope:
         scope.labels = self.labels
         scope.locations = self.locations
         scope.optimizing = self.optimizing
+        scope.checking = self.checking
         scope.flags = flags(function)
         if local:
             scope.functions = dict(self.functions)
@@ -1784,6 +1788,7 @@ class Scope:
         definition = scope.graph.definition()
         if scope.optimizing:
             optimize(definition, scope)
+            checked(definition, scope.checking)
         docstring = ast.get_docstring(function)
         if docstring:
             definition = {"Comment": docstring, **definition}
@@ -3630,7 +3635,11 @@ def same_tries(
     )
 
 
-def read_through(template: object, values: dict[str, Expr]) -> object:
+def read_through(
+    template: object,
+    values: dict[str, Expr],
+    around: frozenset[tuple[str, int]] = frozenset(),
+) -> object:
     """A template that reads each variable as the value a state before it
     assigns, as the Assign of that state evaluates it: a value read once, or
     a path, in its place, and a longer one read more than once bound to the
@@ -3638,13 +3647,15 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
     hand-writer binds it. Where a value put in place or another bound one
     reads such a name, which it means from before the state, each is put in
     place instead. The expression it writes is an Expr, whose properties
-    are composed from the field's and the values', as composed says."""
+    are composed from the field's and the values', as composed says; a part
+    of an object or an array reads what the whole around it reads."""
     leaf = template
     template = template_of(leaf)
+    around = leaf.reads if isinstance(leaf, Expr) else around
     if isinstance(template, dict):
-        return {k: read_through(v, values) for k, v in template.items()}
+        return {k: read_through(v, values, around) for k, v in template.items()}
     if isinstance(template, list):
-        return [read_through(v, values) for v in template]
+        return [read_through(v, values, around) for v in template]
     if not (isinstance(template, str) and template.startswith("{%")):
         return leaf
     code = template[2:-2].strip()
@@ -3657,7 +3668,7 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
         placed = {n: v for n, v in values.items() if reads[n]}
         bound = []
     if not bound and len(placed) == 1 and lone_variable(code) == next(iter(placed)):
-        return next(iter(placed.values()))
+        return in_place_of(leaf, next(iter(placed.values())))
     if placed:
         # All at once: a value put in place may read the name of another from
         # before the state, which is not to be put in place again.
@@ -3668,10 +3679,18 @@ def read_through(template: object, values: dict[str, Expr]) -> object:
     if bound:
         bindings = "".join(f"${n} := {values[n].code}; " for n in bound)
         code = f"({bindings}{code})"
-    return composed(leaf, code, [v for n, v in values.items() if reads[n]])
+    return composed(
+        leaf, code, [v for n, v in values.items() if reads[n]], around=around
+    )
 
 
-def composed(leaf: object, code: str, values: list[Expr], shape: object = None) -> Expr:
+def composed(
+    leaf: object,
+    code: str,
+    values: list[Expr],
+    shape: object = None,
+    around: frozenset[tuple[str, int]] = frozenset(),
+) -> Expr:
     """The Expr of code written from a field's expression, leaf, with values
     read in place of variables it reads. The field's expression was judged
     with variables, which are never undefined and fail for nothing, in their
@@ -3681,11 +3700,18 @@ def composed(leaf: object, code: str, values: list[Expr], shape: object = None) 
     and changes on evaluation where the field's expression or a value does.
     A field that holds a template, whose properties are not known, gives
     the code none of them. Where the field is written as an object or an
-    array with expressions among its values, shape is that template."""
+    array with expressions among its values, shape is that template. The
+    code reads, of each variable, the assignments the field's expression
+    read, or, for a part of an object or an array, what the whole around it
+    read, and those each value read."""
     precedence = ATOM if path_alone(code) else WRITTEN
     read = frozenset(names_read(code))
     if not isinstance(leaf, Expr):
         found = expression(code, read, precedence, volatile=CHANGES * changes(code))
+        carried = around.union(*(v.reads for v in values))
+        found = replace(
+            found, reads=frozenset(pair for pair in carried if pair[0] in read)
+        )
     else:
         found = expression(
             code,
@@ -3697,7 +3723,21 @@ def composed(leaf: object, code: str, values: list[Expr], shape: object = None) 
             defined=leaf.defined and all(v.defined for v in values),
             total=leaf.total and all(v.total and v.defined for v in values),
         )
+        carried = leaf.reads.union(*(v.reads for v in values))
+        found = replace(
+            found,
+            reads=frozenset(pair for pair in carried if pair[0] in read),
+            defines=leaf.defines,
+        )
     return found if shape is None else replace(found, template=shape)
+
+
+def in_place_of(leaf: object, value: object) -> object:
+    """A value written whole where a field read only a variable: the value,
+    as the assignment the field is the value of, if any."""
+    if not isinstance(value, Expr):
+        return value
+    return replace(value, defines=leaf.defines if isinstance(leaf, Expr) else None)
 
 
 def as_expr(leaf: object) -> Expr:
@@ -4427,15 +4467,20 @@ def read_as_values(
 
     read = [as_expr(values[n]) for n in used]
 
-    def replaced(leaf: object, test: bool = False) -> object:
+    def replaced(
+        leaf: object,
+        test: bool = False,
+        around: frozenset[tuple[str, int]] = frozenset(),
+    ) -> object:
         item = template_of(leaf)
+        around = leaf.reads if isinstance(leaf, Expr) else around
         if isinstance(item, dict):
             return {
-                k: v if k == "Comment" else replaced(v, k == "Condition")
+                k: v if k == "Comment" else replaced(v, k == "Condition", around)
                 for k, v in item.items()
             }
         if isinstance(item, list):
-            return [replaced(v) for v in item]
+            return [replaced(v, False, around) for v in item]
         if not (used and isinstance(item, str) and item.startswith("{%")):
             return leaf
         code = item[2:-2].strip()
@@ -4443,8 +4488,8 @@ def read_as_values(
         # a Condition stays an expression.
         whole = lone_variable(code)
         if whole in used and not test:
-            return values[whole]
-        return composed(leaf, written_in(code), read)
+            return in_place_of(leaf, values[whole])
+        return composed(leaf, written_in(code), read, around=around)
 
     def written_in(code: str) -> str:
         counts = Counter(m[1] for m in pattern.finditer(code))
@@ -4509,7 +4554,8 @@ def both(first: object, second: object) -> object:
         assert isinstance(condition, str)
         code = condition[2:-2].strip()
         tests.append(f"({code})" if looser_than_and(code) else code)
-    return composed(None, " and ".join(tests), [])
+    read = [c.reads for c in (first, second) if isinstance(c, Expr)]
+    return composed(None, " and ".join(tests), [], around=frozenset().union(*read))
 
 
 def all_written(values: list[Expr]) -> bool:
@@ -4658,17 +4704,22 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
     pattern = re.compile(rf"\${re.escape(name)}(?!\w)")
     code = operand(value, ATOM)
 
-    def replaced(leaf: object) -> object:
+    def replaced(
+        leaf: object, around: frozenset[tuple[str, int]] = frozenset()
+    ) -> object:
         item = template_of(leaf)
+        around = leaf.reads if isinstance(leaf, Expr) else around
         if isinstance(item, dict):
-            return {k: v if k == "Comment" else replaced(v) for k, v in item.items()}
+            return {
+                k: v if k == "Comment" else replaced(v, around) for k, v in item.items()
+            }
         if isinstance(item, list):
-            return [replaced(v) for v in item]
+            return [replaced(v, around) for v in item]
         if isinstance(item, str) and item.startswith("{%") and item.endswith("%}"):
             if lone_variable(item[2:-2].strip()) == name:
-                return value
+                return in_place_of(leaf, value)
             written = pattern.sub(lambda _: code, item)
-            return composed(leaf, written[2:-2].strip(), [value])
+            return composed(leaf, written[2:-2].strip(), [value], around=around)
         return leaf
 
     for key, field_value in list(node.items()):
@@ -4689,12 +4740,32 @@ def share_states(definition: dict[str, object]) -> None:
     states = definition["States"]
     assert isinstance(states, dict)
     while shared := same_states(states):
-        for name in shared:
+        for name, kept in shared.items():
+            read_both(states[kept], states[name])
             del states[name]
         start = definition["StartAt"]
         assert isinstance(start, str)
         definition["StartAt"] = shared.get(start, start)
         redirect(states, shared)
+
+
+def read_both(kept: object, other: object) -> None:
+    """Where a state takes the place of another of the same fields, each of
+    its expressions reads, on the ways the other led, what the other's read:
+    the reads of both, written into the state in place."""
+    if isinstance(kept, dict) and isinstance(other, dict):
+        for key, mine in kept.items():
+            kept[key] = both_reads(mine, other.get(key))
+    elif isinstance(kept, list) and isinstance(other, list):
+        for index, theirs in enumerate(other[: len(kept)]):
+            kept[index] = both_reads(kept[index], theirs)
+
+
+def both_reads(mine: object, theirs: object) -> object:
+    if isinstance(mine, Expr) and isinstance(theirs, Expr):
+        return replace(mine, reads=mine.reads | theirs.reads)
+    read_both(mine, theirs)
+    return mine
 
 
 def spread_passes(definition: dict[str, object]) -> None:
@@ -4845,7 +4916,7 @@ def written_sum(template: object) -> object:
     if found is None:
         return template
     left, right = literal(int(found[1])), literal(int(found[3]))
-    return binary(left, found[2], right, ADD, of(NUMBER))
+    return in_place_of(template, binary(left, found[2], right, ADD, of(NUMBER)))
 
 
 def read_what_it_assigns(
@@ -5117,8 +5188,12 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
     open the way for one that ran before it, as a Choice taken in another
     leaves a start Pass that fold_start can now fold. Each pass takes what it
     can in one go, and the first round of a loop is taken once, so the
-    rounds end."""
+    rounds end. Where the compile checks the passes, the assignments each
+    expression reads are noted first, so that misread can tell where a pass
+    made one read another."""
     assert not loose_expressions(definition)
+    if scope.checking:
+        note_reads(definition)
     rounds = Rounds()
     while True:
         before = copy.deepcopy(definition)
@@ -5136,6 +5211,142 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
         # may hold an Expr where a template was.
         if emitted(definition) == emitted(before):
             return
+
+
+# The assignment a variable holds where a scope starts, which no Assign of
+# the scope made, and one whose Assign value a pass wrote without its number.
+INITIAL = 0
+UNKNOWN = -1
+# The fields that hold a scope of their own, and a field that is not read.
+UNREAD = frozenset({"Comment", "Branches", "ItemProcessor"})
+Reaching = dict[str, frozenset[int]]
+
+
+def note_reads(definition: dict[str, object]) -> None:
+    """Number each Assign value of a definition as the assignment it makes,
+    and note on each expression, of each variable it reads, the assignments
+    that reach it where it is evaluated: the Python meaning of the read, as
+    the states are built, one statement or two to a state. A value written
+    out becomes an Expr, which is written out as it was."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    numbers = itertools.count(INITIAL + 1)
+    for state in states.values():
+        for holder, _ in ways_out(state):
+            assign = assigns(holder)
+            for key, value in assign.items():
+                found = value if isinstance(value, Expr) else assigned_value(value)
+                if found is not None:
+                    assign[key] = replace(found, defines=next(numbers))
+    entry = reaching(definition)
+    for name, state in states.items():
+        at = entry.get(name)
+        if at is None:
+            continue
+
+        def read(value: Expr, at: Reaching = at) -> Expr:
+            pairs = frozenset(
+                (n, d) for n in names_read(value.code) for d in reaching_of(at, n)
+            )
+            return replace(value, reads=pairs)
+
+        annotated = each_expression(state, read)
+        assert isinstance(annotated, dict)
+        state.clear()
+        state.update(annotated)
+
+
+def reaching(definition: dict[str, object]) -> dict[str, Reaching]:
+    """For each state reached, the assignments that may give each variable
+    its value where the state is entered, by their numbers: INITIAL where no
+    Assign of the scope did, UNKNOWN for a value without its number. An
+    Assign is evaluated with the values from before the state, and on a
+    catcher's way the state's own Assign assigns nothing (measured)."""
+    states = definition["States"]
+    start = definition["StartAt"]
+    assert isinstance(states, dict) and isinstance(start, str)
+    entry: dict[str, Reaching] = {start: {}}
+    work = [start]
+    while work:
+        name = work.pop()
+        for holder, target in ways_out(states[name]):
+            if target is None:
+                continue
+            out = dict(entry[name])
+            for key, value in assigns(holder).items():
+                number = value.defines if isinstance(value, Expr) else None
+                out[key] = frozenset({UNKNOWN if number is None else number})
+            old = entry.get(target)
+            merged = (
+                out
+                if old is None
+                else {
+                    n: reaching_of(old, n) | reaching_of(out, n)
+                    for n in old.keys() | out.keys()
+                }
+            )
+            if merged != old:
+                entry[target] = merged
+                work.append(target)
+    return entry
+
+
+def reaching_of(at: Reaching, name: str) -> frozenset[int]:
+    return at.get(name, frozenset({INITIAL}))
+
+
+def each_expression(node: object, change: Callable[[Expr], Expr]) -> object:
+    """node with change made to each Expr in it, those inside an object or
+    an array one holds included, past the Comments and the scopes of its own
+    that a Parallel's branches and a Map's processor are."""
+    if isinstance(node, Expr):
+        if isinstance(node.template, (dict, list)):
+            node = replace(node, template=each_expression(node.template, change))
+        return change(node)
+    if isinstance(node, dict):
+        return {
+            k: v if k in UNREAD else each_expression(v, change) for k, v in node.items()
+        }
+    if isinstance(node, list):
+        return [each_expression(v, change) for v in node]
+    return node
+
+
+def misread(definition: dict[str, object]) -> list[str]:
+    """Each read of a variable that an assignment reaches that note_reads did
+    not note for it: where a pass moved an expression, or an assignment,
+    so that the variable holds another value there than Python's. A read or
+    an assignment the passes wrote without its note is not judged."""
+    found: list[str] = []
+    states = definition["States"]
+    assert isinstance(states, dict)
+    entry = reaching(definition)
+    for name, state in states.items():
+        at = entry.get(name)
+        if at is None:
+            continue
+
+        def check(value: Expr, at: Reaching = at, name: str = name) -> Expr:
+            noted: dict[str, set[int]] = {}
+            for read_name, number in value.reads:
+                noted.setdefault(read_name, set()).add(number)
+            for read_name, numbers in noted.items():
+                wrong = reaching_of(at, read_name) - numbers - {UNKNOWN}
+                if wrong:
+                    found.append(
+                        f"{name}: {value.code} reads {read_name} of {sorted(wrong)}"
+                    )
+            return value
+
+        each_expression(state, check)
+    return found
+
+
+def checked(definition: dict[str, object], checking: bool) -> None:
+    """Where checking, fail on each read misread finds."""
+    if checking:
+        found = misread(definition)
+        assert not found, "\n".join(found)
 
 
 # Each pass's changes to a definition, at DEBUG, for whoever follows how the
@@ -5219,6 +5430,7 @@ def compile_machine(
     context: Module,
     locations: Locations | None,
     optimizing: bool = True,
+    checking: bool = False,
 ) -> dict[str, object]:
     arguments = function.args
     if (
@@ -5259,6 +5471,7 @@ def compile_machine(
     )
     scope.locations = locations
     scope.optimizing = optimizing
+    scope.checking = checking
     scope.flags = flags(function)
     scope.block(function.body)
     if graph.reachable:
@@ -5268,6 +5481,7 @@ def compile_machine(
     definition = graph.definition()
     if optimizing:
         optimize(definition, scope)
+        checked(definition, checking)
     definition = emitted(definition)
     assert isinstance(definition, dict)
     rename_states(definition, graph.taken)
@@ -5337,19 +5551,25 @@ def compile_file(path: str | Path) -> dict[str, dict[str, object]]:
 
 
 def definitions(
-    source: str, filename: str, located: bool, optimizing: bool = True
+    source: str,
+    filename: str,
+    located: bool,
+    optimizing: bool = True,
+    checking: bool = False,
 ) -> dict[str, dict[str, object]]:
     """The state machines of a module, each state's Comment ending with the
     lines of the file it comes from when located is set, as the CLI's
     --source-locations asks. Without optimizing, the passes leave the states
-    as the statements build them, for the tests that compare the two."""
+    as the statements build them, for the tests that compare the two; with
+    checking, a read the passes made see another assignment than the one
+    it read before them fails the compile, as misread says."""
     locations = Locations(source, filename) if located else None
     try:
         tree = ast.parse(source, filename)
         context = module(tree, source)
         return {
             function.name: compile_machine(
-                function, options, context, locations, optimizing
+                function, options, context, locations, optimizing, checking
             )
             for function, options in machines(tree, context)
         }
