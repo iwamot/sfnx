@@ -214,10 +214,12 @@ def test_a_settled_expression_goes_where_other_values_go():
     assert asl.run(definition(body), {"a": False, "s": "x"}) == ["X", "X"]
 
 
-def test_an_unsettled_expression_keeps_its_pass():
+def test_an_unsettled_expression_read_twice_is_evaluated_once():
+    """It goes in the Choice's own Assign, which runs on the Default, and the
+    return reads the variable twice, as Python reads the one value."""
     body = 'if input["a"]:\n    return 0\nr = jsonata("$random()")\nreturn [r, r]'
     compiled = definition(body)["States"]
-    assert compiled["r"]["Type"] == "Pass"
+    assert compiled["if"]["Assign"] == {"r": "{% $random() %}"}
     first, second = asl.run(definition(body), {"a": False})
     assert first == second
 
