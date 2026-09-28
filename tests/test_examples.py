@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from sfnx.cli import document
-from sfnx.compiler import compile_file
+from sfnx.compiler import compile_file, definitions
 from tests import asl
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
@@ -27,6 +27,14 @@ NAMES = [
 def definition(name: str) -> dict[str, object]:
     (machine,) = compile_file(EXAMPLES / f"{name}.py").values()
     return machine
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_the_passes_keep_what_each_read_reads(name):
+    """Each variable an expression reads holds, after the passes, a value an
+    assignment gives it that it read before them."""
+    source = (EXAMPLES / f"{name}.py").read_text()
+    definitions(source, name, False, checking=True)
 
 
 class Tasks(Mapping[str, Callable[[object], object]]):

@@ -182,6 +182,12 @@ class Expr:
     volatile: int = 0
     defined: bool = False
     total: bool = False
+    # Which assignments each variable the code reads may hold the value of,
+    # as pairs of the name and an assignment's number, and, for the value of
+    # an Assign, the number of that assignment. The passes carry them, so a
+    # check can tell where a pass made a read see another assignment.
+    reads: frozenset[tuple[str, int]] = frozenset()
+    defines: int | None = None
 
 
 def expression(

@@ -16,7 +16,7 @@ from hypothesis import HealthCheck, event, given, settings
 from hypothesis import strategies as st
 
 from sfnx import ExceedToleratedFailureThreshold, distributed_map, testing
-from sfnx.compiler import compile_source, definitions, expressions_in, links
+from sfnx.compiler import definitions, expressions_in, links
 from sfnx.syntax import changes
 from tests import asl
 from tests.corpus import same
@@ -731,7 +731,7 @@ def in_cpython(program: str, execution_input: object) -> tuple[str, object]:
 
 
 def in_asl(program: str, execution_input: object) -> tuple[str, object]:
-    (definition,) = compile_source(program).values()
+    (definition,) = definitions(program, "<program>", False, checking=True).values()
     try:
         return "result", asl.run(definition, execution_input, Lambda())
     except asl.Failure as failure:
@@ -774,7 +774,9 @@ def in_definition(
     """The run of the definition before or after the passes. The functions
     that give another value on each call give the next of a sequence where
     varying is set, and always the same value otherwise."""
-    (definition,) = definitions(program, "<program>", False, optimizing).values()
+    (definition,) = definitions(
+        program, "<program>", False, optimizing, checking=True
+    ).values()
     counts: Counter[str] = Counter()
 
     def counted(name: str, value: Callable[[int], object]) -> Callable[..., object]:

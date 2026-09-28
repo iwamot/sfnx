@@ -3,7 +3,14 @@ import textwrap
 
 import pytest
 
-from sfnx.compiler import changed_states, compile_source, definitions
+from sfnx.compiler import (
+    changed_states,
+    compile_source,
+    definitions,
+    from_asl,
+    misread,
+    note_reads,
+)
 from sfnx.diagnostics import CompileError
 from tests import asl
 
@@ -861,3 +868,37 @@ def test_the_states_that_remain_take_their_names_again(body, start, names):
     (definition,) = compile_source(RENAMED + textwrap.indent(body, "    ")).values()
     assert definition["StartAt"] == start
     assert names_of(definition) == names
+
+
+def assigning(merged: bool) -> dict:
+    """a = 1, then b = a, then return b, as the statements build them: a Pass
+    each. merged puts the second Pass's Assign in the first's without reading
+    a as the value it is assigned there, as a pass that got it wrong would."""
+    written = {
+        "StartAt": "a",
+        "States": {
+            "a": {"Type": "Pass", "Assign": {"a": 1}, "Next": "b"},
+            "b": {"Type": "Pass", "Assign": {"b": "{% $a %}"}, "Next": "r"},
+            "r": {"Type": "Succeed", "Output": "{% $b %}"},
+        },
+    }
+    definition = from_asl(written)
+    assert isinstance(definition, dict)
+    note_reads(definition)
+    states = definition["States"]
+    if merged:
+        states["a"]["Assign"] = {**states["a"]["Assign"], **states["b"]["Assign"]}
+        states["a"]["Next"] = "r"
+        del states["b"]
+    return definition
+
+
+def test_a_read_the_passes_leave_reading_what_it_read_is_not_reported():
+    assert misread(assigning(False)) == []
+
+
+def test_a_read_that_sees_the_value_from_before_the_state_is_reported():
+    """In one Assign, b reads a as it was before the state, not the 1 the
+    Assign gives it."""
+    [found] = misread(assigning(True))
+    assert found.startswith("a: $a reads a of [0]")

@@ -18,7 +18,7 @@ import textwrap
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
-from sfnx.compiler import compile_source
+from sfnx.compiler import definitions
 from tests import asl
 
 HEADER = """\
@@ -1022,7 +1022,7 @@ class Sequence:
 
 
 def compiled(case: Case) -> dict:
-    (definition,) = compile_source(case.source).values()
+    (definition,) = definitions(case.source, "<case>", False, checking=True).values()
     return definition
 
 
