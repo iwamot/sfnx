@@ -343,9 +343,6 @@ class Scope:
         # Names the bodies of functions called directly assigned here, which a
         # later call may use again.
         self.expanded: set[str] = set()
-        # The Pass and Succeed states whose every value neither fails nor is
-        # undefined, which a Task before them may hold whatever reads them.
-        self.failsafe: set[str] = set()
         # The comparisons of a variable with a value written in the source,
         # the tests a Choice decided by known values can drop, by variable.
         self.flags: dict[str, list[ast.Compare]] = {}
@@ -454,9 +451,6 @@ class Scope:
         opening = not self.graph.states
         added = self.insert(first, state, node, origins)
         self.enclosing[added] = self.within()
-        values = list(pending.values())
-        if all(v.defined and v.total for v in values):
-            self.failsafe.add(added)
         if opening:
             self.starting = (
                 added,
@@ -540,14 +534,14 @@ class Scope:
         """Whether the Assign of what a transition belongs to runs only on the
         way along it: a Choice rule, a catcher, a Choice's own Assign for its
         Default, and a Pass, a Wait or a state that may take what follows it,
-        as any state may take values written in the source, which cannot fail."""
+        as any state may take values that cannot fail, as failsafe says."""
         if "Type" not in container:
             return True
         kind = container["Type"]
         if kind == "Choice":
             return key == "Default"
         if kind in {"Task", "Parallel", "Map"}:
-            return self.may_fold(container) or all_written(values)
+            return self.may_fold(container) or all(map(failsafe, values))
         return kind in {"Pass", "Wait"}
 
     def describe(
@@ -1382,7 +1376,7 @@ class Scope:
         return (
             not self.opening
             and self.folded.keys() == self.pending.keys()
-            and (self.may_fold(result.state) or all_written(folded))
+            and (self.may_fold(result.state) or all(map(failsafe, folded)))
             and self.holds_still(folded)
         )
 
@@ -1457,9 +1451,9 @@ class Scope:
         value = self.read_result(result, value_node)
         if value is None or not self.holds_still([value]):
             return False
-        # A value written in the source cannot fail, so neither a Catch nor a
-        # retrier has a failure of the Output to take.
-        if not (self.may_fold(result.state) or written(value.template)):
+        # A value that cannot fail leaves neither a Catch nor a retrier a
+        # failure of the Output to take.
+        if not (self.may_fold(result.state) or failsafe(value)):
             return False
         state = result.state
         self.graph.tails = []
@@ -1607,8 +1601,6 @@ class Scope:
             state: dict[str, object] = {"Type": "Succeed", "Output": value}
             added = self.add("return", state, node, origins)
             self.enclosing[added] = self.within()
-            if value.defined and value.total:
-                self.failsafe.add(added)
             return
         # A Task at the end ends the machine itself; its output is the result
         # unless the return makes something of it.
@@ -3494,7 +3486,6 @@ def takes_evaluation(state: dict[str, object], field: str) -> bool:
 def fold_into_catching_tasks(
     definition: dict[str, object],
     enclosing: dict[str, tuple[list[Handler], ...]],
-    failsafe: set[str],
 ) -> None:
     """The Pass or the Succeed right after a Task, a Parallel or a Map with a
     Catch, in the state's Assign or as its Output, as a hand-writer assigns
@@ -3502,20 +3493,21 @@ def fold_into_catching_tasks(
     Assign or the Output of each of the three is caught (measured), and
     inside a try, Python's except takes a failure of those statements too,
     which the separate state lets end the execution. Only the state leads to
-    it, it is in the same try bodies as the state, whose Catch is theirs, and
-    the state retries nothing on `States.ALL` or
-    `States.QueryEvaluationError`, which would run it again. A statement
-    after the try, which only the state leads to when every except clause
-    ends, is not in the try's reach, unless it is failsafe (below), which
-    gives the Catch nothing to take; a catcher of the state may lead to such
-    a Succeed too, which stays for the catcher.
+    it, it is in the same try bodies as the state, whose Catch is theirs, or
+    the Catch takes no failure of an expression, which then ends the
+    execution in the state as it would after it, and the state retries
+    nothing on `States.ALL` or `States.QueryEvaluationError`, which would
+    run it again. A statement after the try, which only the state leads to
+    when every except clause ends, is not in the try's reach, unless nothing
+    in it can fail, as failsafe says, which gives the Catch nothing to take;
+    a catcher of the state may lead to such a Succeed too, which stays for
+    the catcher.
 
     A failure in the Assign loses all of it, the state's result included,
     where Python keeps what was assigned before the failing statement, so no
     way on from a catcher may read a variable assigned before a statement
-    that may fail, unless the Pass or the Succeed is failsafe: nothing in it
-    fails or is undefined, so a failure of the Assign is the state's own, as
-    in Python.
+    that may fail, unless nothing in the Pass or the Succeed can fail, so a
+    failure of the Assign is the state's own, as in Python.
     It reads the variables the state assigns as the expressions the state
     assigns them, but for one that changes on evaluation, which the state's
     Assign evaluates already, and nothing else of `$states` than the context
@@ -3528,6 +3520,9 @@ def fold_into_catching_tasks(
         led = leading(states)
         for name, task in states.items():
             after = task.get("Next")
+            safe = after is not None and failsafe(
+                {k: v for k, v in states[after].items() if k in {"Assign", "Output"}}
+            )
             if (
                 task["Type"] not in {"Task", "Parallel", "Map"}
                 or "Catch" not in task
@@ -3535,7 +3530,8 @@ def fold_into_catching_tasks(
                 or after is None
                 or set(led[after]) != {name}
                 or not (
-                    after in failsafe
+                    safe
+                    or not takes_evaluation(task, "Catch")
                     or same_tries(enclosing.get(after, ()), enclosing[name])
                 )
                 or retries_evaluation(task)
@@ -3572,10 +3568,7 @@ def fold_into_catching_tasks(
             if any(changes(v.code) for v in values.values()):
                 continue
             exposed = assigned_before_failures(own, following)
-            if (
-                after not in failsafe
-                and caught_reads(task, live_reads(states)) & exposed
-            ):
+            if not safe and caught_reads(task, live_reads(states)) & exposed:
                 continue
             moved = {
                 key: value if key == "Comment" else read_through(value, values)
@@ -3584,7 +3577,7 @@ def fold_into_catching_tasks(
             if kind == "Pass":
                 assign = moved["Assign"]
                 assert isinstance(assign, dict)
-                task["Assign"] = then(own, assign)
+                assign_before(task, "Next", then(own, assign))
                 task["Next"] = moved["Next"]
             else:
                 del task["Next"]
@@ -3908,7 +3901,8 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                 own = holder.get("Assign", {})
                 assert isinstance(own, dict)
                 # A Task's, a Parallel's or a Map's own Assign has its Catch
-                # and its retriers take a failure the Choice would not.
+                # and its retriers take a failure the Choice would not, which
+                # an Assign that cannot fail does not have.
                 movable = holder is not state or may_fold(state)
                 taken: dict[str, object] = {}
                 passed = rounds.of(holder) if rounds is not None else set()
@@ -3932,7 +3926,7 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                     own_states = any(
                         reads_own_states(c) for c in expressions_in(assign)
                     )
-                    if assign and (not movable or own_states):
+                    if assign and (not (movable or failsafe(assign)) or own_states):
                         break
                     if assign and reads & current.keys():
                         # Choices that lead to each other would each be gone
@@ -4577,10 +4571,19 @@ def both(first: object, second: object) -> object:
     )
 
 
-def all_written(values: list[Expr]) -> bool:
-    """Whether every value is written out in the source, which neither a Catch
-    nor a retrier has a failure of to take in the Assign that holds it."""
-    return all(written(value.template) for value in values)
+def failsafe(field: object) -> bool:
+    """Whether nothing in a field fails or is undefined, so neither a Catch
+    nor a retrier of the state that holds it has a failure of it to take: a
+    value written out, and expressions that never are undefined and fail for
+    no value. Where one reads a variable the state assigns as the expression
+    the state assigns it, it fails only where the state's Assign fails."""
+    if isinstance(field, Expr):
+        return field.defined and field.total
+    if isinstance(field, dict):
+        return all(failsafe(v) for v in field.values())
+    if isinstance(field, list):
+        return all(failsafe(v) for v in field)
+    return not (isinstance(field, str) and field.startswith("{%"))
 
 
 def fold_start(
@@ -4647,7 +4650,7 @@ def fold_start(
     # evaluates its Assign after it has run, where only a value that cannot
     # fail fails nowhere else than Python's, neither a Catch nor a retrier
     # has a failure to take, and no branch or processor runs for nothing.
-    certain = all(v.defined and v.total and not v.volatile for v in values.values())
+    certain = all(failsafe(v) and not v.volatile for v in values.values())
     if not (
         kind in {"Choice", "Wait"}
         or (kind == "Task" and may_fold(state))
@@ -4794,8 +4797,8 @@ def spread_passes(definition: dict[str, object]) -> None:
     Assign runs only on that way and a failure there ends the execution, as
     the Pass's would: a Pass, a Wait, a Choice rule, a Choice's own Assign for
     its Default, a catcher, and a Task, a Parallel or a Map whose failure
-    there no Catch or retrier takes, or that holds only values written in the
-    source. The values read what the way assigns as the expressions it
+    there no Catch or retrier takes, or where none of them can fail, as
+    failsafe says. The values read what the way assigns as the expressions it
     assigns them. Where the Pass assigns a name the way assigns too, the
     way's value goes, as nothing reads it after the Pass, unless the Pass
     reads it and it may be undefined, which could pass through a test such
@@ -4888,7 +4891,7 @@ def way_assign(
     if (
         holder is owner
         and owner["Type"] in {"Task", "Parallel", "Map"}
-        and not (may_fold(owner) or written(assign))
+        and not (may_fold(owner) or failsafe(assign))
     ):
         return None
     own = assigns(holder)
@@ -4940,12 +4943,11 @@ def read_what_it_assigns(
     of $states, which is the Succeed's own there, nor the time, a random
     value or $eval, which a jsonata() expression may read in ways not known
     here. The Output reads what the state assigns as read_assigned says. A
-    return whose every expression is a variable alone goes in after a
-    Catch or a retrier too: a variable neither fails nor is undefined, and
-    one the state assigns reads the expression its Assign evaluates alike,
-    so the Output fails only where the Assign does, which the Catch or the
-    retrier takes as it would without the Output."""
-    if not (may_fold(state) or all(lone_variable(c) is not None for c in codes)) or any(
+    return in which nothing can fail or be undefined goes in after a Catch
+    or a retrier too: a variable the state assigns reads the expression its
+    Assign evaluates alike, so the Output fails only where the Assign does,
+    which the Catch or the retrier takes as it would without the Output."""
+    if not (may_fold(state) or failsafe(output)) or any(
         changes_or_reads_the_state(c) for c in codes
     ):
         return None
@@ -5211,7 +5213,7 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
         before = copy.deepcopy(definition)
         traced(thread_choices, definition)
         traced(drop_dead_assignments, definition)
-        traced(fold_into_catching_tasks, definition, scope.enclosing, scope.failsafe)
+        traced(fold_into_catching_tasks, definition, scope.enclosing)
         traced(fold_start, definition, scope.starting)
         traced(spread_passes, definition)
         traced(thread_choices, definition, rounds)

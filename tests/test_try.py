@@ -1042,6 +1042,18 @@ def test_a_return_after_the_try_goes_in_a_task_whose_catch_misses_it(caught, hol
         assert failure.value.error == "States.QueryEvaluationError"
 
 
+def test_what_cannot_fail_goes_in_a_task_that_retries_everything():
+    """n == 3 is never undefined and fails for no value, so a retrier for
+    Exception has no failure of the Task's Assign or Output to take."""
+    body = (
+        f'n = {CHARGE[:-1]}, retry=[{{"ErrorEquals": [Exception]}}])["Payload"]\n'
+        "ok = n == 3\nreturn [ok, n]"
+    )
+    compiled = states(body)
+    assert [s["Type"] for s in compiled.values()] == ["Task"]
+    assert run(body, {}, {"n": lambda arguments: {"Payload": 3}}) == [True, 3]
+
+
 @pytest.mark.parametrize(
     "returned, holds",
     [
