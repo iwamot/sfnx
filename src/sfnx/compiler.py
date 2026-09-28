@@ -4,6 +4,7 @@ import ast
 import copy
 import itertools
 import json
+import logging
 import operator
 import re
 import symtable
@@ -12,6 +13,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from importlib.util import decode_source
 from pathlib import Path
+from types import FunctionType
 from typing import Literal, TypeGuard
 
 from sfnx.diagnostics import CompileError
@@ -5172,20 +5174,57 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
     rounds = Rounds()
     while True:
         before = copy.deepcopy(definition)
-        thread_choices(definition)
-        drop_dead_assignments(definition)
-        fold_into_catching_tasks(definition, scope.enclosing, scope.failsafe)
-        fold_start(definition, scope.starting)
-        spread_passes(definition)
-        thread_choices(definition, rounds)
-        merge_choices(definition)
-        take_in_choices(definition, rounds)
-        share_states(definition)
-        end_before_returns(definition)
+        traced(thread_choices, definition)
+        traced(drop_dead_assignments, definition)
+        traced(fold_into_catching_tasks, definition, scope.enclosing, scope.failsafe)
+        traced(fold_start, definition, scope.starting)
+        traced(spread_passes, definition)
+        traced(thread_choices, definition, rounds)
+        traced(merge_choices, definition)
+        traced(take_in_choices, definition, rounds)
+        traced(share_states, definition)
+        traced(end_before_returns, definition)
         # A round that writes the same definition changes nothing, though it
         # may hold an Expr where a template was.
         if emitted(definition) == emitted(before):
             return
+
+
+# Each pass's changes to a definition, at DEBUG, for whoever follows how the
+# passes reach a definition: logging.getLogger("sfnx.passes").
+PASSES = logging.getLogger("sfnx.passes")
+
+
+def traced(step: FunctionType, definition: dict[str, object], *args: object) -> None:
+    """Run a pass over a definition, logging the states it changed where
+    DEBUG is on for sfnx.passes. Otherwise nothing is compared, so the
+    passes run as they would without it."""
+    if not PASSES.isEnabledFor(logging.DEBUG):
+        step(definition, *args)
+        return
+    before = emitted(definition["States"])
+    step(definition, *args)
+    changes = changed_states(before, emitted(definition["States"]))
+    if changes:
+        PASSES.debug("%s\n%s", step.__name__, "\n".join(changes))
+
+
+def changed_states(before: object, after: object) -> list[str]:
+    """The states that differ between two States fields, each as a line: -
+    and the state as it was for one that went, + and the state as it is for
+    one that came, and both for one that changed, in the order of before,
+    then of the states that came."""
+    assert isinstance(before, dict) and isinstance(after, dict)
+    lines = []
+    for name in [*before, *(n for n in after if n not in before)]:
+        was, now = before.get(name), after.get(name)
+        if was == now:
+            continue
+        if was is not None:
+            lines.append(f"- {name}: {json.dumps(was, ensure_ascii=False)}")
+        if now is not None:
+            lines.append(f"+ {name}: {json.dumps(now, ensure_ascii=False)}")
+    return lines
 
 
 def emitted(node: object) -> object:

@@ -1,8 +1,9 @@
+import logging
 import textwrap
 
 import pytest
 
-from sfnx.compiler import compile_source
+from sfnx.compiler import changed_states, compile_source
 from sfnx.diagnostics import CompileError
 from tests import asl
 
@@ -707,3 +708,46 @@ def test_names_do_not_depend_on_lines():
 def test_a_return_after_assignments(body, states):
     definition = compile_one("import random\n" + machine(body))
     assert list(definition["States"]) == states
+
+
+PASS = {"Type": "Pass", "Next": "r"}
+SUCCEED = {"Type": "Succeed"}
+
+
+@pytest.mark.parametrize(
+    "before, after, lines",
+    [
+        ({"p": PASS, "r": SUCCEED}, {"p": PASS, "r": SUCCEED}, []),
+        # A state that went, one that changed, and one that came.
+        (
+            {"p": PASS, "r": SUCCEED},
+            {"r": {"Type": "Succeed", "Output": 1}, "q": PASS},
+            [
+                '- p: {"Type": "Pass", "Next": "r"}',
+                '- r: {"Type": "Succeed"}',
+                '+ r: {"Type": "Succeed", "Output": 1}',
+                '+ q: {"Type": "Pass", "Next": "r"}',
+            ],
+        ),
+    ],
+)
+def test_the_states_a_pass_changed(before, after, lines):
+    assert changed_states(before, after) == lines
+
+
+TESTED = 'x = input["x"]\nif x is None:\n    return 0\nreturn 1'
+
+
+def test_each_pass_that_changes_the_definition_is_logged(caplog):
+    """The start Pass goes in the Choice after it, as fold_start does; the
+    other passes change nothing here."""
+    with caplog.at_level(logging.DEBUG, logger="sfnx.passes"):
+        compile_one(machine(TESTED))
+    [record] = caplog.records
+    assert record.getMessage().splitlines()[0] == "fold_start"
+
+
+def test_nothing_is_logged_where_debug_is_off(caplog):
+    with caplog.at_level(logging.INFO, logger="sfnx.passes"):
+        compile_one(machine(TESTED))
+    assert caplog.records == []
