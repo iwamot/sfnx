@@ -3720,7 +3720,6 @@ def composed(
         found = replace(
             found,
             reads=frozenset(pair for pair in carried if pair[0] in read),
-            sees=around.sees if around is not None else frozenset(),
             fails=frozenset().union(
                 around.fails if around is not None else frozenset(), *failing
             ),
@@ -3741,7 +3740,6 @@ def composed(
             found,
             reads=frozenset(pair for pair in carried if pair[0] in read),
             defines=leaf.defines,
-            sees=leaf.sees,
             excepts=leaf.excepts,
             fails=frozenset().union(
                 frozenset() if leaf.defined and leaf.total else leaf.fails, *failing
@@ -3758,7 +3756,7 @@ def in_place_of(leaf: object, value: object) -> object:
         return value
     if not isinstance(leaf, Expr):
         return replace(value, defines=None)
-    return replace(value, defines=leaf.defines, sees=leaf.sees, excepts=leaf.excepts)
+    return replace(value, defines=leaf.defines, excepts=leaf.excepts)
 
 
 def as_expr(leaf: object) -> Expr:
@@ -4598,7 +4596,6 @@ def both(first: object, second: object) -> object:
     return replace(
         found,
         reads=frozenset().union(*(c.reads for c in parts)),
-        sees=frozenset().union(*(c.sees for c in parts)),
         fails=frozenset().union(*(c.fails for c in parts)),
     )
 
@@ -5372,17 +5369,25 @@ def note_reads(definition: dict[str, object]) -> None:
     out becomes an Expr, which is written out as it was."""
     states = definition["States"]
     assert isinstance(states, dict)
-    numbers = itertools.count(INITIAL + 1)
-    for state in states.values():
+    # The catchers whose way reaches each state, and each catcher's own.
+    ways: dict[int, set[tuple[str, int]]] = {}
+    for name, state in states.items():
         catchers = state.get("Catch", [])
         assert isinstance(catchers, list)
+        for index, catcher in enumerate(catchers):
+            ways.setdefault(id(catcher), set()).add((name, index))
+            for reached_name in reached(states, [catcher["Next"]]):
+                for holder, _ in ways_out(states[reached_name]):
+                    ways.setdefault(id(holder), set()).add((name, index))
+    numbers = itertools.count(INITIAL + 1)
+    for state in states.values():
         for holder, _ in ways_out(state):
             assign = assigns(holder)
+            excepts = frozenset(ways.get(id(holder), set()))
             for key, value in assign.items():
                 found = value if isinstance(value, Expr) else assigned_value(value)
                 if found is not None:
                     number = next(numbers)
-                    excepts = any(holder is catcher for catcher in catchers)
                     assign[key] = replace(found, defines=number, excepts=excepts)
     entry = reaching(definition)
     for name, state in states.items():
@@ -5395,7 +5400,7 @@ def note_reads(definition: dict[str, object]) -> None:
                 (n, d) for n in names_read(value.code) for d in reaching_of(at, n)
             )
             seen = frozenset((n, d) for n, numbers in at.items() for d in numbers)
-            return replace(value, reads=pairs, sees=seen, fails=frozenset({seen}))
+            return replace(value, reads=pairs, fails=frozenset({seen}))
 
         annotated = each_expression(state, read)
         assert isinstance(annotated, dict)
@@ -5495,15 +5500,11 @@ def misread(definition: dict[str, object]) -> list[str]:
     return found
 
 
-def after(value: Expr, failing: Expr) -> bool:
-    """Whether Python evaluates value after failing fails: in the except
-    clause, or after the try on the catcher's way, where the assignment
-    failing makes reaches it on the way the try body completes."""
-    if value.excepts:
-        return True
-    return failing.defines is not None and any(
-        number == failing.defines for _, number in value.sees
-    )
+def after(value: Expr, catcher: tuple[str, int]) -> bool:
+    """Whether Python evaluates value after a failure the catcher takes: the
+    catcher's way reached it before the passes ran, in the except clause or
+    after the try."""
+    return catcher in value.excepts
 
 
 def miscaught(
@@ -5525,7 +5526,7 @@ def miscaught(
         for value in [*assigns(state).values(), state.get("Output")]
         if isinstance(value, Expr) and not (value.defined and value.total)
     ]
-    for catcher in catchers:
+    for index, catcher in enumerate(catchers):
         if not set(catcher["ErrorEquals"]) & EVALUATION_ERRORS:
             continue
         caught = dict(at)
@@ -5535,12 +5536,12 @@ def miscaught(
         own = {k: v for k, v in catcher.items() if k != "Next"}
         read = {r for c in expressions_in(own) for r in names_read(c)}
         read |= live[catcher["Next"]]
+        clause = {
+            key
+            for key, assigned in assigns(catcher).items()
+            if isinstance(assigned, Expr) and after(assigned, (name, index))
+        }
         for value in failing:
-            clause = {
-                key
-                for key, assigned in assigns(catcher).items()
-                if isinstance(assigned, Expr) and after(assigned, value)
-            }
             for seen in value.fails:
                 held: dict[str, set[int]] = {}
                 for variable_name, number in seen:

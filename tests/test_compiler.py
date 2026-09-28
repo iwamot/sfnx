@@ -946,3 +946,43 @@ def test_an_except_clause_that_misses_an_assignment_before_the_failure_is_report
     nothing when b's value fails, so the catcher's way reads a unassigned."""
     found = "b: the except clause reads a of [0] where $number($states.result.Payload) fails"
     assert found in misread(excepting(True))
+
+
+def except_body(spread: bool) -> dict:
+    """a = 1, then b = the result of a call, which may fail, in a try whose
+    except clause assigns a = 2 and returns a. spread puts the except
+    clause's Pass in the catcher, as spread_passes may."""
+    written = {
+        "StartAt": "a",
+        "States": {
+            "a": {"Type": "Pass", "Assign": {"a": 1}, "Next": "b"},
+            "b": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::lambda:invoke",
+                "Arguments": {"FunctionName": "f"},
+                "Assign": {"b": "{% $number($states.result.Payload) %}"},
+                "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "again"}],
+                "Next": "r",
+            },
+            "again": {"Type": "Pass", "Assign": {"a": 2}, "Next": "caught"},
+            "caught": {"Type": "Succeed", "Output": "{% $a %}"},
+            "r": {"Type": "Succeed", "Output": "{% $b %}"},
+        },
+    }
+    definition = from_asl(written)
+    assert isinstance(definition, dict)
+    note_reads(definition)
+    states = definition["States"]
+    if spread:
+        [catcher] = states["b"]["Catch"]
+        catcher["Assign"] = states["again"]["Assign"]
+        catcher["Next"] = "caught"
+        del states["again"]
+    return definition
+
+
+def test_what_the_except_clause_assigns_after_the_failure_is_not_compared():
+    """a = 2 is on the catcher's way, so Python assigns it after the failure
+    too, wherever the passes put it."""
+    assert misread(except_body(False)) == []
+    assert misread(except_body(True)) == []
