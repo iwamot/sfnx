@@ -828,6 +828,15 @@ def names_of(scope: dict) -> list:
             "r",
             ["r", ["f.r_2"]],
         ),
+        # When the state was entered does not name it.
+        (
+            (
+                'r = None\nr = task(L, {"FunctionName": "f"})\n'
+                'return [r, context["State"]["EnteredTime"]]'
+            ),
+            "r",
+            ["r", "return"],
+        ),
         # A definition that reads the name of a state keeps every name.
         (
             (

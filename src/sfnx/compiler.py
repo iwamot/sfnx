@@ -68,6 +68,7 @@ from sfnx.syntax import (
     reads_own_context,
     reads_own_states,
     reads_state_name,
+    reads_the_name,
 )
 from sfnx.translate import (
     StateCall,
@@ -5327,10 +5328,10 @@ def rename_states(
     """The states that remain, in the machine and in each branch and Map
     processor, named again in the order their names were taken, as renaming
     says, so a state the passes took out leaves no gap in the serials. A
-    definition that reads the name of a state, as the context's State does,
+    definition that reads the name of a state, as the context's State may,
     or $eval, which may build one from text, keeps every name."""
     codes = expressions_in(definition)
-    if any(reads_state_name(c) or "eval" in names_read(c) for c in codes):
+    if any(reads_the_name(c) or "eval" in names_read(c) for c in codes):
         return
     scopes = list(machines_in(definition))
     kept = {name for scope in scopes for name in scope_states(scope)}
