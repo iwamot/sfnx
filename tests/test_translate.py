@@ -1465,7 +1465,8 @@ SLICES = 's: str = input["s"]\nxs: list[float] = input["xs"]\ni: float = input["
             "return xs[-i:]",
             "[$filter($xs, function($v, $i_2) { $i_2 >= $count($xs) - $i })]",
         ),
-        ("return s[:]", "$s"),
+        # The variable alone: the return reads the input in its place.
+        ("return s[:]", f"{INPUT}.s"),
         ("return xs[1:3]", "[$filter($xs, function($v, $i) { $i >= 1 and $i < 3 })]"),
         (
             "return xs[-2:]",
@@ -1476,7 +1477,7 @@ SLICES = 's: str = input["s"]\nxs: list[float] = input["xs"]\ni: float = input["
             'nested: list = input["nested"]\nreturn nested[:1]',
             "$append([], $filter($nested, function($v, $i) { $i < 1 })[])",
         ),
-        ("return xs[0:]", "$xs"),
+        ("return xs[0:]", f"{INPUT}.xs"),
     ],
 )
 def test_slices(body, code):
@@ -1545,7 +1546,8 @@ DICTS = (
         ),
         ("return flat.values()", "[$each($flat, function($v) { $v })]"),
         ('s: str = input["s"]\nreturn list(s)', "$split($s, '')"),
-        ('xs: list = input["xs"]\nreturn list(xs)', "$xs"),
+        # The list itself, which the return reads from the input.
+        ('xs: list = input["xs"]\nreturn list(xs)', f"{INPUT}.xs"),
     ],
 )
 def test_keys_and_values(body, code):

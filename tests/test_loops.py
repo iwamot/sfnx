@@ -1121,3 +1121,14 @@ def test_a_loop_that_never_ends_compiles():
 def test_an_assign_goes_before_the_transition(holder, assign):
     assign_before(holder, "Next", {"y": 1})
     assert list(holder.items()) == list(assign.items())
+
+
+def test_a_return_after_a_loop_its_first_round_leaves_reads_the_pass_before_it():
+    """The loop's first round leaves it, so the Pass before it goes on to the
+    return, whose Output reads s as the Pass assigns it."""
+    body = (
+        's: str = input["s"]\ns = s + "!"\nc = 0\nwhile True:\n    c = c + 1\n'
+        '    if c > 0:\n        break\n    s = s + "?"\nreturn [s, 1]'
+    )
+    assert [s["Type"] for s in states(body).values()] == ["Pass", "Succeed"]
+    assert run(body, {"s": "a"}) == ["a!", 1]
