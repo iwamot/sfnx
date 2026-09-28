@@ -183,12 +183,10 @@ class Expr:
     # check can tell where a pass made a read see another assignment.
     reads: frozenset[tuple[str, int]] = frozenset()
     defines: int | None = None
-    # Of every variable, the assignments that reach where the code is
-    # evaluated, before the passes run, which tell whether Python evaluates
-    # it after another assignment. excepts says the value is one an except
-    # clause assigns, which Python assigns after the failure.
-    sees: frozenset[tuple[str, int]] = frozenset()
-    excepts: bool = False
+    # The catchers, by the name of the state and the position of the
+    # catcher, whose way reached the value before the passes ran: Python
+    # assigns it after a failure they take.
+    excepts: frozenset[tuple[str, int]] = frozenset()
     # Where the code fails, the places Python fails at, each as what it sees
     # there: where the code was evaluated before the passes, or, for code
     # a pass wrote with values in place of variables, where those fail.
