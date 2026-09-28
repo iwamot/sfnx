@@ -796,3 +796,59 @@ def test_the_passes_run_unless_told_not_to(
     states = definition["States"]
     assert list(states) == machine_states
     assert list(states["return_2"]["ItemProcessor"]["States"]) == processor_states
+
+
+RENAMED = (
+    "from sfnx import context, jsonata, parallel, state_machine, task\n\n"
+    'L = "arn:aws:states:::lambda:invoke"\n\n\n@state_machine\ndef main(input):\n'
+)
+
+
+def names_of(scope: dict) -> list:
+    """The state names of a machine, with each branch's after its state."""
+    found: list = []
+    for name, state in scope["States"].items():
+        found.append(name)
+        found += [names_of(branch) for branch in state.get("Branches", [])]
+    return found
+
+
+@pytest.mark.parametrize(
+    "body, start, names",
+    [
+        # The Pass of r = None goes, as nothing reads it, and the Task takes
+        # the name it would have had first.
+        ('r = None\nr = task(L, {"FunctionName": "f"})\nreturn r', "r", ["r"]),
+        # In a branch too, whose r is spelled r_2 apart from the machine's.
+        (
+            (
+                'def f():\n    r = None\n    r = task(L, {"FunctionName": "f"})\n'
+                "    return r\n\nr = None\nr = parallel(f)\nreturn r"
+            ),
+            "r",
+            ["r", ["f.r_2"]],
+        ),
+        # A definition that reads the name of a state keeps every name.
+        (
+            (
+                'r = None\nr = task(L, {"FunctionName": "f"})\n'
+                'return [r, context["State"]["Name"]]'
+            ),
+            "r_2",
+            ["r_2", "return"],
+        ),
+        # And so does one that calls $eval, which may build a name.
+        (
+            (
+                'r = None\nr = task(L, {"FunctionName": "f"})\n'
+                "return [r, jsonata(\"$eval('1')\")]"
+            ),
+            "r_2",
+            ["r_2", "return"],
+        ),
+    ],
+)
+def test_the_states_that_remain_take_their_names_again(body, start, names):
+    (definition,) = compile_source(RENAMED + textwrap.indent(body, "    ")).values()
+    assert definition["StartAt"] == start
+    assert names_of(definition) == names

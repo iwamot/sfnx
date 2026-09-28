@@ -293,7 +293,7 @@ def count(input):
         ),
         "for_2[0]": ([], [("kept = kept + [i]", None), (counting, "loop step")]),
         "for_2[1]": ([], [(counting, None), ("kept = kept[:-1]", None)]),
-        "if_2": ([], [("if len(kept) < 3:", None), ("kept = kept[:-1]", None)]),
+        "if": ([], [("if len(kept) < 3:", None), ("kept = kept[:-1]", None)]),
         "return": ([], [("return kept", None)]),
     }
 

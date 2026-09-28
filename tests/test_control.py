@@ -653,10 +653,8 @@ def test_paths_that_end_the_same_share_the_state(body, kept):
         + textwrap.indent(body, "    ")
     )
     ((_, compiled),) = states.items()
-    ends = [
-        n for n, s in compiled["States"].items() if s["Type"] in {"Succeed", "Fail"}
-    ]
-    assert kept in ends and f"{kept}_2" not in ends
+    ends = [s for s in compiled["States"].values() if s["Type"] in {"Succeed", "Fail"}]
+    assert ends.count(compiled["States"][kept]) == 1
     # The second if's rule follows the first's in one Choice.
     assert [rule["Next"] for rule in compiled["States"]["if"]["Choices"]] == [
         kept,

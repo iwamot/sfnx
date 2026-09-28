@@ -40,7 +40,7 @@ from sfnx.expressions import (
 )
 from sfnx.expressions import field as step
 from sfnx.expressions import index as index_expr
-from sfnx.graph import Graph
+from sfnx.graph import Graph, renaming
 from sfnx.jsontypes import (
     ARRAY,
     BOOLEAN,
@@ -1802,7 +1802,7 @@ class Scope:
             for name in own:
                 bindings.pop(name, None)
         scope = Scope(
-            Graph(f"{function.name}.", self.graph.names),
+            Graph(f"{function.name}.", self.graph.names, self.graph.taken),
             bindings,
             self.module,
             parameters,
@@ -5317,7 +5317,50 @@ def compile_machine(
         optimize(definition, scope)
     definition = emitted(definition)
     assert isinstance(definition, dict)
+    rename_states(definition, graph.taken)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
+
+
+def rename_states(
+    definition: dict[str, object], taken: dict[str, tuple[str, str]]
+) -> None:
+    """The states that remain, in the machine and in each branch and Map
+    processor, named again in the order their names were taken, as renaming
+    says, so a state the passes took out leaves no gap in the serials. A
+    definition that reads the name of a state, as the context's State does,
+    or $eval, which may build one from text, keeps every name."""
+    codes = expressions_in(definition)
+    if any(reads_state_name(c) or "eval" in names_read(c) for c in codes):
+        return
+    scopes = list(machines_in(definition))
+    kept = {name for scope in scopes for name in scope_states(scope)}
+    renamed = renaming(taken, kept)
+    if not renamed:
+        return
+    for scope in scopes:
+        states = scope_states(scope)
+        redirect(states, renamed)
+        scope["States"] = {renamed.get(n, n): state for n, state in states.items()}
+        start = scope["StartAt"]
+        assert isinstance(start, str)
+        scope["StartAt"] = renamed.get(start, start)
+
+
+def machines_in(scope: dict[str, object]) -> Iterator[dict[str, object]]:
+    """A definition, and each branch and Map processor in it, however deep."""
+    yield scope
+    for state in scope_states(scope).values():
+        branches = state.get("Branches", [])
+        assert isinstance(branches, list)
+        for found in [*branches, state.get("ItemProcessor")]:
+            if isinstance(found, dict):
+                yield from machines_in(found)
+
+
+def scope_states(scope: dict[str, object]) -> dict[str, dict[str, object]]:
+    states = scope["States"]
+    assert isinstance(states, dict)
+    return states
 
 
 # The Python API, which docs/api.md describes: the compiler as the CLI runs
