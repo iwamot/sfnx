@@ -30,6 +30,7 @@ from sfnx.expressions import (
     code_of,
     expression,
     literal,
+    obj,
     opaque,
     operand,
     spelling,
@@ -318,9 +319,6 @@ class Scope:
         # again moves to where it is written now.
         self.pending_first: str | None = None
         self.pending_node: ast.AST | None = None
-        # The Pass that starts the scope, if its values read in the next state
-        # what they read in it, with the value of each variable it assigns.
-        self.starting: tuple[str, dict[str, Expr]] | None = None
         self.pending_origins: list[Origin] = []
         # The comments above the pending assignments, for the Pass they share,
         # and the comment of the statement being compiled, for the first state
@@ -455,13 +453,7 @@ class Scope:
         state: dict[str, object] = {"Type": "Pass", "Assign": assign}
         if remarks:
             state = commented(state, "\n".join(remarks))
-        opening = not self.graph.states
-        added = self.insert(first, state, node, origins)
-        if opening:
-            self.starting = (
-                added,
-                {self.spelling(k): value for k, value in pending.items()},
-            )
+        self.insert(first, state, node, origins)
 
     def fold(
         self,
@@ -4626,9 +4618,7 @@ def failsafe(field: object) -> bool:
 
 
 def fold_start(
-    definition: dict[str, object],
-    starting: tuple[str, dict[str, Expr]] | None,
-    enclosing: Enclosing | None = None,
+    definition: dict[str, object], enclosing: Enclosing | None = None
 ) -> None:
     """The Pass that starts a machine, a branch or a Map processor, in the
     state after it, as a hand-writer assigns what the input gives in the first
@@ -4654,34 +4644,32 @@ def fold_start(
     where the first round of a loop that thread_choices took in the way in
     leaves it. It runs after fold_into_catching_tasks, as the
     catchers assign these values too, where that would count them among what
-    Python assigned before a statement that may fail."""
-    if starting is None:
-        return
-    start, values = starting
+    Python assigned before a statement that may fail. The Pass is the start
+    state as it is when the pass runs, whatever the passes before put in it,
+    where nothing leads back to it, as a loop would."""
     states = definition["States"]
-    assert isinstance(states, dict)
-    # Run again in each round of the passes, the Pass may already be in the
-    # state after it.
-    if start not in states:
-        return
+    start = definition["StartAt"]
+    assert isinstance(states, dict) and isinstance(start, str)
     opening = states[start]
-    # A decided Choice after the Pass hands the Pass the assignments of the
-    # way it takes, which the values recorded here no longer describe: the
-    # Pass's own are read again where each is written in the source.
-    assign = opening["Assign"]
-    assert isinstance(assign, dict)
-    # drop_dead_assignments may have taken out what nothing reads; the rest
-    # is as recorded. A value that changes on evaluation or reads the State
-    # of the context, which names the state it is read in, keeps the Pass.
-    values = {name: value for name, value in values.items() if name in assign}
+    if (
+        opening["Type"] != "Pass"
+        or set(opening) - {"Type", "Comment", "Assign", "Next"}
+        or start in leading(states)
+    ):
+        return
+    assign = assigns(opening)
+    if not assign or not all(
+        isinstance(v, Expr) or written(v) for v in assign.values()
+    ):
+        return
+    values = {
+        name: v if isinstance(v, Expr) else written_value(v)
+        for name, v in assign.items()
+    }
+    # A value that changes on evaluation or reads the State of the context,
+    # which names the state it is read in, keeps the Pass.
     if any(v.volatile or reads_own_context(v.code) for v in values.values()):
         return
-    as_written = {name: template_of(value) for name, value in assign.items()}
-    if as_written != {name: value.template for name, value in values.items()}:
-        read = {name: assigned_value(template) for name, template in assign.items()}
-        if not all(v is not None and v.defined for v in read.values()):
-            return
-        values = {name: v for name, v in read.items() if v is not None}
     following = opening["Next"]
     state = states[following]
     kind = state["Type"]
@@ -4722,6 +4710,18 @@ def fold_start(
             holder["Comment"] = comment
     del states[start]
     definition["StartAt"] = following
+
+
+def written_value(template: object) -> Expr:
+    """A value written out in the source as the expression the translation
+    writes for it, to read in place of the variable it is assigned."""
+    if isinstance(template, Expr):
+        return template
+    if isinstance(template, list):
+        return array([written_value(item) for item in template])
+    if isinstance(template, dict):
+        return obj([(k, written_value(v)) for k, v in template.items()])
+    return literal(template)
 
 
 def holders_of(state: dict[str, object]) -> list[dict[str, object]]:
@@ -5263,7 +5263,7 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
         traced(thread_choices, definition, None, enclosing)
         traced(drop_dead_assignments, definition)
         traced(fold_into_catching_tasks, definition, enclosing)
-        traced(fold_start, definition, scope.starting, enclosing)
+        traced(fold_start, definition, enclosing)
         traced(spread_passes, definition, enclosing)
         traced(thread_choices, definition, rounds, enclosing)
         traced(merge_choices, definition, enclosing)

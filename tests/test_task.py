@@ -1005,3 +1005,16 @@ def test_a_task_before_a_shared_return_it_cannot_read_keeps_going_on(after, retu
         if s.get("Arguments", {}).get("FunctionName") == "f"
     ]
     assert "End" not in first
+
+
+def test_the_start_takes_in_what_the_first_round_of_a_loop_assigns():
+    """The loop's only round goes in the way in, and so in the start Pass,
+    which then goes in the Task after it as the Pass is when it goes."""
+    body = (
+        'n = 2\ns: str = input["s"]\nfor x in [0]:\n    s = f"{s}-{n}"\n'
+        f'r = task("{LAMBDA}", {{"FunctionName": "f"}})["Payload"]\nreturn [r, s]'
+    )
+    compiled = definition(body)
+    assert [s["Type"] for s in compiled["States"].values()] == ["Task"]
+    [task] = compiled["States"]
+    assert asl.run(compiled, {"s": "a"}, {task: lambda a: {"Payload": 1}}) == [1, "a-2"]
