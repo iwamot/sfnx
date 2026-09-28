@@ -6,6 +6,7 @@ from sfnx.syntax import (
     facts,
     lone_variable,
     looser_than_and,
+    mentions,
     names_read,
     path_alone,
     reads_own_context,
@@ -228,3 +229,19 @@ def test_code_that_is_not_jsonata_has_no_facts():
     # jsonata() takes any text, which Step Functions checks when it validates
     # the definition.
     assert facts("$f(") is None
+
+
+@pytest.mark.parametrize(
+    "code, found",
+    [
+        ("$order.id", True),
+        ("($order := 1; $order + 1)", True),
+        # A string spells it, as the text of jsonata() may.
+        ("$uppercase('$order')", True),
+        ("$orders.id", False),
+        # What code the parser cannot read does with it is not known.
+        ("$x +", True),
+    ],
+)
+def test_code_that_reads_binds_or_spells_a_name_mentions_it(code, found):
+    assert mentions(code, "order") == found

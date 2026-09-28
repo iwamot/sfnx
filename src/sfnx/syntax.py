@@ -169,6 +169,14 @@ def names_read(code: str) -> frozenset[str]:
     return found.reads if found is not None else frozenset(SPELLED.findall(code))
 
 
+def mentions(code: str, name: str) -> bool:
+    """Whether code reads, binds or spells the variable of a name, as the
+    text of jsonata() may, or the parser cannot read it, as what it does with
+    the name is then not known."""
+    found = facts(code)
+    return found is None or name in found.reads | found.bound | found.spelled
+
+
 # The parts of the context every state of an execution reads alike; the rest,
 # as the State part, which names the state and says when it was entered,
 # differs from state to state.

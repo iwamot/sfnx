@@ -63,6 +63,7 @@ from sfnx.syntax import (
     facts,
     lone_variable,
     looser_than_and,
+    mentions,
     names_read,
     path_alone,
     reads_own_context,
@@ -4657,7 +4658,7 @@ def fold_start(
         return
     inner = [state.get("Branches", []), state.get("ItemProcessor", {})]
     if any(
-        re.search(rf"\${re.escape(name)}(?!\w)", code)
+        mentions(code, name)
         for name, value in values.items()
         if not written(value.template)
         for code in expressions_in(inner)
