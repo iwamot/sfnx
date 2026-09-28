@@ -58,6 +58,7 @@ from sfnx.jsontypes import (
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
 from sfnx.syntax import (
+    always_read,
     atomic,
     changes,
     facts,
@@ -5028,6 +5029,83 @@ def read_assigned(
     return read_through(output, values)
 
 
+def return_in_place_of_passes(definition: dict[str, object]) -> None:
+    """A Pass that goes on to a Succeed, as a Succeed whose Output reads what
+    the Pass assigns as the expressions it assigns them, as a hand-writer
+    returns what they compute: nothing reads them after the return. The
+    Succeed stays for the other ways to it, and goes when none is left.
+    Python evaluates each assignment even where the return does not read
+    it, so each that may fail or be undefined is one the Output reads every
+    time it is evaluated, as always_read says, and is never undefined, which
+    a list or a dict would drop without failing; the Output that is that
+    variable alone fails where the Pass would. Not where a value changes on
+    evaluation, reads the context of the state it is in, or cannot be read
+    in place, as reads_as says, nor where the Output reads the State of the
+    context, which names the state it is read in. After a Task, a Parallel
+    or a Map whose Catch takes a failure of an expression, the Pass is left
+    to fold_into_catching_tasks, which weighs what the except clause reads
+    of what the Pass assigns. The Succeed keeps its name where only the Pass
+    leads to it."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+    changed = True
+    while changed:
+        changed = False
+        led = leading(states)
+        for name, state in states.items():
+            after = state.get("Next")
+            if (
+                state["Type"] != "Pass"
+                or set(state) - {"Type", "Comment", "Assign", "Next"}
+                or not isinstance(after, str)
+                or after == name
+                or states[after]["Type"] != "Succeed"
+                or any(
+                    states[o]["Type"] in {"Task", "Parallel", "Map"}
+                    and takes_evaluation(states[o], "Catch")
+                    for o in led.get(name, [])
+                )
+            ):
+                continue
+            ending = states[after]
+            output = ending["Output"]
+            code = as_expr(output).code
+            if reads_state_name(code):
+                continue
+            found = {n: assigned_value(v) for n, v in assigns(state).items()}
+            values = {n: v for n, v in found.items() if v is not None}
+            if len(values) < len(found) or any(
+                v.volatile or reads_own_context(v.code) for v in values.values()
+            ):
+                continue
+            whole = lone_variable(code)
+            read = always_read(code)
+            if not all(
+                v.defined and n in read
+                for n, v in values.items()
+                if not failsafe(v) and n != whole
+            ):
+                continue
+            used = {n: v for n, v in values.items() if n in names_read(code)}
+            if not all(reads_as(ending, n, v) for n, v in used.items()):
+                continue
+            succeed: dict[str, object] = {"Type": "Succeed"}
+            comment = joined_comments(state.get("Comment"), ending.get("Comment"))
+            if comment is not None:
+                succeed["Comment"] = comment
+            succeed["Output"] = read_through(output, used)
+            if led[after] == [name]:
+                states[after] = succeed
+                redirect(states, {name: after})
+                if definition["StartAt"] == name:
+                    definition["StartAt"] = after
+                del states[name]
+            else:
+                states[name] = succeed
+            changed = True
+            break
+
+
 def end_before_returns(definition: dict[str, object]) -> None:
     """A Task, a Parallel or a Map that goes on to a Succeed ends the machine
     or the branch itself, with the Succeed's Output as its own, as it does
@@ -5269,6 +5347,7 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
         traced(merge_choices, definition, enclosing)
         traced(take_in_choices, definition, rounds, enclosing)
         traced(share_states, definition, enclosing)
+        traced(return_in_place_of_passes, definition)
         traced(end_before_returns, definition)
         # A round that writes the same definition changes nothing, though it
         # may hold an Expr where a template was.

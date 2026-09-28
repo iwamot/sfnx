@@ -1,6 +1,7 @@
 import pytest
 
 from sfnx.syntax import (
+    always_read,
     atomic,
     changes,
     facts,
@@ -245,3 +246,23 @@ def test_code_that_is_not_jsonata_has_no_facts():
 )
 def test_code_that_reads_binds_or_spells_a_name_mentions_it(code, found):
     assert mentions(code, "order") == found
+
+
+@pytest.mark.parametrize(
+    "code, read",
+    [
+        ("$a and $b", {"a"}),
+        ("$c ? $a : $b", {"c"}),
+        ("-($t + $t)", {"t"}),
+        ('[$a, {"k": $b}]', {"a", "b"}),
+        ("$f($a)", {"f", "a"}),
+        ("($x := 1; $x + $a)", {"a"}),
+        ("$a.b[$c = 1]", {"a"}),
+        ("function($v) { $v + $a }", set()),
+        ("$string($n) & '$m'", {"string", "n"}),
+        # What code the parser cannot read reads is not known.
+        ("$x +", set()),
+    ],
+)
+def test_what_code_reads_every_time_it_is_evaluated(code, read):
+    assert always_read(code) == read

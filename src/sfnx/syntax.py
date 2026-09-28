@@ -167,6 +167,61 @@ def names_read(code: str) -> frozenset[str]:
     return found.reads if found is not None else frozenset(SPELLED.findall(code))
 
 
+def always_read(code: str) -> frozenset[str]:
+    """The variables the code reads every time it is evaluated, or none where
+    the parser cannot read it: through the operands of an operator, but for
+    the right of and and or, the test of a conditional, the arguments of a
+    call, each expression of a block, the items of an array and the keys and
+    values of an object written out, and what a path starts from. A branch
+    of a conditional, the body of a function, a filter and the steps of a
+    path after the first, which an empty sequence skips, may not be."""
+    tree = tree_of(code)
+    return frozenset() if tree is None else eager(tree, frozenset())
+
+
+def eager(node: Parser.Symbol, bound: frozenset[str]) -> frozenset[str]:
+    """What always_read says of node, with the names bound around it, which
+    are not the variables of those names."""
+    kind = node.type
+    if kind == "variable":
+        if node.value in bound or node.value in {"", "$"}:
+            return frozenset()
+        return frozenset({text(node)})
+    if kind == "binary":
+        assert node.lhs is not None and node.rhs is not None
+        left = eager(node.lhs, bound)
+        return left if node.value in {"and", "or"} else left | eager(node.rhs, bound)
+    if kind == "condition":
+        assert node.condition is not None
+        return eager(node.condition, bound)
+    if kind == "bind":
+        assert node.rhs is not None
+        return eager(node.rhs, bound)
+    if kind == "block":
+        assert node.expressions is not None
+        found: frozenset[str] = frozenset()
+        for expression in node.expressions:
+            found |= eager(expression, bound)
+            if expression.type == "bind":
+                bound = bound | {text(expression.lhs)}
+        return found
+    if kind == "path":
+        assert node.steps is not None
+        return eager(node.steps[0], bound)
+    if kind == "unary" and node.value == "-":
+        assert node.expression is not None
+        return eager(node.expression, bound)
+    if kind == "unary" or kind == "function":
+        parts = [
+            *(node.expressions or []),
+            *([node.procedure] if node.procedure is not None else []),
+            *(node.arguments or []),
+            *(part for pair in node.lhs_object or [] for part in pair),
+        ]
+        return frozenset().union(*(eager(part, bound) for part in parts))
+    return frozenset()
+
+
 def mentions(code: str, name: str) -> bool:
     """Whether code reads, binds or spells the variable of a name, as the
     text of jsonata() may, or the parser cannot read it, as what it does with

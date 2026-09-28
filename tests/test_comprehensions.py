@@ -75,7 +75,8 @@ def run(body: str, execution_input: object) -> object:
         ('s: str = input["s"]\nreturn f"{s:0<8}"', "$pad($s, 8, '0')"),
         ('s: str = input["s"]\nreturn f"[{s:->4}]"', "'[' & $pad($s, -4, '-') & ']'"),
         # An empty spec is what Python gives str() for, which is the value.
-        ('s: str = input["s"]\nreturn f"{s:}"', "$s"),
+        # The string itself, which the return reads from the input.
+        ('s: str = input["s"]\nreturn f"{s:}"', f"{INPUT}.s"),
         # The digits after the decimal point are the picture $formatNumber
         # takes, and a width pads what it writes.
         ('x: float = input["x"]\nreturn f"{x:.2f}"', "$formatNumber($x, '0.00')"),
@@ -116,7 +117,7 @@ def run(body: str, execution_input: object) -> object:
             'x: float = input["x"]\nreturn f"{x:*>05d}"',
             "$pad($formatNumber($x, '0'), -5, '*')",
         ),
-        ('name: str = input["name"]\nreturn f"{name}"', "$name"),
+        ('name: str = input["name"]\nreturn f"{name}"', f"{INPUT}.name"),
         ("return f\"{input['n'] + 1} items\"", f"$string({INPUT}.n + 1) & ' items'"),
         # A value known where it is written becomes the text itself, which
         # joins the text around it.
@@ -166,7 +167,10 @@ def run(body: str, execution_input: object) -> object:
             "$merge([$each($d, function($v, $k) { {$uppercase($k): $v} })])",
         ),
         # Every key of a JSON object is a string, so this is the dict itself.
-        ('d: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items()}', "$d"),
+        (
+            'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items()}',
+            f"{INPUT}.d",
+        ),
     ],
 )
 def test_spelling(body, code):
