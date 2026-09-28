@@ -203,19 +203,6 @@ class Expansion:
 
 
 @dataclass
-class Carrier:
-    """What can hold the assignments at a point that one transition alone
-    leads to: the Wait just added, or a Choice rule or the Choice's Default
-    that leads into a branch. With the transition, where in the source the
-    holder comes from, and its own comment."""
-
-    holder: dict[str, object]
-    key: str
-    origins: list[Origin] = field(default_factory=list)
-    remark: str | None = None
-
-
-@dataclass
 class Result:
     """A Task, Parallel or Map just added: the state, the value each variable
     its Assign gives the result takes, where in the source the state comes
@@ -254,9 +241,6 @@ class Checkpoint:
     pending_origins: list[Origin]
     pending_remarks: list[str]
     remark: str | None
-    # Where pending assignments can go, and its fields at the checkpoint.
-    carrier: Carrier | None
-    carried: dict[str, object]
     # The state a return can end with, its fields at the checkpoint, and the
     # pending values as it reads them.
     result: Result | None
@@ -343,7 +327,6 @@ class Scope:
         self.opening = False
         # What can hold the assignments that follow, until a state or a flush
         # does; while it lasts, control is only at its transition.
-        self.carrier: Carrier | None = None
         # The Task, Parallel or Map just added, until another state or a flush
         # follows it; while it lasts, control is right after it.
         self.result: Result | None = None
@@ -416,7 +399,6 @@ class Scope:
     def insert(
         self, base: str, state: dict[str, object], node: ast.AST, origins: list[Origin]
     ) -> str:
-        self.carrier = None
         self.result = None
         self.opening = False
         if self.locations is not None:
@@ -430,7 +412,6 @@ class Scope:
 
     def flush(self) -> None:
         holding = self.holds_pending()
-        carrier, self.carrier = self.carrier, None
         result = self.following()
         self.result = None
         folded, self.folded = self.folded, {}
@@ -454,9 +435,6 @@ class Scope:
         self.pending_node = None
         self.pending_origins = []
         self.pending_remarks = []
-        if carrier is not None and self.joins(carrier, list(pending.values())):
-            self.hold(carrier, assign, origins, remarks)
-            return
         if holding:
             assert result is not None
             self.result = self.fold(result, folded, origins, remarks)
@@ -584,33 +562,6 @@ class Scope:
             text.append(self.locations.extended(located, origins))
         if text:
             commented(holder, "\n".join(text))
-
-    def joins(self, carrier: Carrier, values: list[Expr]) -> bool:
-        """Whether assignments can be the Assign of what holds them. The
-        carrier lasts until a state or a flush, and every join, branch and loop
-        flushes first, so control reaches them only through its transition.
-        What is left is that each value reads there what it would read after
-        it. A Wait and a Choice have no Catch, so a value that fails ends the
-        execution either way."""
-        [(tail, key)] = self.graph.tails
-        assert tail is carrier.holder and key == carrier.key
-        return self.holds_still(values, carrier.holder)
-
-    def hold(
-        self,
-        carrier: Carrier,
-        assign: dict[str, object],
-        origins: list[Origin],
-        remarks: list[str],
-    ) -> None:
-        holder = carrier.holder
-        remark = "\n".join(r for r in (carrier.remark, *remarks) if r) or None
-        if self.locations is not None:
-            located = self.locations.line(carrier.origins + origins)
-            remark = f"{remark}\n{located}" if remark else located
-        if remark:
-            commented(holder, remark)
-        holder["Assign"] = assign
 
     def defer(
         self,
@@ -911,7 +862,6 @@ class Scope:
                 self.translator.arguments.pop(name, None)
         self.join(frame.returns)
         if len(frame.returns) > 1:
-            self.carrier = None
             self.result = None
         for name in renaming.values():
             self.bindings.pop(name, None)
@@ -2428,31 +2378,13 @@ class Scope:
             failed = {**failed, **unless}
         state: dict[str, object] = {"Type": "Choice", "Choices": rules}
         origins = [Origin(h, header=True) for h in headers]
-        remark = self.remark
         self.add("if", state, node, origins)
         start = self.save()
         ends = []
         for body, proven, rule in bodies:
-            ends.append(self.follow(start, proven, Carrier(rule, "Next"), body))
-        default = Carrier(state, "Default", origins, remark)
-        ends.append(self.follow(start, failed, default, otherwise))
+            ends.append(self.follow(start, proven, (rule, "Next"), body))
+        ends.append(self.follow(start, failed, (state, "Default"), otherwise))
         self.join(ends)
-        self.after_default(default)
-
-    def after_default(self, default: Carrier) -> None:
-        """Where control goes on only through a Choice's Default, as after an
-        if whose branches all end or a loop left without break, what
-        follows can go in the Choice's own Assign, which applies only when no
-        rule matches (measured), unless an else already put its assignments
-        there."""
-        tails = self.graph.tails
-        if (
-            len(tails) == 1
-            and tails[0][0] is default.holder
-            and tails[0][1] == "Default"
-            and "Assign" not in default.holder
-        ):
-            self.carrier = default
 
     def save(self) -> Flow:
         return Flow(
@@ -2467,16 +2399,14 @@ class Scope:
         self,
         start: Flow,
         proven: dict[str, Type],
-        carrier: Carrier,
+        entry: tuple[dict[str, object], str],
         body: list[ast.stmt],
     ) -> Flow:
-        """A branch of a Choice, entered through the carrier's transition,
-        which can hold the branch's first assignments."""
+        """A branch of a Choice, entered through the transition of entry."""
         self.restore(start)
         for name, declared in proven.items():
             self.bindings[name] = replace(self.bindings[name], type=declared)
-        self.graph.tails = [(carrier.holder, carrier.key)]
-        self.carrier = carrier
+        self.graph.tails = [entry]
         self.block(body)
         self.flush()
         return self.save()
@@ -2555,8 +2485,6 @@ class Scope:
             list(self.pending_origins),
             list(self.pending_remarks),
             self.remark,
-            self.carrier,
-            dict(self.carrier.holder) if self.carrier else {},
             self.result,
             dict(self.result.state) if self.result else {},
             dict(self.folded),
@@ -2591,10 +2519,6 @@ class Scope:
         self.pending_origins = list(saved.pending_origins)
         self.pending_remarks = list(saved.pending_remarks)
         self.remark = saved.remark
-        self.carrier = saved.carrier
-        if saved.carrier is not None:
-            saved.carrier.holder.clear()
-            saved.carrier.holder.update(saved.carried)
         self.result = saved.result
         self.folded = dict(saved.folded)
         if saved.result is not None:
@@ -2730,15 +2654,12 @@ class Scope:
                 rule: dict[str, object] = {"Condition": condition}
                 state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
                 origins = [Origin(node, header=True)]
-                remark = self.remark
                 head = self.add("while", state, node, origins)
-                self.follow(start, when, Carrier(rule, "Next"), node.body)
+                self.follow(start, when, (rule, "Next"), node.body)
                 exits = [self.narrow_flow(start, unless, [(state, "Default")])]
             self.loops.pop()
             needed = self.back(loop, [self.save(), *loop.continues], head)
             self.join([*exits, *loop.breaks])
-            if not forever:
-                self.after_default(Carrier(state, "Default", origins, remark))
             self.partial.update(
                 assigned_names(node.body) - self.bindings.keys(),
                 defined_functions(node.body) - self.functions.keys(),
@@ -3064,12 +2985,9 @@ class Scope:
         rule: dict[str, object] = {"Condition": condition}
         state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
         origins = [Origin(node, header=True)]
-        remark = self.remark
         head = self.add("for", state, node, origins)
         self.restore(start)
         self.graph.tails = [(rule, "Next")]
-        # The body's first assignments can go in the rule that leads there.
-        self.carrier = Carrier(rule, "Next")
         self.bindings.update(targets)
         self.materialize(node.body, node, "loop variables")
         self.block(node.body)
@@ -3104,7 +3022,6 @@ class Scope:
                 flow.bindings.pop(target, None)
             self.translator.expired.add(target)
         self.join([exit_flow, *loop.breaks])
-        self.after_default(Carrier(state, "Default", origins, remark))
         # What only the body assigns may be unassigned after zero iterations.
         body_only = assigned_names(node.body) - self.bindings.keys() - targets.keys()
         self.partial.update(
@@ -3159,9 +3076,7 @@ class Scope:
                 node,
             )
         state: dict[str, object] = {"Type": "Wait", **field}
-        remark = self.remark
         self.add("wait", state, node)
-        self.carrier = Carrier(state, "Next", [self.here()], remark)
 
 
 # How a loop over two variables is written, by what gives them.
