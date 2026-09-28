@@ -84,7 +84,7 @@ return total
         "receipt": "the total\nand the count\ncharge it",
         "for": "each item",
         "status": "poll\nuntil done",
-        "if_2": None,
+        "if": None,
         # The return after the try reads a variable, which cannot fail, so it
         # is the Task's Output on the way the Task leads.
         "invoke": "guarded\ndone",

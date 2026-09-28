@@ -369,7 +369,7 @@ def test_handlers_see_what_was_assigned_before_the_failing_task():
 
 def test_a_failed_task_leaves_the_declarations_from_before():
     body = f'x: list = []\ntry:\n    x: str = {CHARGE}["Payload"]\nexcept Exception:\n    x = input["items"]\n    return len(x)\nreturn 0'
-    assert run(body, {"items": [1, 2]}, {"x_2": fails("Declined")}) == 2
+    assert run(body, {"items": [1, 2]}, {"x": fails("Declined")}) == 2
 
 
 def test_a_name_bound_to_different_code_on_the_ways_in_is_not_joined():
@@ -404,7 +404,7 @@ def test_an_assignment_the_except_clause_reads_after_is_not_caught():
         for s in states(body).values()
     )
     with pytest.raises(asl.Failure) as failure:
-        run(body, {}, {"x_2": lambda arguments: {"Payload": "oops"}})
+        run(body, {}, {"x": lambda arguments: {"Payload": "oops"}})
     assert failure.value.error == "States.QueryEvaluationError"
 
 
@@ -717,7 +717,8 @@ def test_an_assignment_that_cannot_fail_goes_in_the_task_the_except_reads(
     states = compiled["States"]
     passes = [s for s in states.values() if s["Type"] == "Pass"]
     assert any("x" in s["Assign"] for s in passes) == kept
-    tasks = {"r_2": lambda arguments: {"Payload": '{"n": 2}'}}
+    [task] = [n for n, s in states.items() if s["Type"] == "Task"]
+    tasks = {task: lambda arguments: {"Payload": '{"n": 2}'}}
     assert asl.run(compiled, {}, tasks) == result
 
 
@@ -777,7 +778,7 @@ def test_an_assignment_the_catcher_leads_to_as_well_keeps_its_pass():
     )
     compiled = states(body)
     assert any(s["Type"] == "Pass" and "x" in s["Assign"] for s in compiled.values())
-    assert run(body, {}, {"r_2": fails("Lambda.Unknown")}) is None
+    assert run(body, {}, {"r": fails("Lambda.Unknown")}) is None
 
 
 CHECKED = f"""\
@@ -1108,7 +1109,7 @@ def test_a_catcher_that_goes_on_to_a_state_that_reads_r_keeps_what_may_fail_out(
     )
     compiled = states(body)
     assert "Pass" in [s["Type"] for s in compiled.values()]
-    ok = {"r_2": lambda arguments: {"Payload": {"n": 3}}, "publish": dict}
+    ok = {"r": lambda arguments: {"Payload": {"n": 3}}, "publish": dict}
     assert run(body, {}, ok) == 3
 
 
