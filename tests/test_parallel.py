@@ -381,8 +381,9 @@ def test_decorated_branch(tmp_path):
         # A Parallel's Catch takes a failure of its Assign (measured), as the
         # except clause takes a failure of the statement.
         ('n = r[0]["to"]', False),
-        # When a Parallel's Assign reads a random value is not measured.
-        ('n = [r[0]["to"], str(uuid.uuid4())][0]', True),
+        # A Parallel's Assign reads a random value when the Parallel ends
+        # (measured), as Python reads it after the call.
+        ('n = [r[0]["to"], str(uuid.uuid4())][0]', False),
     ],
 )
 def test_an_assignment_after_a_parallel_inside_try(statement, kept):

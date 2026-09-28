@@ -521,7 +521,7 @@ class Scope:
             if (
                 not self.can_hold(container, key, values)
                 or (names | reads) & assign.keys()
-                or not self.holds_still(values, container)
+                or not self.holds_still(values)
             ):
                 return False
             holders[id(container)] = container
@@ -1362,7 +1362,7 @@ class Scope:
         if not self.fails_in_place(value_node, pending):
             return False
         values = list(pending.values())
-        if any(v.volatile for v in values) or not self.holds_still(values, {}):
+        if any(v.volatile for v in values) or not self.holds_still(values):
             return False
         value = self.read_as(value_node, dict(pending))
         if self.read_by_name(value_node, pending):
@@ -1383,7 +1383,7 @@ class Scope:
             not self.opening
             and self.folded.keys() == self.pending.keys()
             and (self.may_fold(result.state) or all_written(folded))
-            and self.holds_still(folded, result.state)
+            and self.holds_still(folded)
         )
 
     def fails_in_place(self, value_node: ast.expr, pending: dict[str, Expr]) -> bool:
@@ -1455,7 +1455,7 @@ class Scope:
         if result is None:
             return False
         value = self.read_result(result, value_node)
-        if value is None or not self.holds_still([value], result.state):
+        if value is None or not self.holds_still([value]):
             return False
         # A value written in the source cannot fail, so neither a Catch nor a
         # retrier has a failure of the Output to take.
@@ -1517,19 +1517,16 @@ class Scope:
         (measured)."""
         return may_fold(state)
 
-    def holds_still(self, values: list[Expr], holder: dict[str, object]) -> bool:
-        """Whether values read the same in the Assign or the Output of holder
-        as in a state after it. The State part of the context names the state
-        it is read in, and what a jsonata() expression reads is not known. The
-        time and a random value are read when the Assign runs: for a Task or a
-        Wait, when it ends (measured), and for a Choice rule, a catcher or a
-        Pass, where it is, both after what comes before them, as Python reads
-        them. A Parallel's or a Map's is not measured."""
-        timed = holder.get("Type") in {"Parallel", "Map"}
+    def holds_still(self, values: list[Expr]) -> bool:
+        """Whether values read the same in the Assign or the Output of the
+        state that holds them as in a state after it. The State part of the
+        context names the state it is read in, and what a jsonata() expression
+        reads is not known. The time and a random value are read when the
+        Assign runs: for a Task, a Parallel, a Map or a Wait, when it ends
+        (measured), and for a Choice rule, a catcher or a Pass, where it is,
+        both after what comes before them, as Python reads them."""
         return not any(
-            value.volatile == OPAQUE
-            or (value.volatile and timed)
-            or reads_own_context(value.code)
+            value.volatile == OPAQUE or reads_own_context(value.code)
             for value in values
         )
 
@@ -3523,8 +3520,7 @@ def fold_into_catching_tasks(
     It reads the variables the state assigns as the expressions the state
     assigns them, but for one that changes on evaluation, which the state's
     Assign evaluates already, and nothing else of `$states` than the context
-    the two share, and after a Parallel or a Map neither the time nor a
-    random value, whose reading there is not measured."""
+    the two share."""
     states = definition["States"]
     assert isinstance(states, dict)
     folded = True
@@ -3561,11 +3557,6 @@ def fold_into_catching_tasks(
                 continue
             codes = expressions_in({k: v for k, v in following.items() if k != "Next"})
             if any(reads_own_states(code) for code in codes):
-                continue
-            # When a Parallel's or a Map's Assign reads the time or a random
-            # value, which $eval may call, is not measured, where a Task's is
-            # when it ends.
-            if task["Type"] != "Task" and any(changes(c) for c in codes):
                 continue
             own = task.get("Assign", {})
             assert isinstance(own, dict)
@@ -4812,13 +4803,13 @@ def spread_passes(definition: dict[str, object]) -> None:
     as $type() where the way's Assign would fail. The time and a random value go
     too: each copy is on its own way, so a run evaluates one of them once,
     as it would the Pass, and a way's Assign runs where the Pass would, a
-    Task's and a Wait's when it ends (measured); the syntax tree says which
-    values read them, a jsonata() expression's included. A Parallel's or a
-    Map's Assign keeps them, as when it reads them is not measured. Values
-    that read $states, other than the context the two share, or $eval, which
-    reads variables by the names in its text, or that spell a name the way
-    assigns in a string, keep the Pass, and so do those that read what the
-    way assigns where that reads a value that changes on evaluation."""
+    Task's, a Parallel's, a Map's and a Wait's when it ends (measured); the
+    syntax tree says which values read them, a jsonata() expression's
+    included. Values that read $states, other than the context the two
+    share, or $eval, which reads variables by the names in its text, or that
+    spell a name the way assigns in a string, keep the Pass, and so do those
+    that read what the way assigns where that reads a value that changes on
+    evaluation."""
     states = definition["States"]
     assert isinstance(states, dict)
     spread = True
@@ -4843,11 +4834,6 @@ def spread_passes(definition: dict[str, object]) -> None:
                 for holder, key, target in links(owner)
                 if target == name
             ]
-            if any(changes(c) for c in codes) and any(
-                holder is owner and owner["Type"] in {"Parallel", "Map"}
-                for holder, _, owner in ways
-            ):
-                continue
             merged = [
                 way_assign(holder, owner, assign, codes) for holder, _, owner in ways
             ]
