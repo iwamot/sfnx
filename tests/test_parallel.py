@@ -401,3 +401,30 @@ def test_an_assignment_after_a_parallel_inside_try(statement, kept):
     tasks = {"audit.entry": lambda arguments: {"MessageId": "m"}}
     order = {"order": {"email": "e", "id": "i"}}
     assert asl.run(compiled, order, tasks) == "e"
+
+
+def test_a_statement_after_the_try_stays_out_of_the_parallel_s_catch():
+    """The first round of the loop after the try reads d0["c"], which is
+    missing: Python fails there, past the except clause, so the definition
+    fails without calling the Task the except clause calls."""
+    body = (
+        'n0: int = input["n0"]\nn1 = 2\nl0: list[int] = input["l0"]\n'
+        'd0: dict[str, int] = input["d0"]\n\n'
+        "def one():\n    return 1\n\n"
+        "try:\n    l0 = parallel(one)\n    n1 = n0 + 1\nexcept Exception:\n"
+        '    n1 = task("arn:aws:states:::lambda:invoke", {"FunctionName": "f"})'
+        '["Payload"]\n'
+        'c = 0\nwhile c < 2:\n    c = c + 1\n    n1 = d0["c"]\n    return n1\n'
+        "return [n0, n1, l0]"
+    )
+    called: list[object] = []
+    (compiled,) = compile_source(source(body)).values()
+    tasks = {
+        name: lambda arguments: called.append(arguments) or {"Payload": 0}
+        for name in compiled["States"]
+    }
+    with pytest.raises(asl.Failure) as failure:
+        asl.run(compiled, {"n0": 1, "l0": [], "d0": {}}, tasks)
+    assert failure.value.error == "States.QueryEvaluationError"
+    assert called == []
+    assert run(body, {"n0": 1, "l0": [], "d0": {"c": 5}}) == 5
