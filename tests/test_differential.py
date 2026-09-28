@@ -12,11 +12,12 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, event, given, settings
 from hypothesis import strategies as st
 
 from sfnx import ExceedToleratedFailureThreshold, distributed_map, testing
-from sfnx.compiler import compile_source, definitions
+from sfnx.compiler import compile_source, definitions, expressions_in, links
+from sfnx.syntax import changes
 from tests import asl
 from tests.corpus import same
 
@@ -800,6 +801,42 @@ def in_definition(
     return Run(output, execution.error, calls, counts)
 
 
+def scopes(states: Mapping[str, object]) -> Iterator[Mapping[str, object]]:
+    """The States of a definition and of each of its branches and Map
+    processors."""
+    yield states
+    for state in states.values():
+        assert isinstance(state, dict)
+        for branch in state.get("Branches", []):
+            yield from scopes(branch["States"])
+        if "ItemProcessor" in state:
+            yield from scopes(state["ItemProcessor"]["States"])
+
+
+def changing_passes(program: str) -> Iterator[str]:
+    """What leads to each Pass the passes leave that assigns a value that
+    changes on evaluation: the Passes spread_passes would take in if it took
+    such values, for the statistics of the test below to count."""
+    (definition,) = definitions(program, "<program>", False, True).values()
+    for states in scopes(definition["States"]):
+        for name, state in states.items():
+            assert isinstance(state, dict)
+            if state["Type"] != "Pass" or not any(
+                changes(code) for code in expressions_in(state.get("Assign"))
+            ):
+                continue
+            ways = [
+                owner["Type"]
+                for owner in states.values()
+                for _, _, target in links(owner)
+                if target == name
+            ]
+            if not ways:
+                yield "nothing, as the start"
+            else:
+                yield "several ways" if len(ways) > 1 else f"one way from a {ways[0]}"
+
+
 @settings(
     max_examples=200,
     derandomize=True,
@@ -819,6 +856,11 @@ def test_the_passes_keep_what_the_definition_does(data):
     gives the next value of a sequence, a definition that calls it as often
     reads the same values in the same order."""
     program = Program(data, volatile=True).source()
+    # How often the programs reach a Pass that holds such a value, which
+    # --hypothesis-show-statistics lists, so a change of the programs that
+    # stops making them shows.
+    for leading in set(changing_passes(program)):
+        event(f"a Pass assigns a value that changes, reached by {leading}")
     execution_input = data.draw(INPUTS)
     before = in_definition(program, execution_input, False, False)
     after = in_definition(program, execution_input, True, False)

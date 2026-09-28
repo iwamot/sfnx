@@ -5159,14 +5159,17 @@ PASSES = logging.getLogger("sfnx.passes")
 
 def traced(step: FunctionType, definition: dict[str, object], *args: object) -> None:
     """Run a pass over a definition, logging the states it changed where
-    DEBUG is on for sfnx.passes. Otherwise nothing is compared, so the
-    passes run as they would without it."""
+    DEBUG is on for sfnx.passes, after the start it moved, as a pass that
+    folds or drops the first state does. Otherwise nothing is compared, so
+    the passes run as they would without it."""
     if not PASSES.isEnabledFor(logging.DEBUG):
         step(definition, *args)
         return
-    before = emitted(definition["States"])
+    start, before = definition["StartAt"], emitted(definition["States"])
     step(definition, *args)
     changes = changed_states(before, emitted(definition["States"]))
+    if definition["StartAt"] != start:
+        changes.insert(0, f"StartAt: {start} -> {definition['StartAt']}")
     if changes:
         PASSES.debug("%s\n%s", step.__name__, "\n".join(changes))
 
