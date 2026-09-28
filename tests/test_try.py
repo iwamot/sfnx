@@ -1113,6 +1113,22 @@ def test_a_catcher_that_goes_on_to_a_state_that_reads_r_keeps_what_may_fail_out(
     assert run(body, {}, ok) == 3
 
 
+def test_a_catcher_whose_way_assigns_r_again_before_reading_it_takes_what_may_fail():
+    """The way from the catcher assigns r after a call before it reads it, so
+    the r the Task assigns is not read there, and y goes in the Task, whose
+    Catch takes its failure as the except clause does."""
+    body = (
+        f'r = {{}}\ntry:\n    r = {CHARGE}\n    y = r["Payload"]["n"]\n'
+        f'except Exception:\n    {NOTIFY}\n    r = "failed"\n    {NOTIFY}\n'
+        "    return [r, 1]\nreturn y"
+    )
+    compiled = states(body)
+    assert "Pass" not in [s["Type"] for s in compiled.values()]
+    publish = {"publish": dict, "publish_2": dict}
+    missing = {"r": lambda arguments: {"Payload": {}}, **publish}
+    assert run(body, {}, missing) == ["failed", 1]
+
+
 def test_a_return_after_a_catching_task_reads_what_it_cannot_hold():
     """The except reads r, which a failing Assign of the Task would not
     assign, so what follows the Task stays out of it; the Succeed reads it

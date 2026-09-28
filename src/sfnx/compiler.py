@@ -3572,7 +3572,10 @@ def fold_into_catching_tasks(
             if any(changes(v.code) for v in values.values()):
                 continue
             exposed = assigned_before_failures(own, following)
-            if after not in failsafe and caught_reads(definition, task) & exposed:
+            if (
+                after not in failsafe
+                and caught_reads(task, live_reads(states)) & exposed
+            ):
                 continue
             moved = {
                 key: value if key == "Comment" else read_through(value, values)
@@ -3818,27 +3821,24 @@ def excepted(state: dict[str, object], live: dict[str, set[str]]) -> set[str]:
     return found
 
 
-def caught_reads(definition: dict[str, object], task: dict[str, object]) -> set[str]:
-    """The variables read on any way on from the catchers of a state that
-    take a failure of its Assign (those for States.ALL or
-    States.QueryEvaluationError; measured): in the catchers' own Assign and
-    Output, and in every state they lead to. A catcher for other errors never runs after a failing
-    Assign, so what it reads is not read after one."""
-    states = definition["States"]
-    assert isinstance(states, dict)
-    everything = task["Catch"]
-    assert isinstance(everything, list)
-    catchers = [c for c in everything if set(c["ErrorEquals"]) & EVALUATION_ERRORS]
-    reads = {
-        read
-        for catcher in catchers
-        for code in expressions_in({k: v for k, v in catcher.items() if k != "Next"})
-        for read in names_read(code)
-    }
-    for name in reached(states, [catcher["Next"] for catcher in catchers]):
-        codes = expressions_in(states[name])
-        reads |= {read for code in codes for read in names_read(code)}
-    return reads
+def caught_reads(state: dict[str, object], live: dict[str, set[str]]) -> set[str]:
+    """The variables read on a way on from the catchers of a state that take
+    a failure of its Assign (those for States.ALL or
+    States.QueryEvaluationError; measured) before the way assigns them
+    again: in the catchers' own Assign and Output, and after them. A
+    catcher's own Assign hides nothing read after it, as what it assigns may
+    be the value from before the state, which Python's except clause does
+    not see. A catcher for other errors never runs after a failing Assign,
+    so what it reads is not read after one."""
+    catchers = state.get("Catch", [])
+    assert isinstance(catchers, list)
+    found: set[str] = set()
+    for catcher in catchers:
+        if set(catcher["ErrorEquals"]) & EVALUATION_ERRORS:
+            own = {k: v for k, v in catcher.items() if k != "Next"}
+            found |= {r for c in expressions_in(own) for r in names_read(c)}
+            found |= live[catcher["Next"]]
+    return found
 
 
 # A JSONata literal as the compiler writes one: a string in single or double
