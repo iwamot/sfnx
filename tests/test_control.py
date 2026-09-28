@@ -909,6 +909,41 @@ def test_a_choice_that_leads_back_to_itself_is_taken_in_once():
 
 
 @pytest.mark.parametrize(
+    "body, expected",
+    [
+        # The Choice of the inner loop is taken in with its Assign after the
+        # rule's: s1, assigned before s0 at the start, is evaluated after it.
+        (
+            (
+                's0 = ""\ns1 = "b"\nxs: list = input["xs"]\nfor x in xs:\n'
+                "    s0 = str(uuid.uuid4())\n"
+                '    for y in ["x"]:\n        s1 = str(uuid.uuid4())\n'
+                "    return [s0, s1]\nreturn [s0, s1]"
+            ),
+            ["u1", "u2"],
+        ),
+        # a, assigned again after b, is evaluated after b.
+        (
+            (
+                'wait(1)\na = "x"\nb = str(uuid.uuid4())\na = str(uuid.uuid4())\n'
+                "wait(2)\nreturn [a, b]"
+            ),
+            ["u2", "u1"],
+        ),
+    ],
+)
+def test_a_name_assigned_again_is_evaluated_where_it_is_written(body, expected):
+    """Assignments that share an Assign are written in the order the source
+    writes them, each name where it is last assigned, and sfnx.testing
+    evaluates an Assign in the order of its keys: the uuids go to the names
+    Python gives them."""
+    (compiled,) = compile_source("import uuid\n" + source(body)).values()
+    calls = iter(["u1", "u2"])
+    with asl.replaced(uuid=lambda: next(calls)):
+        assert asl.run(compiled, {"xs": [0]}) == expected
+
+
+@pytest.mark.parametrize(
     "condition, values, read",
     [
         # Read once, the expression; more than once, bound once in a block.

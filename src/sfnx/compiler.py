@@ -248,6 +248,7 @@ class Checkpoint:
     declared: dict[str, Type]
     partial: set[str]
     pending: dict[str, Expr]
+    pending_first: str | None
     pending_node: ast.AST | None
     pending_origins: list[Origin]
     pending_remarks: list[str]
@@ -323,6 +324,9 @@ class Scope:
         self.announced: dict[str, Type] = {}
         # Independent assignments wait here to share one Pass.
         self.pending: dict[str, Expr] = {}
+        # The name assigned first, which names their Pass: a name assigned
+        # again moves to where it is written now.
+        self.pending_first: str | None = None
         self.pending_node: ast.AST | None = None
         # The Pass that starts the scope, if its values read in the next state
         # what they read in it, with the value of each variable it assigns.
@@ -432,12 +436,12 @@ class Scope:
         caught, self.caught = self.caught, {}
         if not self.pending:
             return
-        assert self.pending_node is not None
+        assert self.pending_node is not None and self.pending_first is not None
         pending = self.pending
         # A Pass that only moves a loop on is named after that, as its counter
         # already names the Pass that starts the loop.
         stepping = all(o.role == "loop step" for o in self.pending_origins)
-        first = "next" if stepping else next(iter(pending))
+        first = "next" if stepping else self.pending_first
         assign: dict[str, object] = {
             self.spelling(k): value for k, value in pending.items()
         }
@@ -445,6 +449,7 @@ class Scope:
         origins = self.pending_origins
         remarks = self.pending_remarks
         self.pending = {}
+        self.pending_first = None
         self.pending_node = None
         self.pending_origins = []
         self.pending_remarks = []
@@ -488,9 +493,9 @@ class Scope:
         state = result.state
         assign = state.get("Assign", {})
         assert isinstance(assign, dict)
-        for name, value in folded.items():
-            assign[self.spelling(name)] = value
-        state["Assign"] = assign
+        state["Assign"] = then(
+            assign, {self.spelling(name): value for name, value in folded.items()}
+        )
         remark = "\n".join(r for r in (result.remark, *remarks) if r) or None
         origins = result.origins + origins
         comment = remark
@@ -632,6 +637,10 @@ class Scope:
             and not value.volatile
         ):
             self.folded[name] = value
+        # A name assigned again is evaluated where it is written now.
+        if not self.pending:
+            self.pending_first = name
+        self.pending.pop(name, None)
         self.pending[name] = value
         self.pending_node = self.pending_node or node
         self.pending_origins.append(origin)
@@ -1465,6 +1474,7 @@ class Scope:
         remarks = [*self.pending_remarks, self.remark]
         located = [*self.pending_origins, *origins]
         self.pending = {}
+        self.pending_first = None
         self.pending_node = None
         self.pending_origins = []
         self.pending_remarks = []
@@ -2004,6 +2014,7 @@ class Scope:
             else:
                 self.check_variable(parameter.arg, parameter)
         scope.pending = pending
+        scope.pending_first = next(iter(pending), None)
         scope.pending_node = function if pending else None
         if pending:
             scope.pending_origins = [Origin(function, "parameters", header=True)]
@@ -2538,6 +2549,7 @@ class Scope:
             dict(self.declared),
             set(self.partial),
             dict(self.pending),
+            self.pending_first,
             self.pending_node,
             list(self.pending_origins),
             list(self.pending_remarks),
@@ -2573,6 +2585,7 @@ class Scope:
         self.partial.clear()
         self.partial.update(saved.partial)
         self.pending = dict(saved.pending)
+        self.pending_first = saved.pending_first
         self.pending_node = saved.pending_node
         self.pending_origins = list(saved.pending_origins)
         self.pending_remarks = list(saved.pending_remarks)
@@ -3657,7 +3670,7 @@ def fold_into_catching_tasks(
             if kind == "Pass":
                 assign = moved["Assign"]
                 assert isinstance(assign, dict)
-                task["Assign"] = {**own, **assign}
+                task["Assign"] = then(own, assign)
                 task["Next"] = moved["Next"]
             else:
                 del task["Next"]
@@ -3913,7 +3926,7 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                         for code in expressions_in(assign)
                         for read in names_read(code)
                     }
-                    current = {**own, **taken}
+                    current = then(own, taken)
                     own_states = any(
                         reads_own_states(c) for c in expressions_in(assign)
                     )
@@ -3944,7 +3957,7 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                         passed.add(target)
                     holder[key] = target
                     if taken:
-                        holder["Assign"] = {**own, **taken}
+                        holder["Assign"] = then(own, taken)
                         if comment is not None:
                             holder["Comment"] = comment
                     moved = True
@@ -4295,28 +4308,24 @@ def merge_choices(definition: dict[str, object]) -> None:
                 or led[second] != [name]
             ):
                 continue
-            then = states[second]
+            following = states[second]
             own = first.get("Assign", {})
-            reads = {read for code in expressions_in(then) for read in names_read(code)}
+            reads = {
+                read for code in expressions_in(following) for read in names_read(code)
+            }
             if own.keys() & reads:
                 continue
-            for rule in then["Choices"] if own else []:
-                rule["Assign"] = {
-                    **{k: v for k, v in own.items() if k not in rule.get("Assign", {})},
-                    **rule.get("Assign", {}),
-                }
+            for rule in following["Choices"] if own else []:
+                rule["Assign"] = then(own, assigns(rule))
                 comment = joined_comments(first.get("Comment"), rule.get("Comment"))
                 if comment is not None:
                     rule["Comment"] = comment
-            first["Choices"] = [*first["Choices"], *then["Choices"]]
-            first["Default"] = then["Default"]
-            assign = {
-                **{k: v for k, v in own.items() if k not in then.get("Assign", {})},
-                **then.get("Assign", {}),
-            }
+            first["Choices"] = [*first["Choices"], *following["Choices"]]
+            first["Default"] = following["Default"]
+            assign = then(own, assigns(following))
             if assign:
                 first["Assign"] = assign
-            comment = joined_comments(first.get("Comment"), then.get("Comment"))
+            comment = joined_comments(first.get("Comment"), following.get("Comment"))
             if comment is not None:
                 first["Comment"] = comment
             del states[second]
@@ -4377,7 +4386,7 @@ def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
                     leading = joined_comments(leading, second.get("Comment"))
                 ways = [
                     commented_with(
-                        {**later, "Assign": {**values, **assigns(later)}},
+                        {**later, "Assign": then(values, assigns(later))},
                         leading,
                     )
                     for later in later_rules
@@ -4386,7 +4395,7 @@ def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
                     first["Choices"] = [*rules, *ways]
                     first["Default"] = later_default
                     if values or own:
-                        first["Assign"] = {**values, **own}
+                        first["Assign"] = then(values, own)
                 else:
                     test = rule["Condition"]
                     ways = [
@@ -4395,7 +4404,7 @@ def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
                     ]
                     rest = {**rule, "Next": later_default}
                     if values or own:
-                        rest["Assign"] = {**values, **own}
+                        rest["Assign"] = then(values, own)
                     rest = commented_with(rest, second.get("Comment"), after=True)
                     first["Choices"] = [
                         *rules[:index],
@@ -4417,6 +4426,14 @@ def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
             if taken:
                 break
         drop_unreachable(definition)
+
+
+def then(first: dict[str, object], second: dict[str, object]) -> dict[str, object]:
+    """The assignments of first and then of second in one Assign, each where
+    it is last written: a name second assigns again goes after the rest of
+    first, as Python evaluates the later assignment later and a hand-writer
+    writes the keys in the order of the source."""
+    return {**{k: v for k, v in first.items() if k not in second}, **second}
 
 
 def assigns(holder: dict[str, object]) -> dict[str, object]:
@@ -4653,10 +4670,7 @@ def fold_start(
     for holder in holders_of(state):
         own = holder.get("Assign", {})
         assert isinstance(own, dict)
-        holder["Assign"] = {
-            **{k: v for k, v in assign.items() if k not in own},
-            **own,
-        }
+        holder["Assign"] = then(assign, own)
         # Each holder describes the assignments, as a Pass would.
         comment = joined_comments(opening.get("Comment"), holder.get("Comment"))
         if comment is not None:
@@ -4859,7 +4873,7 @@ def way_assign(
     if not all(reads_as(pass_state, n, v) for n, v in read.items()):
         return None
     moved = {k: written_sum(read_through(v, read)) for k, v in assign.items()}
-    return {**{k: v for k, v in own.items() if k not in assign}, **moved}
+    return then(own, moved)
 
 
 # An expression that is only an operation on two integers written out, as
