@@ -21,9 +21,7 @@ from sfnx.errors import EVERYTHING, caught, raised, retriers
 from sfnx.expressions import (
     ADD,
     ATOM,
-    CHANGES,
     COMPARE,
-    OPAQUE,
     WRITTEN,
     Expr,
     array,
@@ -32,6 +30,7 @@ from sfnx.expressions import (
     code_of,
     expression,
     literal,
+    opaque,
     operand,
     spelling,
     template_of,
@@ -1527,8 +1526,7 @@ class Scope:
         (measured), and for a Choice rule, a catcher or a Pass, where it is,
         both after what comes before them, as Python reads them."""
         return not any(
-            value.volatile == OPAQUE or reads_own_context(value.code)
-            for value in values
+            value.opaque or reads_own_context(value.code) for value in values
         )
 
     def read_result(self, result: Result, value_node: ast.expr) -> Expr | None:
@@ -1546,7 +1544,7 @@ class Scope:
                     result.values[name],
                     code=f"$sfnx_read_{i}_",
                     template=f"{{% $sfnx_read_{i}_ %}}",
-                    volatile=0,
+                    opaque=False,
                 )
                 for i, name in enumerate(changing)
             }
@@ -3689,7 +3687,7 @@ def composed(
     place, so the code is never undefined where the field's expression is
     not and no value is, fails for no value where the field's expression
     fails for none and each value is never undefined and fails for none,
-    and changes on evaluation where the field's expression or a value does.
+    and is opaque where the field's expression or a value is.
     A field that holds a template, whose properties are not known, gives
     the code none of them. Where the field is written as an object or an
     array with expressions among its values, shape is that template. The
@@ -3702,7 +3700,7 @@ def composed(
     read = frozenset(names_read(code))
     failing = [v.fails for v in values if not (v.defined and v.total)]
     if not isinstance(leaf, Expr):
-        found = expression(code, read, precedence, volatile=CHANGES * changes(code))
+        found = expression(code, read, precedence)
         outer = around.reads if around is not None else frozenset()
         carried = outer.union(*(v.reads for v in values))
         found = replace(
@@ -3720,7 +3718,7 @@ def composed(
             precedence,
             leaf.type,
             leaf.boolean,
-            volatile=max([leaf.volatile, *(v.volatile for v in values)]),
+            opaque=leaf.opaque or opaque(values),
             defined=leaf.defined and all(v.defined for v in values),
             total=leaf.total and all(v.total and v.defined for v in values),
         )

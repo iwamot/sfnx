@@ -16,7 +16,6 @@ from sfnx.expressions import (
     COMPARE,
     EXACT,
     MULTIPLY,
-    OPAQUE,
     OR,
     WRITTEN,
     Expr,
@@ -24,7 +23,6 @@ from sfnx.expressions import (
     binary,
     block,
     call,
-    changes,
     conditional,
     entry,
     expression,
@@ -36,6 +34,7 @@ from sfnx.expressions import (
     merged,
     negate,
     obj,
+    opaque,
     spelling,
     string,
     uses,
@@ -740,7 +739,7 @@ class Translator:
             if may_be_list(item):
                 # $reduce would iterate the items of a single list $filter kept.
                 result = expression(
-                    result.code + "[]", result.variables, volatile=result.volatile
+                    result.code + "[]", result.variables, opaque=result.opaque
                 )
         accumulator = unused("a", self.hides([source, inner, *tests]) | {spelled})
         carried = expression("$" + accumulator, type=inner.type)
@@ -756,7 +755,7 @@ class Translator:
             reduced.variables,
             type=inner.type,
             constructor=True,
-            volatile=reduced.volatile,
+            opaque=reduced.opaque,
             defined=True,
             total=source.total and all(t.total for t in tests) and inner.total,
         )
@@ -805,7 +804,7 @@ class Translator:
             if tests and may_be_list(item):
                 # $map would iterate the items of a single list $filter kept.
                 result = expression(
-                    result.code + "[]", result.variables, volatile=result.volatile
+                    result.code + "[]", result.variables, opaque=result.opaque
                 )
             result = call(
                 "map", [result, function([self.spelling(name)], element)], None
@@ -836,7 +835,7 @@ class Translator:
             result.variables,
             type=of(ARRAY, items=element.type),
             constructor=True,
-            volatile=result.volatile,
+            opaque=result.opaque,
             defined=defined,
             total=total,
         )
@@ -1315,7 +1314,7 @@ class Translator:
         listed = expression(
             "[" + ", ".join(p.code for p in parts) + "]",
             uses(parts),
-            volatile=changes(parts),
+            opaque=opaque(parts),
         )
         return call("merge", [listed], of(OBJECT))
 
@@ -1837,7 +1836,7 @@ class Translator:
             f"function(${self.parameter('v', [value, test])}, ${position}) "
             f"{{ {test.code} }}",
             test.variables,
-            volatile=test.volatile,
+            opaque=test.opaque,
         )
         kept = call("filter", [value, predicate], value.type)
         code = f"$append([], {kept.code}[])" if may_be_list(item) else f"[{kept.code}]"
@@ -1846,7 +1845,7 @@ class Translator:
             kept.variables,
             type=of(ARRAY, items=item),
             constructor=True,
-            volatile=kept.volatile,
+            opaque=kept.opaque,
         )
 
     def substring(self, text: Expr, lower: Bound | None, upper: Bound | None) -> Expr:
@@ -2152,7 +2151,7 @@ class Translator:
             listed = expression(
                 "[" + ", ".join(v.code for v in values) + "]",
                 uses(values),
-                volatile=changes(values),
+                opaque=opaque(values),
             )
             return call(name, [listed], of(NUMBER))
         if name in {"abs", "round", "sum", "max", "min"}:
@@ -2483,7 +2482,7 @@ class Translator:
             uses([start, stop]),
             type=numbers,
             constructor=True,
-            volatile=changes([start, stop]),
+            opaque=opaque([start, stop]),
         )
 
     def ordered(self, node: ast.Call) -> Expr:
@@ -2652,16 +2651,16 @@ class Translator:
         # every name in it is one the call binds, a function or a name it binds
         # itself: it may call $random under that name, or under one it binds
         # the function to.
-        volatile = OPAQUE
+        unsettled = True
         if settled(written, set(bound), {self.spelling(n) for n in self.bindings}):
             reads = frozenset()
-            volatile = changes(values)
+            unsettled = opaque(values)
         if not bindings:
-            return expression(written, reads, precedence=WRITTEN, volatile=volatile)
+            return expression(written, reads, precedence=WRITTEN, opaque=unsettled)
         return expression(
             "(" + "".join(bindings) + written + ")",
             uses(values) | reads,
-            volatile=volatile,
+            opaque=unsettled,
         )
 
     def variables(self, written: str, bound: list[str]) -> frozenset[str]:
@@ -2939,7 +2938,7 @@ class Translator:
             mapping.variables,
             type=of(ARRAY, items=values),
             constructor=True,
-            volatile=mapping.volatile,
+            opaque=mapping.opaque,
         )
 
     def get(self, mapping: Expr, arguments: list[ast.expr]) -> Expr:
@@ -3024,7 +3023,7 @@ class Translator:
                 batches.variables,
                 type=of(ARRAY, items=items.type),
                 constructor=True,
-                volatile=batches.volatile,
+                opaque=batches.opaque,
             )
         return None
 
@@ -3827,7 +3826,7 @@ def keys_of(mapping: Expr) -> Expr:
         keys.variables,
         type=of(ARRAY, items=of(STRING)),
         constructor=True,
-        volatile=keys.volatile,
+        opaque=keys.opaque,
         defined=True,
         total=keys.total,
     )
@@ -4011,7 +4010,7 @@ def function(parameters: list[str], body: Expr) -> Expr:
     return expression(
         f"function({spelled}) {{ {body.code} }}",
         body.variables,
-        volatile=body.volatile,
+        opaque=body.opaque,
     )
 
 
