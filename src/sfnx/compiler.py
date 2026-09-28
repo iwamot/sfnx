@@ -4760,10 +4760,16 @@ def spread_passes(definition: dict[str, object]) -> None:
     there no Catch or retrier takes, or that holds only values written in the
     source. The values read what the way assigns as the expressions it
     assigns them, and one it assigns too gives way where it is written in the
-    source, which has nothing to evaluate. Values that read $states, other
-    than the context the two share, the time, a random value or $eval, or
-    that spell a name the way assigns in a string, keep the Pass, and so do
-    those that read what the way assigns where that reads such a value."""
+    source, which has nothing to evaluate. The time and a random value go
+    too: each copy is on its own way, so a run evaluates one of them once,
+    as it would the Pass, and a way's Assign runs where the Pass would, a
+    Task's and a Wait's when it ends (measured); the syntax tree says which
+    values read them, a jsonata() expression's included. A Parallel's or a
+    Map's Assign keeps them, as when it reads them is not measured. Values
+    that read $states, other than the context the two share, or $eval, which
+    reads variables by the names in its text, or that spell a name the way
+    assigns in a string, keep the Pass, and so do those that read what the
+    way assigns where that reads a value that changes on evaluation."""
     states = definition["States"]
     assert isinstance(states, dict)
     spread = True
@@ -4780,7 +4786,7 @@ def spread_passes(definition: dict[str, object]) -> None:
             assign = state["Assign"]
             assert isinstance(assign, dict)
             codes = expressions_in(assign)
-            if any(changes_or_reads_the_state(c) for c in codes):
+            if any(reads_own_states(c) or "eval" in names_read(c) for c in codes):
                 continue
             ways = [
                 (holder, key, owner)
@@ -4788,6 +4794,11 @@ def spread_passes(definition: dict[str, object]) -> None:
                 for holder, key, target in links(owner)
                 if target == name
             ]
+            if any(changes(c) for c in codes) and any(
+                holder is owner and owner["Type"] in {"Parallel", "Map"}
+                for holder, _, owner in ways
+            ):
+                continue
             merged = [
                 way_assign(holder, owner, assign, codes) for holder, _, owner in ways
             ]

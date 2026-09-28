@@ -260,8 +260,9 @@ def test_a_return_whose_jsonata_cannot_be_read_is_left_as_it_is():
         # (measured), as Python reads them after it.
         ("wait(1)\nx = str(uuid.uuid4())", {"x": "{% $uuid() %}"}, []),
         ("wait(1)\nx = str(datetime.now())", {"x": "{% $now() %}"}, []),
+        # So does a jsonata() expression, whose syntax tree says what it calls.
+        ('wait(1)\nx = jsonata("$random()")', {"x": "{% $random() %}"}, []),
         # A value that reads otherwise in another state, or may.
-        ('wait(1)\nx = jsonata("$random()")', None, ["x"]),
         ('wait(1)\nx = context["State"]["EnteredTime"]', None, ["x"]),
         ('wait(1)\nx = context["State"]["Name"]', None, ["x"]),
         ("wait(1)\nx = context", None, ["x"]),
@@ -336,9 +337,14 @@ def test_what_a_wait_assigns(body, joined, passes):
             {"x": "{% $now() %}"},
             [],
         ),
+        (
+            'if input["a"]:\n    x = jsonata("$random()")',
+            {"x": "{% $random() %}"},
+            None,
+            [],
+        ),
         # A value that reads otherwise in another state, or may.
         ('if input["a"]:\n    x = context["State"]["Name"]', None, None, ["x"]),
-        ('if input["a"]:\n    x = jsonata("$random()")', None, None, ["x"]),
     ],
 )
 def test_what_a_choice_assigns(body, rule, default, passes):

@@ -185,7 +185,6 @@ def test_the_variable_the_task_assigns_can_be_assigned_again():
     [
         R
         + ', retry=[{"ErrorEquals": [Exception]}])\nn = r["Payload"]\nwait(1)\nreturn n',
-        R + ')\nn = jsonata("$random()")\nwait(1)\nreturn [r, n]',
         R + ')\na, b = r["Payload"]\nwait(1)\nreturn [a, b]',
     ],
 )
@@ -194,6 +193,20 @@ def test_an_assignment_that_could_differ_keeps_its_pass(body):
     compiled = definition(body, imports)["States"]
     assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
     assert any(state["Type"] == "Pass" for state in compiled.values())
+
+
+def test_a_random_value_a_jsonata_expression_calls_goes_in_the_assign():
+    """The Task's Assign runs when it ends (measured), where Python calls
+    $random() after the call, and the syntax tree of the text says it calls
+    nothing else."""
+    body = R + ')\nn = jsonata("$random()")\nwait(1)\nreturn [r, n]'
+    imports = "from sfnx import jsonata, state_machine, task, wait"
+    compiled = definition(body, imports)["States"]
+    assert compiled["r"]["Assign"] == {
+        "r": "{% $states.result %}",
+        "n": "{% $random() %}",
+    }
+    assert not any(state["Type"] == "Pass" for state in compiled.values())
 
 
 def test_a_start_value_a_way_assigns_again_is_read_only_on_the_others():
