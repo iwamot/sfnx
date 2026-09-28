@@ -225,6 +225,11 @@ class Handler:
     flows: list[Flow] = field(default_factory=list)
 
 
+# The try bodies each state is in, outermost first, as the translation
+# records them; a pass that moves statements into a state narrows its own.
+Enclosing = dict[str, tuple[list[Handler], ...]]
+
+
 @dataclass
 class Checkpoint:
     """Everything a loop attempt can change, to try it again with wider types."""
@@ -355,9 +360,9 @@ class Scope:
         # The except clauses of the try statements around the current point,
         # outermost first, and the clauses being compiled, for a bare raise.
         self.tries: list[list[Handler]] = []
-        # The try bodies each Task, Pass and Succeed is in, innermost last, for
-        # what a Task's Catch may take of the state after it.
-        self.enclosing: dict[str, tuple[list[Handler], ...]] = {}
+        # The try bodies each state is in, innermost last, for what a Task's
+        # Catch may take of the state after it.
+        self.enclosing: Enclosing = {}
         # States added that can report errors to except, counted.
         self.catchable = 0
         self.handling: list[Handler] = []
@@ -406,9 +411,11 @@ class Scope:
             remark = state.get("Comment")
             state = commented(state, f"{remark}\n{located}" if remark else located)
         try:
-            return self.graph.add(base, state)
+            added = self.graph.add(base, state)
         except ValueError as exc:
             raise CompileError(str(exc), node) from exc
+        self.enclosing[added] = self.within()
+        return added
 
     def flush(self) -> None:
         holding = self.holds_pending()
@@ -450,7 +457,6 @@ class Scope:
             state = commented(state, "\n".join(remarks))
         opening = not self.graph.states
         added = self.insert(first, state, node, origins)
-        self.enclosing[added] = self.within()
         if opening:
             self.starting = (
                 added,
@@ -1599,8 +1605,7 @@ class Scope:
         self.returns.append(value.type)
         if call is None:
             state: dict[str, object] = {"Type": "Succeed", "Output": value}
-            added = self.add("return", state, node, origins)
-            self.enclosing[added] = self.within()
+            self.add("return", state, node, origins)
             return
         # A Task at the end ends the machine itself; its output is the result
         # unless the return makes something of it.
@@ -1644,9 +1649,7 @@ class Scope:
                 break
         if catchers:
             state["Catch"] = catchers
-        added = self.add(base, {**state, **fields}, node)
-        self.enclosing[added] = self.within()
-        return added
+        return self.add(base, {**state, **fields}, node)
 
     def within(self) -> tuple[list[Handler], ...]:
         """The try bodies being compiled, outermost first, each as the list of
@@ -3485,7 +3488,7 @@ def takes_evaluation(state: dict[str, object], field: str) -> bool:
 
 def fold_into_catching_tasks(
     definition: dict[str, object],
-    enclosing: dict[str, tuple[list[Handler], ...]],
+    enclosing: Enclosing,
 ) -> None:
     """The Pass or the Succeed right after a Task, a Parallel or a Map with a
     Catch, in the state's Assign or as its Output, as a hand-writer assigns
@@ -3619,6 +3622,28 @@ def same_tries(
     return len(first) == len(second) and all(
         a is b for a, b in zip(first, second, strict=True)
     )
+
+
+def narrow(
+    enclosing: Enclosing | None,
+    states: dict[str, dict[str, object]],
+    into: str,
+    source: str,
+) -> None:
+    """Where a pass moves statements of source into a state, the try bodies
+    the state is in: those both are in, as a Catch whose try holds only one
+    of them must not take a failure of the other's statements. A Task's, a
+    Parallel's or a Map's own are those of its Catch, and stay."""
+    if enclosing is None or states[into]["Type"] in {"Task", "Parallel", "Map"}:
+        return
+    shared: list[list[Handler]] = []
+    for mine, theirs in zip(
+        enclosing.get(into, ()), enclosing.get(source, ()), strict=False
+    ):
+        if mine is not theirs:
+            break
+        shared.append(mine)
+    enclosing[into] = tuple(shared)
 
 
 def read_through(
@@ -3865,7 +3890,11 @@ class Rounds:
         return self.passed.setdefault(id(holder), (holder, set()))[1]
 
 
-def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) -> None:
+def thread_choices(
+    definition: dict[str, object],
+    rounds: Rounds | None = None,
+    enclosing: Enclosing | None = None,
+) -> None:
     """Each transition into a Choice whose tests are decided by values known
     along it, as the transition to where the Choice would send it: a flag that
     each path assigns a value written in the source, such as the stage a saga
@@ -3905,6 +3934,7 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                 # an Assign that cannot fail does not have.
                 movable = holder is not state or may_fold(state)
                 taken: dict[str, object] = {}
+                sources: list[str] = []
                 passed = rounds.of(holder) if rounds is not None else set()
                 before = set(passed)
                 comment = holder.get("Comment")
@@ -3940,6 +3970,7 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                         passed.add(target)
                     if assign:
                         taken.update(assign)
+                        sources.append(target)
                         comment = joined_comments(comment, rule.get("Comment"))
                         known = assigned(known, assign)
                     target = following
@@ -3956,6 +3987,8 @@ def thread_choices(definition: dict[str, object], rounds: Rounds | None = None) 
                         holder["Assign"] = then(own, taken)
                         if comment is not None:
                             holder["Comment"] = comment
+                        for source in sources:
+                            narrow(enclosing, states, name, source)
                     moved = True
 
 
@@ -4269,7 +4302,9 @@ def same(first: object, second: object) -> bool:
     )
 
 
-def merge_choices(definition: dict[str, object]) -> None:
+def merge_choices(
+    definition: dict[str, object], enclosing: Enclosing | None = None
+) -> None:
     """A Choice whose Default leads to a Choice that nothing else leads to, as
     one Choice with the rules of both, the first's before the second's, as a
     hand-writer lists the tests of `if a: ... ` and a following `if b: ...`.
@@ -4310,12 +4345,15 @@ def merge_choices(definition: dict[str, object]) -> None:
             comment = joined_comments(first.get("Comment"), following.get("Comment"))
             if comment is not None:
                 first["Comment"] = comment
+            narrow(enclosing, states, name, second)
             del states[second]
             merged = True
             break
 
 
-def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
+def take_in_choices(
+    definition: dict[str, object], rounds: Rounds, enclosing: Enclosing | None = None
+) -> None:
     """A transition of a Choice that leads straight to another Choice takes in
     that one's tests, as a hand-writer lists the tests of `if a:` and the `if
     b:` right inside it, or right after it, in one Choice: a rule `c` becomes
@@ -4359,6 +4397,7 @@ def take_in_choices(definition: dict[str, object], rounds: Rounds) -> None:
                 if read is None:
                     continue
                 later_rules, later_default, own = read
+                narrow(enclosing, states, name, target)
                 if circles(states, target):
                     rounds.taken_in.add((name, target))
                 # Each way out describes the transition it takes the place
@@ -4587,7 +4626,9 @@ def failsafe(field: object) -> bool:
 
 
 def fold_start(
-    definition: dict[str, object], starting: tuple[str, dict[str, Expr]] | None
+    definition: dict[str, object],
+    starting: tuple[str, dict[str, Expr]] | None,
+    enclosing: Enclosing | None = None,
 ) -> None:
     """The Pass that starts a machine, a branch or a Map processor, in the
     state after it, as a hand-writer assigns what the input gives in the first
@@ -4670,6 +4711,7 @@ def fold_start(
         return
     for name, value in values.items():
         substitute(state, name, value)
+    narrow(enclosing, states, following, start)
     for holder in holders_of(state):
         own = holder.get("Assign", {})
         assert isinstance(own, dict)
@@ -4747,7 +4789,9 @@ def substitute(node: dict[str, object], name: str, value: Expr) -> None:
             node[key] = replaced(field_value)
 
 
-def share_states(definition: dict[str, object]) -> None:
+def share_states(
+    definition: dict[str, object], enclosing: Enclosing | None = None
+) -> None:
     """States that do the same and go the same way are one state, as a
     hand-writer ends every path that returns the same at one Succeed and runs
     a clean-up the paths share once. A state behaves as its fields, its input,
@@ -4762,6 +4806,7 @@ def share_states(definition: dict[str, object]) -> None:
     while shared := same_states(states):
         for name, kept in shared.items():
             read_both(states[kept], states[name])
+            narrow(enclosing, states, kept, name)
             del states[name]
         start = definition["StartAt"]
         assert isinstance(start, str)
@@ -4788,7 +4833,9 @@ def both_reads(mine: object, theirs: object) -> object:
     return mine
 
 
-def spread_passes(definition: dict[str, object]) -> None:
+def spread_passes(
+    definition: dict[str, object], enclosing: Enclosing | None = None
+) -> None:
     """A Pass every way into which can hold its assignments, in the Assign of
     each of them, as a hand-writer copies an assignment into each branch: the
     first statement of a loop's body, which the way in and the way back both
@@ -4831,18 +4878,19 @@ def spread_passes(definition: dict[str, object]) -> None:
             if any(reads_own_states(c) or "eval" in names_read(c) for c in codes):
                 continue
             ways = [
-                (holder, key, owner)
-                for owner in states.values()
+                (holder, key, owner, owner_name)
+                for owner_name, owner in states.items()
                 for holder, key, target in links(owner)
                 if target == name
             ]
             merged = [
-                way_assign(holder, owner, assign, codes) for holder, _, owner in ways
+                way_assign(holder, owner, assign, codes) for holder, _, owner, _ in ways
             ]
             if not ways or any(m is None for m in merged):
                 continue
-            for (holder, key, _), values in zip(ways, merged, strict=True):
+            for (holder, key, _, owner_name), values in zip(ways, merged, strict=True):
                 assert values is not None
+                narrow(enclosing, states, owner_name, name)
                 assign_before(holder, key, values)
                 holder[key] = state["Next"]
                 comment = joined_comments(holder.get("Comment"), state.get("Comment"))
@@ -5209,17 +5257,18 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
     if scope.checking:
         note_reads(definition)
     rounds = Rounds()
+    enclosing = scope.enclosing
     while True:
         before = copy.deepcopy(definition)
-        traced(thread_choices, definition)
+        traced(thread_choices, definition, None, enclosing)
         traced(drop_dead_assignments, definition)
-        traced(fold_into_catching_tasks, definition, scope.enclosing)
-        traced(fold_start, definition, scope.starting)
-        traced(spread_passes, definition)
-        traced(thread_choices, definition, rounds)
-        traced(merge_choices, definition)
-        traced(take_in_choices, definition, rounds)
-        traced(share_states, definition)
+        traced(fold_into_catching_tasks, definition, enclosing)
+        traced(fold_start, definition, scope.starting, enclosing)
+        traced(spread_passes, definition, enclosing)
+        traced(thread_choices, definition, rounds, enclosing)
+        traced(merge_choices, definition, enclosing)
+        traced(take_in_choices, definition, rounds, enclosing)
+        traced(share_states, definition, enclosing)
         traced(end_before_returns, definition)
         # A round that writes the same definition changes nothing, though it
         # may hold an Expr where a template was.
