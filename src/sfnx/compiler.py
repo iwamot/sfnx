@@ -3587,9 +3587,10 @@ def fold_into_catching_tasks(
     fails or is undefined, so a failure of the Assign is the state's own, as
     in Python.
     It reads the variables the state assigns as the expressions the state
-    assigns them, and nothing else of `$states` than the context the two
-    share, and after a Parallel or a Map neither the time nor a random value,
-    whose reading there is not measured."""
+    assigns them, but for one that changes on evaluation, which the state's
+    Assign evaluates already, and nothing else of `$states` than the context
+    the two share, and after a Parallel or a Map neither the time nor a
+    random value, whose reading there is not measured."""
     states = definition["States"]
     assert isinstance(states, dict)
     folded = True
@@ -3640,6 +3641,11 @@ def fold_into_catching_tasks(
             if len(values) < len(found) or not all(
                 reads_as(following, n, v) for n, v in values.items()
             ):
+                continue
+            # A value that changes on evaluation, read again in the Pass's or
+            # the Succeed's place, would be evaluated once more, as the state's
+            # Assign still evaluates it.
+            if any(changes(v.code) for v in values.values()):
                 continue
             exposed = assigned_before_failures(own, following)
             if after not in failsafe and caught_reads(definition, task) & exposed:
