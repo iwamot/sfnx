@@ -17,6 +17,7 @@ from sfnx.jsontypes import (
     of,
     union,
 )
+from sfnx.syntax import changes
 
 # JSONata binding powers. A subexpression is parenthesized when it binds
 # looser than the place it is put in; an expression written in jsonata() may
@@ -97,10 +98,6 @@ FUNCTIONS = frozenset(
     }
 )
 
-# The functions that give another value on every call.
-VOLATILE = frozenset({"millis", "now", "random", "uuid"})
-# How a value may change when it is evaluated again: as the time or a random
-# value does, or as a jsonata() expression may, whose text is not read.
 # The functions and operators that fail for no value given them.
 TOTAL = frozenset(
     {"exists", "type", "not", "boolean", "count", "keys", "append", "string"}
@@ -145,8 +142,6 @@ TOTAL_OPERATORS = frozenset({"=", "!=", "in", "and", "or", "&"})
 # The integers a double holds exactly, which JSONata computes with as Python
 # does.
 EXACT = 2**53
-CHANGES = 1
-OPAQUE = 2
 
 
 @dataclass(frozen=True)
@@ -158,9 +153,9 @@ class Expr:
     what is known about the value; boolean says the code always yields a JSON
     boolean, so a condition can use it without $boolean. constructor says the
     code is an array constructor, which one around it keeps as one element.
-    volatile says the code may give another value when it is evaluated again,
-    as $random() and $uuid() do, so what writes it twice binds it once first:
-    CHANGES, or OPAQUE where a jsonata() expression is in it, 0 otherwise.
+    opaque says a jsonata() expression that is not settled is in the code,
+    which may read variables by names it does not write out, or call a
+    function that gives another value under a name it binds.
     defined says the code never gives undefined, which fails an Assign or an
     Output but passes through a test such as $type() without failing: a
     literal, a variable, which no Assign leaves undefined, d.get(), $exists(),
@@ -179,7 +174,7 @@ class Expr:
     type: Type | None = None
     boolean: bool = False
     constructor: bool = False
-    volatile: int = 0
+    opaque: bool = False
     defined: bool = False
     total: bool = False
     # Which assignments each variable the code reads may hold the value of,
@@ -199,6 +194,13 @@ class Expr:
     # a pass wrote with values in place of variables, where those fail.
     fails: frozenset[frozenset[tuple[str, int]]] = frozenset()
 
+    @property
+    def volatile(self) -> bool:
+        """Whether the code may give another value when it is evaluated again,
+        as $random() and $uuid() do, so what writes it twice binds it once
+        first: the syntax tree says so, or the code is opaque."""
+        return self.opaque or changes(self.code)
+
 
 def expression(
     code: str,
@@ -207,7 +209,7 @@ def expression(
     type: Type | None = None,
     boolean: bool = False,
     constructor: bool = False,
-    volatile: int = 0,
+    opaque: bool = False,
     defined: bool = False,
     total: bool = False,
 ) -> Expr:
@@ -219,7 +221,7 @@ def expression(
         type,
         boolean,
         constructor,
-        volatile,
+        opaque,
         defined,
         total,
     )
@@ -313,9 +315,9 @@ def uses(values: list[Expr]) -> frozenset[str]:
     return frozenset().union(*(value.variables for value in values))
 
 
-def changes(values: list[Expr]) -> int:
-    """How a value among values may differ when it is evaluated again."""
-    return max((value.volatile for value in values), default=0)
+def opaque(values: list[Expr]) -> bool:
+    """Whether a value among values is opaque."""
+    return any(value.opaque for value in values)
 
 
 def array(items: list[Expr]) -> Expr:
@@ -330,7 +332,7 @@ def array(items: list[Expr]) -> Expr:
         uses(items),
         type=Type(frozenset({ARRAY}), item_type, empty=not items),
         constructor=True,
-        volatile=changes(items),
+        opaque=opaque(items),
         defined=all(item.defined for item in items),
         total=all(item.total for item in items),
     )
@@ -348,9 +350,7 @@ def element(item: Expr) -> str:
         return "[" + item.code + "]"
     kind = call("type", [item], of(STRING))
     test = binary(kind, "=", literal("array"), COMPARE, of(BOOLEAN), True)
-    wrapped = Expr(
-        "[[" + item.code + "]]", None, item.variables, volatile=item.volatile
-    )
+    wrapped = Expr("[[" + item.code + "]]", None, item.variables, opaque=item.opaque)
     return conditional(test, wrapped, item, item.type).code
 
 
@@ -369,7 +369,7 @@ def obj(entries: list[tuple[str, Expr]]) -> Expr:
             values=values,
             fields=tuple((k, v.type) for k, v in entries),
         ),
-        volatile=changes([v for _, v in entries]),
+        opaque=opaque([v for _, v in entries]),
         defined=all(v.defined for _, v in entries),
         total=all(v.total for _, v in entries),
     )
@@ -413,13 +413,12 @@ def call(
                     code, joined, type=type, constructor=True, defined=True, total=True
                 )
     code = f"${function}(" + ", ".join(a.code for a in arguments) + ")"
-    volatile = max(CHANGES if function in VOLATILE else 0, changes(arguments))
     return expression(
         code,
         uses(arguments),
         type=type,
         boolean=boolean,
-        volatile=volatile,
+        opaque=opaque(arguments),
         # $append of nothing and a value gives the value (measured).
         defined=function in DEFINED
         or (function == "append" and any(a.defined for a in arguments))
@@ -477,7 +476,7 @@ def binary(
         precedence,
         type,
         boolean,
-        volatile=changes([left, right]),
+        opaque=opaque([left, right]),
         defined=left.defined and right.defined,
         total=operator in TOTAL_OPERATORS and left.total and right.total,
     )
@@ -536,7 +535,7 @@ def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> E
         CONDITIONAL,
         type,
         then.boolean and otherwise.boolean,
-        volatile=changes([test, then, otherwise]),
+        opaque=opaque([test, then, otherwise]),
         defined=then.defined and otherwise.defined,
         total=test.total and then.total and otherwise.total,
     )
@@ -554,7 +553,7 @@ def grouped(value: Expr) -> Expr:
         ATOM,
         value.type,
         value.boolean,
-        volatile=value.volatile,
+        opaque=value.opaque,
     )
 
 
@@ -567,7 +566,7 @@ def kept(test: Expr, value: Expr) -> Expr:
         uses([test, value]),
         CONDITIONAL,
         value.type,
-        volatile=changes([test, value]),
+        opaque=opaque([test, value]),
     )
 
 
@@ -578,7 +577,7 @@ def entry(key: Expr, value: Expr) -> Expr:
         "{" + operand(key, CONDITIONAL + 1) + ": " + value.code + "}",
         uses([key, value]),
         type=of(OBJECT, values=value.type),
-        volatile=changes([key, value]),
+        opaque=opaque([key, value]),
     )
 
 
@@ -587,7 +586,7 @@ def merged(objects: Expr, values: Type | None) -> Expr:
     earlier one, as a later entry of a dict comprehension does. $merge of no
     object is {}, so a sequence with nothing in it gives an empty dict."""
     listed = expression(
-        "[" + objects.code + "]", objects.variables, volatile=objects.volatile
+        "[" + objects.code + "]", objects.variables, opaque=objects.opaque
     )
     return call("merge", [listed], of(OBJECT, values=values))
 
@@ -607,7 +606,7 @@ def block(bindings: list[tuple[str, Expr]], body: Expr) -> Expr:
         ATOM,
         body.type,
         body.boolean,
-        volatile=changes([*values, body]),
+        opaque=opaque([*values, body]),
         defined=body.defined,
         total=body.total and all(value.total for value in values),
     )
@@ -621,7 +620,7 @@ def negate(value: Expr) -> Expr:
         code = "-" + value.code
     else:
         code = f"-({value.code})"
-    return expression(code, value.variables, UNARY, of(NUMBER), volatile=value.volatile)
+    return expression(code, value.variables, UNARY, of(NUMBER), opaque=value.opaque)
 
 
 def field(value: Expr, key: str) -> Expr:
@@ -634,7 +633,7 @@ def field(value: Expr, key: str) -> Expr:
         f"{operand(value, ATOM)}.{step}",
         value.variables,
         type=values,
-        volatile=value.volatile,
+        opaque=value.opaque,
         total=value.total,
     )
 
@@ -658,5 +657,5 @@ def index(value: Expr, position: Expr) -> Expr:
     base = f"({base})" if base.endswith("]") else operand(value, ATOM)
     code = f"{base}[{position.code}]"
     return expression(
-        code, uses([value, position]), type=items, volatile=changes([value, position])
+        code, uses([value, position]), type=items, opaque=opaque([value, position])
     )

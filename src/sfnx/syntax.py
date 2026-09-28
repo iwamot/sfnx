@@ -10,8 +10,6 @@ from functools import cache
 from jsonata.jexception import JException
 from jsonata.parser import Parser
 
-from sfnx.expressions import VOLATILE
-
 # A variable as JSONata spells one, found in the text of a string or a
 # regular expression.
 SPELLED = re.compile(r"\$([^\W\d]\w*)")
@@ -236,7 +234,7 @@ def reads_state_name(code: str) -> bool:
 # What gives another value each time it is called: the time, a random value,
 # and $eval, which may call either and reads variables by names not written
 # out.
-CHANGING = VOLATILE | {"eval"}
+CHANGING = frozenset({"millis", "now", "random", "uuid", "eval"})
 
 
 def changes(code: str) -> bool:

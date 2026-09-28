@@ -4,7 +4,6 @@ import pytest
 
 from sfnx.compiler import as_expr, composed, emitted, from_asl, loose_expressions
 from sfnx.expressions import (
-    CHANGES,
     Expr,
     code_of,
     expression,
@@ -37,8 +36,8 @@ def test_a_definition_is_emitted_with_each_expr_as_its_template():
     }
 
 
-def exact(code: str, defined: bool, total: bool, volatile: int = 0) -> Expr:
-    return expression(code, defined=defined, total=total, volatile=volatile)
+def exact(code: str, defined: bool, total: bool, opaque: bool = False) -> Expr:
+    return expression(code, defined=defined, total=total, opaque=opaque)
 
 
 @pytest.mark.parametrize(
@@ -79,16 +78,30 @@ def test_a_value_read_in_place_fails_where_it_failed(leaf, value, fails):
     assert composed(leaf, "$y + 1 = 1", [value]).fails == fails
 
 
-def test_a_value_that_changes_makes_the_code_change():
+@pytest.mark.parametrize(
+    "code, volatile",
+    [
+        ("$random() + 1", True),
+        ("$map($xs, $uuid)", True),
+        # A string that spells the name does not call it.
+        ("'$random' & $x", False),
+    ],
+)
+def test_the_syntax_tree_says_whether_code_changes(code, volatile):
+    assert expression(code).volatile == volatile
+
+
+def test_an_opaque_value_makes_the_code_opaque():
     leaf = exact("$x + 1", True, True)
-    value = exact("$random()", True, True, CHANGES)
-    assert composed(leaf, "$random() + 1", [value]).volatile == CHANGES
+    value = exact("$f()", True, True, opaque=True)
+    code = composed(leaf, "$f() + 1", [value])
+    assert code.opaque and code.volatile
 
 
 def test_a_template_s_properties_are_not_known():
     code = composed("{% $x = 1 %}", "$y = 1", [exact("$y", True, True)])
-    assert (code.defined, code.total, code.volatile) == (False, False, 0)
-    assert composed("{% $x %}", "$random()", []).volatile == CHANGES
+    assert (code.defined, code.total, code.volatile) == (False, False, False)
+    assert composed("{% $x %}", "$random()", []).volatile
 
 
 def test_a_field_is_an_expr_as_it_is_or_as_its_template():
