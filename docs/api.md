@@ -30,7 +30,7 @@ A line the compiler does not accept raises `CompileError`, a `ValueError`. Its `
 
 ## What is public
 
-`CompileError`, `compile_file` and `compile_source` are the Python API of the compiler, and `sfnx.compiler.__all__` lists them; [compatibility.md](compatibility.md) says what a release can change of them. The other names of `sfnx.compiler` and its neighbours are the compiler's own and change without notice.
+`CompileError`, `compile_file` and `compile_source` are the Python API of the compiler, and `sfnx.compiler.__all__` lists them; [compatibility.md](compatibility.md) says what a release can change of them. The other names of `sfnx.compiler` and its neighbours are the compiler's own and change without notice. So does the `sfnx.passes` logger, which at DEBUG logs the states each optimization pass changes, for work on sfnx itself: its name and what it logs are not part of the API.
 
 Running a definition in a test is `sfnx.testing`, which [testing.md](testing.md) describes.
 

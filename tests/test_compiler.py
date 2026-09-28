@@ -739,12 +739,12 @@ TESTED = 'x = input["x"]\nif x is None:\n    return 0\nreturn 1'
 
 
 def test_each_pass_that_changes_the_definition_is_logged(caplog):
-    """The start Pass goes in the Choice after it, as fold_start does; the
-    other passes change nothing here."""
+    """The start Pass goes in the Choice after it, as fold_start does, which
+    the machine now starts at; the other passes change nothing here."""
     with caplog.at_level(logging.DEBUG, logger="sfnx.passes"):
         compile_one(machine(TESTED))
     [record] = caplog.records
-    assert record.getMessage().splitlines()[0] == "fold_start"
+    assert record.getMessage().splitlines()[:2] == ["fold_start", "StartAt: x -> if"]
 
 
 def test_nothing_is_logged_where_debug_is_off(caplog):
