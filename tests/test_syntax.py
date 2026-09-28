@@ -11,6 +11,7 @@ from sfnx.syntax import (
     reads_own_context,
     reads_own_states,
     reads_state_name,
+    reads_the_name,
 )
 
 
@@ -46,6 +47,28 @@ def test_states_read(code, own, context, name):
     assert reads_own_states(code) == own
     assert reads_own_context(code) == context
     assert reads_state_name(code) == name
+
+
+@pytest.mark.parametrize(
+    "code, name",
+    [
+        ("$states.context.State.Name", True),
+        # The State part, the context and $states whole hold the name.
+        ("$states.context.State", True),
+        ("$states.context", True),
+        ("$states", True),
+        # Read another way, any part may be read.
+        ("$states[0]", True),
+        ("$states.input(", True),
+        # When the state was entered and its retries do not name it.
+        ("$states.context.State.EnteredTime", False),
+        ("$states.context.State.RetryCount", False),
+        ("$states.context.Execution.Input.a", False),
+        ("$states.input.a", False),
+    ],
+)
+def test_what_may_read_the_name_of_the_state(code, name):
+    assert reads_the_name(code) == name
 
 
 @pytest.mark.parametrize(

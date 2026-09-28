@@ -203,6 +203,19 @@ def reads_own_context(code: str) -> bool:
     )
 
 
+# Where the context holds the name of the state it is read in.
+NAME = ("context", "State", "Name")
+
+
+def reads_the_name(code: str) -> bool:
+    """Whether the code may read the name of the state it is read in: $states,
+    its context or the State part as a whole, or the Name in it. When the
+    state was entered and how often it was retried do not name it."""
+    return any(
+        path == NAME[: len(path)] or path[:3] == NAME for path in states_read(code)
+    )
+
+
 def reads_state_name(code: str) -> bool:
     """Whether the code reads the State part of the context, which names the
     state it is read in."""
