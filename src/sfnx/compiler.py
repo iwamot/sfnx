@@ -5010,7 +5010,7 @@ def end_before_returns(definition: dict[str, object]) -> None:
                 output = read_what_it_assigns(state, output, codes)
                 if output is None:
                     continue
-        elif any(reads_own_context(code) for code in codes):
+        elif any(reads_state_name(code) for code in codes):
             continue
         else:
             output = read_assigned(state, output, codes)
