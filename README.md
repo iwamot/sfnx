@@ -173,6 +173,13 @@ The definition has the states a person would write by hand, named after what the
 
 </details>
 
+Reading it against the source:
+
+- The parameter `input` is the execution input, read as `$states.context.Execution.Input` wherever it is read ([The machine](https://github.com/iwamot/sfnx/blob/main/docs/language.md#the-machine)).
+- `items = input["items"]` and the counter of the `for` loop share the first Pass, `items`. The loop is the Choice `for`, and the body reads the item as `$items[$item_index]`, with no state per item ([Control flow](https://github.com/iwamot/sfnx/blob/main/docs/language.md#control-flow)).
+- The DynamoDB call is the Task `updateItem`: `retry=` is its `Retry`, the `except` its `Catch`, which leads to the Fail `raise`, and its `Assign` moves the counter on.
+- The `return` is the `Output` of the last Task, `receipt`, which ends the machine ([Which states a function makes](https://github.com/iwamot/sfnx/blob/main/docs/language.md#which-states-a-function-makes)).
+
 [examples/](https://github.com/iwamot/sfnx/blob/main/examples/README.md) has more patterns, each with the definition it compiles to: polling a job, waiting for a person's approval, fanning out over items, and an expression written out in JSONata.
 
 ## Why
@@ -195,26 +202,15 @@ uv add sfnx
 
 `uv run sfnx compile app.py` then runs the compiler from the project.
 
-## What you write
+## Testing the definition
 
-- **The machine** is a function marked `@state_machine` or `@state_machine(timeout=300)`. Its parameter is the execution input, read as `$states.context.Execution.Input`; its return value is the output.
-- **Assignments, `if` / `elif` / `else`, `for`, `while`, `break`, `continue`, `return`, `raise`, `try` / `except`** become Pass, Choice, loops through Choice, Succeed, Fail and Catch. `for` iterates a list, the keys of a dict, `range()`, `enumerate()`, `zip()` or `d.items()`.
-- **`aws.sdk.dynamodb.get_item(TableName=..., Key=...)`** is a Task calling `arn:aws:states:::aws-sdk:dynamodb:getItem`, and **`aws.optimized.lambda_.invoke(FunctionName=..., Payload=...)`** one calling `arn:aws:states:::lambda:invoke`: the service as its ARN names it, the operation in snake_case, the API parameters in PascalCase, and `timeout=`, `heartbeat=`, `role=`, `retry=` and `pattern=".waitForTaskToken"` (or `".sync"`) for the Task. **`activity(arn, input)`** waits for a worker of an activity. **`task(resource, arguments)`** writes the resource ARN out, for any Task, including a `${Placeholder}` filled in at deploy time.
-- **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
-- **`wait(10)`** and **`wait(until=timestamp)`**, which also takes a datetime, are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
-- **`jsonata("$pad($s, -5, '0')", s=code)`** writes a JSONata expression out, for what has no Python spelling, with each value bound to the variable of its name.
-- **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...), or the errors of SDK integrations (`aws.sdk.dynamodb.errors.ConditionalCheckFailedException`), which the compiler checks against botocore. A class that assigns `error = "..."` has that error name, for one a class name cannot spell. `except Exception` is `States.ALL`.
-- **Names assigned outside the machine** (`RETRIES = [{"ErrorEquals": [Timeout], "MaxAttempts": 3}]`) hold JSON data and exception classes, and are written into the definition where they are read, so what ASL repeats state by state is written once.
-- **Expressions** are Python operators, conditional expressions, list and dict comprehensions, f-strings (with a width, a number's digits or `d` as the format spec), slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
-  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed`, `range`, `any` and `all`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`, `sorted`, `max` and `min` take `key=lambda item: ...`, and `sum`, `max`, `min`, `sorted`, `list`, `any` and `all` take a generator expression: `any(r["failed"] for r in results)`, which `any` and `all` stop reading once the result is decided)
-  - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `json.dumps`, `itertools.batched` in `list()`, `str(uuid.uuid4())`, `hashlib.sha256(s.encode()).hexdigest()`, `base64.b64encode(s.encode()).decode()`, `base64.b64decode(s).decode()`, `urllib.parse.unquote(s)` and `unquote_plus(s)`
-  - a datetime from `datetime.now()`, `datetime.fromisoformat(text)` or `datetime.fromtimestamp(seconds)`, moved by a `timedelta` (`datetime.now() + timedelta(hours=1)`) and converted where it is made: `str()` or an f-string for the timestamp text, `.timestamp()` for the seconds, `.strftime("%Y-%m-%d")` for the text a picture string writes, `wait(until=...)` for the moment to wait for, `(dt - dt2).total_seconds()` for the seconds between two of them, and `dt < dt2` and the other comparisons between two of them
-  - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and the dict methods `keys`, `values` and `get` (and `items` in a `for` or a dict comprehension: `{k: v for k, v in d.items() if v > 0}`)
-- **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. A `TypedDict` class of the module declares the fields of an input, a Lambda `Payload` or a Task result once, for the compiler and the type checker alike. Literals, operator results and AWS API responses carry their types already.
-- **Comments** go into the definition: a function's docstring is the `Comment` of the machine, a Parallel branch or a Map processor, and the comment lines right above a statement are the `Comment` of the first state it makes.
-- **Anything else** (`with`, other methods, a `lambda` outside `key=`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
+`sfnx.testing` runs a definition on your machine, with each Task answered by a function of your test, so a test checks where the workflow goes, which calls it makes and what it returns, without AWS. It runs definitions in JSONata mode, compiled by sfnx or written by hand. Add it with a test runner such as pytest:
 
-[docs/language.md](https://github.com/iwamot/sfnx/blob/main/docs/language.md) is the reference, and [docs/design.md](https://github.com/iwamot/sfnx/blob/main/docs/design.md) explains the design and the Step Functions behavior it relies on.
+```bash
+uv add --dev sfnx pytest
+```
+
+[docs/testing.md](https://github.com/iwamot/sfnx/blob/main/docs/testing.md) has a test of the workflow above, saved as `app.py`, the API, and where a local run differs from Step Functions.
 
 ## Rejected lines
 
@@ -243,6 +239,31 @@ missing.py: No such file or directory
 $ sfnx compile app.py
 app.py defines 2 state machines (pay, refund); pass -o out/ to write one file each
 ```
+
+## What you write
+
+- **The machine** is a function marked `@state_machine` or `@state_machine(timeout=300)`. Its parameter is the execution input, read as `$states.context.Execution.Input`; its return value is the output.
+- **Assignments, `if` / `elif` / `else`, `for`, `while`, `break`, `continue`, `return`, `raise`, `try` / `except`** become Pass, Choice, loops through Choice, Succeed, Fail and Catch. `for` iterates a list, the keys of a dict, `range()`, `enumerate()`, `zip()` or `d.items()`.
+- **`aws.sdk.dynamodb.get_item(TableName=..., Key=...)`** is a Task calling `arn:aws:states:::aws-sdk:dynamodb:getItem`, and **`aws.optimized.lambda_.invoke(FunctionName=..., Payload=...)`** one calling `arn:aws:states:::lambda:invoke`: the service as its ARN names it, the operation in snake_case, the API parameters in PascalCase, and `timeout=`, `heartbeat=`, `role=`, `retry=` and `pattern=".waitForTaskToken"` (or `".sync"`) for the Task. **`activity(arn, input)`** waits for a worker of an activity. **`task(resource, arguments)`** writes the resource ARN out, for any Task, including a `${Placeholder}` filled in at deploy time.
+- **`parallel(f, g)`** runs functions without parameters as branches. **`inline_map(f, items)`** and **`distributed_map(f, items or source=, args=, batch=, result=)`** run a function per item.
+- **`wait(10)`** and **`wait(until=timestamp)`**, which also takes a datetime, are Wait states. **`context["Execution"]["Id"]`** reads the Context Object.
+- **`jsonata("$pad($s, -5, '0')", s=code)`** writes a JSONata expression out, for what has no Python spelling, with each value bound to the variable of its name.
+- **Exceptions** are your own classes derived from `Exception`, nested classes for dotted names (`Lambda.ServiceException`), the Step Functions errors sfnx exports (`Timeout`, `TaskFailed`, ...), or the errors of SDK integrations (`aws.sdk.dynamodb.errors.ConditionalCheckFailedException`), which the compiler checks against botocore. A class that assigns `error = "..."` has that error name, for one a class name cannot spell. `except Exception` is `States.ALL`.
+- **Names assigned outside the machine** (`RETRIES = [{"ErrorEquals": [Timeout], "MaxAttempts": 3}]`) hold JSON data and exception classes, and are written into the definition where they are read, so what ASL repeats state by state is written once.
+- **Expressions** are Python operators, conditional expressions, list and dict comprehensions, f-strings (with a width, a number's digits or `d` as the format spec), slices and dicts with `**`, and the functions and methods JSONata has a counterpart for:
+  - built-in functions `len`, `float`, `int`, `str`, `bool`, `list`, `isinstance`, `abs`, `round`, `sum`, `max`, `min`, `sorted`, `reversed`, `range`, `any` and `all`, and `set` and `zip` in `list()` (`sum(xs) / len(xs)` is `$average`, `sorted`, `max` and `min` take `key=lambda item: ...`, and `sum`, `max`, `min`, `sorted`, `list`, `any` and `all` take a generator expression: `any(r["failed"] for r in results)`, which `any` and `all` stop reading once the result is decided)
+  - `math.floor`, `math.ceil`, `math.sqrt`, `random.random`, `time.time`, `json.loads`, `json.dumps`, `itertools.batched` in `list()`, `str(uuid.uuid4())`, `hashlib.sha256(s.encode()).hexdigest()`, `base64.b64encode(s.encode()).decode()`, `base64.b64decode(s).decode()`, `urllib.parse.unquote(s)` and `unquote_plus(s)`
+  - a datetime from `datetime.now()`, `datetime.fromisoformat(text)` or `datetime.fromtimestamp(seconds)`, moved by a `timedelta` (`datetime.now() + timedelta(hours=1)`) and converted where it is made: `str()` or an f-string for the timestamp text, `.timestamp()` for the seconds, `.strftime("%Y-%m-%d")` for the text a picture string writes, `wait(until=...)` for the moment to wait for, `(dt - dt2).total_seconds()` for the seconds between two of them, and `dt < dt2` and the other comparisons between two of them
+  - the string methods `split`, `replace`, `lower`, `upper`, `join`, `startswith`, `endswith`, `ljust`, `rjust` and `strip`, and the dict methods `keys`, `values` and `get` (and `items` in a `for` or a dict comprehension: `{k: v for k, v in d.items() if v > 0}`)
+- **Types** are written where an operator depends on them, as annotations: `+` is `+`, `&` or `$append` depending on the operands, and `len` is `$count`, `$length` or `$count($keys(...))`. A `TypedDict` class of the module declares the fields of an input, a Lambda `Payload` or a Task result once, for the compiler and the type checker alike. Literals, operator results and AWS API responses carry their types already.
+- **Comments** go into the definition: a function's docstring is the `Comment` of the machine, a Parallel branch or a Map processor, and the comment lines right above a statement are the `Comment` of the first state it makes.
+- **Anything else** (`with`, other methods, a `lambda` outside `key=`, ...) is rejected with what to write instead; [the reference](https://github.com/iwamot/sfnx/blob/main/docs/language.md#what-is-rejected) lists it.
+
+[docs/language.md](https://github.com/iwamot/sfnx/blob/main/docs/language.md) is the reference, and [docs/design.md](https://github.com/iwamot/sfnx/blob/main/docs/design.md) explains the design and the Step Functions behavior it relies on.
+
+## Deploying the definition
+
+sfnx stops at the definition. Write `${Name}` where a value comes from the deployment, as a resource ARN or inside an argument string, and fill it with CDK `definition_substitutions`, SAM or CloudFormation `DefinitionSubstitutions`. [docs/deployment.md](https://github.com/iwamot/sfnx/blob/main/docs/deployment.md) has the snippets, how to check a definition before deploying it, and the IAM actions each kind of task needs.
 
 ## Reference
 
@@ -295,27 +316,24 @@ The message text, including `; <what to write instead>`, is prose and may change
 
 Before 1.0, the definition compiled from the same source, and what the language accepts, may change between releases; the release notes say so. [docs/compatibility.md](https://github.com/iwamot/sfnx/blob/main/docs/compatibility.md) says what each release can change from 1.0.
 
-## Testing the definition
-
-`sfnx.testing` runs a definition on your machine, with each Task answered by a function of your test, so a test checks where the workflow goes, which calls it makes and what it returns, without AWS. It runs definitions in JSONata mode, compiled by sfnx or written by hand. Add it with a test runner such as pytest:
-
-```bash
-uv add --dev sfnx pytest
-```
-
-[docs/testing.md](https://github.com/iwamot/sfnx/blob/main/docs/testing.md) has an example test, the API, and where a local run differs from Step Functions.
-
-## Deploying the definition
-
-sfnx stops at the definition. Write `${Name}` where a value comes from the deployment, as a resource ARN or inside an argument string, and fill it with CDK `definition_substitutions`, SAM or CloudFormation `DefinitionSubstitutions`. [docs/deployment.md](https://github.com/iwamot/sfnx/blob/main/docs/deployment.md) has the snippets, how to check a definition before deploying it, and the IAM actions each kind of task needs.
-
 ## Development
+
+Before a pull request, run the whole check, as CI does:
 
 ```bash
 env -u VIRTUAL_ENV ./validate.sh
 ```
 
-`validate.sh` runs lint, formatting, type checking, the tests and a build. The tests evaluate the generated JSONata with jsonata-python and run whole definitions through `sfnx.testing`, including random programs whose results must match CPython's. [docs/verification.md](https://github.com/iwamot/sfnx/blob/main/docs/verification.md) describes what those checks guarantee and how to run the fixed corpus in Step Functions itself.
+`validate.sh` runs lint, formatting, type checking, the tests and a build. The tests evaluate the generated JSONata with jsonata-python and run whole definitions through `sfnx.testing`, including random programs whose results must match CPython's. [docs/verification.md](https://github.com/iwamot/sfnx/blob/main/docs/verification.md) describes what those checks guarantee.
+
+Depending on what a change touches, one of these may apply too:
+
+- **What the compiler writes**: the definitions committed in `examples/` must be what their sources compile to, so a change shows in their diff; regenerate them with `uv run sfnx compile examples/<name>.py -o examples/<name>.asl.json`.
+- **A fix**: the test added for it fails without the fix.
+- **A Step Functions behavior not measured yet**: measure it before relying on it, record it in [docs/design.md](https://github.com/iwamot/sfnx/blob/main/docs/design.md#what-the-compiler-relies-on), and add a case to the corpus that names the phrase, which [docs/verification.md](https://github.com/iwamot/sfnx/blob/main/docs/verification.md#the-corpus) describes, with how to run it in Step Functions.
+- **What the passes move**: the `sfnx.passes` and `sfnx.legality` loggers show at DEBUG what each pass changed and why it left a state where it was ([docs/api.md](https://github.com/iwamot/sfnx/blob/main/docs/api.md#what-is-public)).
+
+Setting up the git hooks, signing off commits and their messages are in [CONTRIBUTING.md](https://github.com/iwamot/sfnx/blob/main/CONTRIBUTING.md).
 
 ## License
 

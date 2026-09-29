@@ -14,13 +14,13 @@ uv add --dev sfnx pytest
 
 ## A test
 
-This test runs [examples/orders.py](../examples/orders.py), which reserves every item of an order in DynamoDB and then charges for it through Lambda:
+This test starts where the [README](../README.md) leaves off: its example saved as `app.py` in the project's root. The workflow, the same as [examples/orders.py](../examples/orders.py), reserves every item of an order in DynamoDB and then charges for it through Lambda:
 
 ```python
 from sfnx.compiler import compile_file
 from sfnx.testing import Call, Failure, run
 
-(ORDERS,) = compile_file("examples/orders.py").values()
+(ORDERS,) = compile_file("app.py").values()
 ORDER = {"id": "o1", "items": [{"sku": "a", "quantity": 2}, {"sku": "b", "quantity": 1}]}
 UPDATE = "arn:aws:states:::aws-sdk:dynamodb:updateItem"
 INVOKE = "arn:aws:states:::lambda:invoke"
@@ -53,7 +53,7 @@ def test_an_item_out_of_stock_fails_the_order_before_charging():
     assert INVOKE not in [call.resource for call in execution.calls]
 ```
 
-With the workflow at `examples/orders.py` of the project, save the test as `tests/test_orders.py` and run it from the project's root:
+With the workflow at `app.py` in the project's root, save the test as `tests/test_orders.py` and run it from there:
 
 ```bash
 uv run pytest
