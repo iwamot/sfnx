@@ -64,6 +64,19 @@ class Call:
 Tasks = Callable[[Call], object]
 
 
+@dataclass(frozen=True)
+class Wait:
+    """A Wait that ended: the state, and the Seconds or the Timestamp it
+    evaluated, the other None."""
+
+    state: str
+    seconds: int | None
+    timestamp: str | None
+
+
+Waits = Callable[[Wait], None]
+
+
 class Execution:
     """What a run did: the states entered and the calls made, in order, and
     the output or the error."""
@@ -100,9 +113,11 @@ class Execution:
 
 @dataclass
 class Record:
-    """The tasks function of a run, and what the run has entered and called."""
+    """The tasks and waits functions of a run, and what the run has entered
+    and called."""
 
     tasks: Tasks | None
+    waits: Waits | None = None
     states: list[str] = field(default_factory=list)
     calls: list[Call] = field(default_factory=list)
 
@@ -124,13 +139,16 @@ def run(
     tasks: Tasks | None = None,
     *,
     functions: Mapping[str, Callable[..., object]] | None = None,
+    on_wait: Waits | None = None,
 ) -> Execution:
     """Run a definition with the execution input given. tasks is called with
     each Task and each ItemReader, and returns the result or raises Failure.
     functions replaces JSONata functions by name, such as now or uuid, for a
-    result that would otherwise change on every run."""
+    result that would otherwise change on every run. on_wait is called with
+    each Wait once it has read what it waits for, before its Assign and
+    Output."""
     check(definition)
-    record = Record(tasks)
+    record = Record(tasks, on_wait)
     token = REPLACED.set(dict(functions or {}))
     try:
         output = scope(
@@ -1074,7 +1092,9 @@ def scope(
                 continue
         else:
             if kind == "Wait":
-                waited(state, variables, frame)
+                seconds, timestamp = waited(state, variables, frame)
+                if record.waits is not None:
+                    record.waits(Wait(name, seconds, timestamp))
             assigned, output = settled(state, variables, frame, state_input)
         variables.update(assigned)
         if state.get("End"):
@@ -1095,9 +1115,10 @@ def condition(
 
 def waited(
     state: Mapping[str, object], variables: Mapping[str, object], frame: object
-) -> None:
-    """A Wait evaluates what it waits for, fails where Step Functions cannot
-    read it (measured), and returns at once."""
+) -> tuple[int | None, str | None]:
+    """The Seconds or the Timestamp a Wait evaluates, the other None: it
+    fails where Step Functions cannot read what it waits for (measured), and
+    returns at once."""
     if "Seconds" in state:
         seconds = value(state["Seconds"], variables, frame)
         if not is_number(seconds) or not float(seconds).is_integer() or seconds < 0:
@@ -1105,14 +1126,15 @@ def waited(
                 "States.QueryEvaluationError",
                 f"Seconds is {json.dumps(seconds)}, not a whole number of 0 or more",
             )
-    else:
-        timestamp = value(state["Timestamp"], variables, frame)
-        if not isinstance(timestamp, str) or not offset_date_time(timestamp):
-            raise Failure(
-                "States.QueryEvaluationError",
-                f"Timestamp is {json.dumps(timestamp)}, not an ISO-8601 date and"
-                " time with an offset",
-            )
+        return int(seconds), None
+    timestamp = value(state["Timestamp"], variables, frame)
+    if not isinstance(timestamp, str) or not offset_date_time(timestamp):
+        raise Failure(
+            "States.QueryEvaluationError",
+            f"Timestamp is {json.dumps(timestamp)}, not an ISO-8601 date and"
+            " time with an offset",
+        )
+    return None, timestamp
 
 
 # An ISO-8601 extended offset date-time, as a Wait reads its Timestamp: T or
