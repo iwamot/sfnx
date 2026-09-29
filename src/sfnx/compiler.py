@@ -3834,7 +3834,7 @@ def thread_choices(
     # transition moves.
     moved = True
     while moved:
-        moved = False
+        moved = decide_start(definition)
         drop_unreachable(definition)
         arriving = known_values(definition)
         for name, state in list(states.items()):
@@ -4140,6 +4140,71 @@ def assigned(known: Known, assign: object) -> Known:
         else:
             result.pop(name, None)
     return result
+
+
+def decide_start(definition: dict[str, object]) -> bool:
+    """Whether the Choice that starts a definition, which nothing leads back
+    to, is decided by tests that read no variable, as written_test says,
+    such as fold_start leaves one that reads a value written in the source,
+    and became a Pass under its name with the Assign of the rule it takes,
+    or its own for its Default, leading where that goes, or, with nothing to
+    assign, gave its place as the start to that. The start is a way into the
+    Choice that assigns nothing: the Pass is entered as the Choice was, with
+    the same input and name, and a test written out whole neither fails nor
+    is undefined."""
+    states = definition["States"]
+    start = definition["StartAt"]
+    assert isinstance(states, dict) and isinstance(start, str)
+    choice = states[start]
+    if choice["Type"] != "Choice" or start in leading(states):
+        return False
+    rules = choice["Choices"]
+    assert isinstance(rules, list)
+    taken, target = choice, choice["Default"]
+    for rule in rules:
+        value = written_test(rule["Condition"])
+        if value is None:
+            return False
+        if value:
+            taken, target = rule, rule["Next"]
+            break
+    # Where the rule leads to a Choice, the start stays as it is: not for
+    # its meaning, which the Pass would keep, but so that take_in_choices
+    # can take that Choice's tests into it and the start tests both in one
+    # state, where a Pass before the Choice would add one on every
+    # execution. Where take_in_choices takes none, the decided Choice stays,
+    # as before.
+    if states[target]["Type"] == "Choice":
+        return False
+    if not assigns(taken):
+        # Nothing to assign: the definition starts where the Choice leads.
+        definition["StartAt"] = target
+        return True
+    decided: dict[str, object] = {"Type": "Pass"}
+    comment = (
+        choice.get("Comment")
+        if taken is choice
+        else joined_comments(choice.get("Comment"), taken.get("Comment"))
+    )
+    if comment is not None:
+        decided["Comment"] = comment
+    decided["Assign"] = assigns(taken)
+    decided["Next"] = target
+    states[start] = decided
+    return True
+
+
+def written_test(condition: object) -> bool | None:
+    """The value of a Condition that reads no variable: true or false written
+    out, as `if False:` gives, or an expression constant says the value of.
+    None for any other."""
+    condition = template_of(condition)
+    if isinstance(condition, bool):
+        return condition
+    if not (isinstance(condition, str) and condition.startswith("{%")):
+        return None
+    found, value = constant(condition[2:-2].strip())
+    return value if found and isinstance(value, bool) else None
 
 
 def decide(

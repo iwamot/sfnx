@@ -1,31 +1,13 @@
 {
   "Comment": "A Hello World example that demonstrates various state types.",
   "QueryLanguage": "JSONata",
-  "StartAt": "if",
+  "StartAt": "wait",
   "States": {
-    "if": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Condition": "{% $not(true) %}",
-          "Next": "raise"
-        }
-      ],
-      "Default": "wait",
-      "Assign": {
-        "execution_wait_time_in_seconds": 3,
-        "checkpoint_count": 0
-      }
-    },
-    "raise": {
-      "Type": "Fail",
-      "Error": "Not a Hello World Example"
-    },
     "wait": {
       "Type": "Wait",
-      "Seconds": "{% $execution_wait_time_in_seconds %}",
+      "Seconds": 3,
       "Assign": {
-        "checkpoint_count": "{% $checkpoint_count + 1 %}"
+        "checkpoint_count": 1
       },
       "Next": "start_date"
     },

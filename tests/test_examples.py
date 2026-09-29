@@ -350,12 +350,6 @@ def test_hello_world_counts_the_last_checkpoint_in_its_output():
     assert "$string($checkpoint_count + 1)" in summary
 
 
-def test_hello_world_fails_under_the_template_s_error_name():
-    states = definition("hello_world")["States"]
-    assert isinstance(states, dict)
-    assert states["raise"] == {"Type": "Fail", "Error": "Not a Hello World Example"}
-
-
 TERM = {
     "record_id": "r1",
     "verbatim": "migrane",
