@@ -161,9 +161,12 @@ NOW = expression("$now()", defined=True, total=True)
             set(),
             Reject.CHANGES_EVALUATION_COUNT,
         ),
-        # The time is not moved, however often it is read: whether its reads
-        # stay between the same calls and waits is not shown.
-        (NOW, ["$x"], set(), Reject.CHANGES_EVALUATION_INSTANCE),
+        # The time read in one code, however often, where its assignment
+        # goes; the assignment that stays, or another code, reads it in
+        # another evaluation.
+        (NOW, ["[$x, $x]"], set(), None),
+        (NOW, ["$x"], {"x"}, Reject.CHANGES_EVALUATION_INSTANCE),
+        (NOW, ["$x", "$x"], set(), Reject.CHANGES_EVALUATION_INSTANCE),
         (expression("$eval('1')"), ["$x"], set(), Reject.DEPENDENCIES_UNKNOWN),
         # An Expr that is not settled is judged by its code, which shows the
         # functions it calls under any name.

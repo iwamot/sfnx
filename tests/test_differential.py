@@ -960,3 +960,122 @@ def test_the_definition_calls_what_changes_no_more_often_than_cpython(data):
     assert all(actual[n] <= expected[n] for n in actual), (
         f"{program}\ninput: {execution_input}\nCPython: {expected}\nASL: {actual}"
     )
+
+
+# The statements of a timed program, each on the three strings it returns:
+# a read of the time, a call, a wait, and a string read from another.
+TIMED_LINES = (
+    "{a} = str(datetime.now())",
+    'task("' + LAMBDA + '", {{"FunctionName": "f", "Payload": {{"n": 1}}}})',
+    "wait(0)",
+    '{a} = {b} + "x"',
+)
+
+
+def timed_program(data: st.DataObject) -> str:
+    """A program that reads the time between calls and waits, into three
+    strings it assigns again from each other, some under an if, and returns
+    them: what a pass that moves a read of the time past a call or a wait
+    changes."""
+    lines = []
+    for _ in range(data.draw(st.integers(1, 8))):
+        template = data.draw(st.sampled_from(TIMED_LINES))
+        a, b = (data.draw(st.sampled_from(["s0", "s1", "s2"])) for _ in range(2))
+        line = template.format(a=a, b=b)
+        if data.draw(st.booleans()):
+            line = f'if input["n0"] > 0:\n    {line}'
+        lines.append(line)
+    body = 's0 = ""\ns1 = ""\ns2 = ""\n' + "\n".join(lines) + "\nreturn [s0, s1, s2]"
+    return VOLATILE_IMPORTS + HEADER + textwrap.indent(body + "\n", "    ")
+
+
+@dataclass
+class Timed:
+    """What a definition did under a clock that moves on at each Task call,
+    failed ones and retries too, and at each Wait: its output or its error,
+    and the calls and the waits, in order."""
+
+    output: object
+    error: str | None
+    events: list[tuple[object, ...]]
+
+
+def timed(definition: Mapping[str, object], execution_input: object) -> Timed:
+    """A run of a definition in which $now() and $millis() give the time of
+    the interval between calls and waits they are read in, the same for
+    every read there, and random() and uuid() one value each."""
+    events: list[tuple[object, ...]] = []
+
+    def invoke(call: testing.Call) -> object:
+        events.append(("task", call.resource, call.arguments))
+        return Lambda.invoke(call.arguments)
+
+    def wait(waited: testing.Wait) -> None:
+        events.append(("wait", waited.seconds, waited.timestamp))
+
+    def seconds() -> int:
+        return len(events)
+
+    functions = {
+        "random": lambda: 0.5,
+        "uuid": lambda: "u",
+        "now": lambda *_: f"2026-01-01T00:00:{seconds():02}.000Z",
+        "millis": lambda: 1767225600000 + 1000 * seconds(),
+    }
+    execution = testing.run(
+        definition, execution_input, invoke, functions=functions, on_wait=wait
+    )
+    output = None if execution.error is not None else execution.output
+    return Timed(output, execution.error, events)
+
+
+def test_the_clock_tells_a_read_of_the_time_moved_past_a_wait():
+    """The time read after a wait, and the same read moved before it, as a
+    pass must not, read other intervals."""
+    after = {
+        "QueryLanguage": "JSONata",
+        "StartAt": "w",
+        "States": {
+            "w": {"Type": "Wait", "Seconds": 0, "Next": "r"},
+            "r": {"Type": "Succeed", "Output": "{% $now() %}"},
+        },
+    }
+    before = {
+        "QueryLanguage": "JSONata",
+        "StartAt": "t",
+        "States": {
+            "t": {"Type": "Pass", "Assign": {"t": "{% $now() %}"}, "Next": "w"},
+            "w": {"Type": "Wait", "Seconds": 0, "Next": "r"},
+            "r": {"Type": "Succeed", "Output": "{% $t %}"},
+        },
+    }
+    assert timed(after, {}).output != timed(before, {}).output
+
+
+@settings(
+    max_examples=200,
+    derandomize=True,
+    database=None,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+@given(st.data())
+def test_the_passes_read_the_time_between_the_same_calls_and_waits(data):
+    """Under a clock that moves on at each call and wait, the passes give the
+    definition the output or the error it had, and the same calls and waits
+    in the same order: a read of the time they move stays between the same
+    calls and waits, as AD-TIMING-WITHIN-EFFECT-INTERVAL allows, and no
+    further."""
+    program = timed_program(data)
+    execution_input = data.draw(INPUTS)
+    runs = []
+    for optimizing in (False, True):
+        (definition,) = definitions(
+            program, "<program>", False, optimizing, checking=True
+        ).values()
+        runs.append(timed(definition, execution_input))
+    before, after = runs
+    shown = f"{program}\ninput: {execution_input}\nbefore: {before}\nafter: {after}"
+    assert after.error == before.error, shown
+    assert same(before.output, after.output), shown
+    assert after.events == before.events, shown
