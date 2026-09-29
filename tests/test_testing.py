@@ -485,9 +485,11 @@ def test_an_item_reader_and_a_result_writer():
 ROOT = Path(__file__).parent.parent
 
 
-def test_the_guide_runs(monkeypatch):
-    """The test docs/testing.md shows passes as written."""
-    monkeypatch.chdir(ROOT)
+def test_the_guide_runs(monkeypatch, tmp_path):
+    """The test docs/testing.md shows passes as written, next to the workflow
+    of the README saved as app.py."""
+    (tmp_path / "app.py").write_text((ROOT / "examples" / "orders.py").read_text())
+    monkeypatch.chdir(tmp_path)
     guide = (ROOT / "docs" / "testing.md").read_text()
     (code,) = re.findall(
         r"^```python\n(from sfnx.*?)^```", guide, re.DOTALL | re.MULTILINE
