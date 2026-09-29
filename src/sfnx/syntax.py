@@ -696,12 +696,14 @@ class Sensitivity:
 
 def sensitivity(code: str) -> Sensitivity:
     """What moving the code must keep, from the functions of CHANGING it
-    reads, to call them or to pass them on, as to $map."""
+    reads, to call them or to pass them on, as to $map. What the parser
+    cannot read may depend on anything: the names its text spells do not
+    show what it does."""
     found = names_read(code)
     return Sensitivity(
         evaluation_count=bool(found & COUNTED),
         evaluation_instance=bool(found & TIMED),
-        dependencies_unknown=bool(found & UNRESOLVED),
+        dependencies_unknown=bool(found & UNRESOLVED) or tree_of(code) is None,
     )
 
 
