@@ -950,6 +950,24 @@ def test_a_transition_reads_a_random_value_once(assign, taken):
     assert (None if found is None else emitted(found)) == taken
 
 
+@pytest.mark.parametrize(
+    "value, read",
+    [
+        # A Task's own result, and a catcher's own error, which the new
+        # Assign reads where the transition's reads them.
+        ("{% $states.result %}", "{% $states.result.n %}"),
+        ("{% $states.errorOutput %}", "{% $states.errorOutput.n %}"),
+    ],
+)
+def test_a_transition_reads_its_own_part_of_states(value, read):
+    current = from_asl({"r": value})
+    lifted = from_asl({"n": "{% $r.n %}"})
+    assert isinstance(current, dict) and isinstance(lifted, dict)
+    found = read_into_transition(lifted, current)
+    assert found is not None
+    assert emitted(found) == {"n": read}
+
+
 def test_a_loop_in_a_loop_takes_in_the_value_drawn_before_it():
     """The inner loop's first round reads n once and assigns it again, so the
     outer loop's rule draws it where it leads into the inner loop's body."""

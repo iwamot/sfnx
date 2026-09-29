@@ -768,17 +768,20 @@ def test_values_bound_once_do_not_read_each_other():
     assert run(body, {"n": 2, "k": 0}, {"invoke": lambda arguments: {}}) == 25
 
 
-def test_an_assignment_the_catcher_leads_to_as_well_keeps_its_pass():
+def test_an_assignment_the_catcher_leads_to_as_well_goes_in_both():
     """After an except clause that passes, the catcher leads to the
-    assignment too: it cannot fail, but it would have to be written in the
-    Task and again for the catcher, so it keeps its Pass."""
+    assignment too: the Task's Assign reads its result as $states.result,
+    and the catcher's the r from before the Task."""
     body = (
         f"r = None\ntry:\n    r = {CHARGE}\nexcept Exception:\n    pass\n"
         "x = r\nwait(1)\nreturn x"
     )
     compiled = states(body)
-    assert any(s["Type"] == "Pass" and "x" in s["Assign"] for s in compiled.values())
+    assert not any(s["Type"] == "Pass" for s in compiled.values())
+    assert compiled["r"]["Assign"] == {"x": "{% $states.result %}"}
+    assert compiled["r"]["Catch"][0]["Assign"] == {"x": None}
     assert run(body, {}, {"r": fails("Lambda.Unknown")}) is None
+    assert run(body, {}, {"r": lambda arguments: {"ok": 1}}) == {"ok": 1}
 
 
 CHECKED = f"""\
@@ -1211,3 +1214,22 @@ def test_a_catching_task_takes_in_a_random_value_read_once(assign, folded):
     assert ("p" not in states) is folded
     if folded:
         assert states["t"]["Assign"] == {"n": "{% ($random()) + 1 %}"}
+
+
+def test_each_catcher_reads_its_own_error_in_what_follows():
+    """What follows the try goes in the Task's Assign and each catcher's,
+    where each reads the error its catcher caught."""
+    body = (
+        f"try:\n    r = {CHARGE}\n    cause = 'none'\n"
+        "except Declined as e:\n    cause = 'declined: ' + str(e)\n"
+        "except Exception as e:\n    cause = 'other: ' + str(e)\n"
+        "note = cause + '!'\nwait(1)\nreturn note"
+    )
+    compiled = states(body)
+    assert not any(s["Type"] == "Pass" for s in compiled.values())
+    declined, other = compiled["r"]["Catch"]
+    assert "'declined: ' & $states.errorOutput.Cause" in declined["Assign"]["note"]
+    assert "'other: ' & $states.errorOutput.Cause" in other["Assign"]["note"]
+    assert run(body, {}, {"r": fails("Declined", "c")}) == "declined: c!"
+    assert run(body, {}, {"r": fails("Lambda.Unknown", "c")}) == "other: c!"
+    assert run(body, {}, {"r": lambda arguments: 1}) == "none!"

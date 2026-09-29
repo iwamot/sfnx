@@ -928,11 +928,13 @@ def test_a_start_that_reads_a_variable_from_before_the_task_goes_in_it():
     assert run(body, {}, tasks) == 3
 
 
-def test_a_start_that_reads_what_the_task_assigns_keeps_its_pass():
-    body = f'r = task("{PUBLISH}", {{"Message": "m"}})\nfor i in range(r["n"], 4):\n    wait(i)\nreturn 1'
+def test_a_start_that_reads_what_the_task_assigns_reads_its_result_there():
+    """The Task's own Assign reads its result as $states.result, where the
+    Pass would read the variable the Assign gives it."""
+    body = f'r = task("{PUBLISH}", {{"Message": "m"}})\nlast = 0\nfor i in range(r["n"], 4):\n    wait(i)\n    last = i\nreturn last'
     compiled = states(body)
-    assert "i" not in compiled["r"]["Assign"]
-    assert run(body, {}, {"r": lambda arguments: {"n": 2}}) == 1
+    assert compiled["r"]["Assign"]["i"] == "{% $states.result.n %}"
+    assert run(body, {}, {"r": lambda arguments: {"n": 2}}) == 3
 
 
 def test_a_loop_over_a_list_written_in_the_source_goes_into_its_body():
@@ -1016,6 +1018,33 @@ def test_a_way_holds_a_pass_that_assigns_its_name_again(way, then, taken):
     assert isinstance(assign, dict)
     found = way_assign(holder, holder, assign, expressions_in(assign))
     assert emitted(found) == taken
+
+
+@pytest.mark.parametrize(
+    "holder, read",
+    [
+        # A Task's own result, and a catcher's own error, which the Pass's
+        # assignments read in the Assign that reads them now.
+        (
+            {"Type": "Task", "Assign": {"t": "{% $states.result %}"}, "Next": "p"},
+            "{% $states.result.n %}",
+        ),
+        (
+            {
+                "ErrorEquals": ["States.ALL"],
+                "Assign": {"t": "{% $states.errorOutput %}"},
+                "Next": "p",
+            },
+            "{% $states.errorOutput.n %}",
+        ),
+    ],
+)
+def test_a_way_reads_its_own_part_of_states(holder, read):
+    assign = from_asl({"m": "{% $t.n %}"})
+    assert isinstance(assign, dict)
+    owner = {"Type": "Pass"}
+    found = way_assign(from_asl(holder), owner, assign, expressions_in(assign))
+    assert emitted(found) == {"t": holder["Assign"]["t"], "m": read}
 
 
 def test_a_task_that_draws_a_value_holds_the_swap_after_it():
