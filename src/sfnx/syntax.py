@@ -748,6 +748,42 @@ def free(node: Parser.Symbol, bound: frozenset[str]) -> Iterator[str]:
         yield from free(child, rest)
 
 
+def unsupported_reference(code: str) -> str | None:
+    """The first reference in the code that Step Functions rejects when it
+    validates the definition, as it wrote it, or None: $$ anywhere, and $ or
+    a field name where no step of a path gives them an item, as at the top
+    of the expression, in a function's body there, or in the first step of
+    a path there (measured). A later step of a path, a filter of a step and
+    the grouping of a path each read an item, as a sort's terms do. The
+    parser, as Step Functions, rejects a % that has no parent to read. None
+    where the parser cannot read the code."""
+    tree = tree_of(code)
+    return None if tree is None else next(references(tree, False), None)
+
+
+def references(node: Parser.Symbol, given: bool) -> Iterator[str]:
+    """What unsupported_reference finds in node, given says whether a step
+    around it gives it an item."""
+    kind = node.type
+    if kind == "variable" and node.value == "$":
+        yield "$$"
+    elif not given and kind == "variable" and node.value == "":
+        yield "$"
+    elif not given and kind == "name":
+        yield text(node)
+    for key in PER_ITEM:
+        for child in within(getattr(node, key, None)):
+            yield from references(child, True)
+    handled: tuple[str, ...] = PER_ITEM
+    if kind == "path":
+        assert node.steps is not None
+        for index, step in enumerate(node.steps):
+            yield from references(step, given or index > 0)
+        handled += ("steps",)
+    for child in children(node, *handled):
+        yield from references(child, given)
+
+
 def binds(node: Parser.Symbol) -> frozenset[str]:
     """The names a step of a path binds with @ and #."""
     return frozenset(n for n in (node.focus, node.index) if isinstance(n, str))
