@@ -1039,6 +1039,25 @@ def test_a_task_that_draws_a_value_holds_the_swap_after_it():
         assert asl.run(compiled, {"xs": [0, 0]}, tasks) == [0.5, 0.25]
 
 
+def test_a_task_that_reads_the_time_holds_the_swap_after_it():
+    """The Task's Assign reads the time after the call, where the swap's Pass
+    would, with no call or wait between."""
+    body = (
+        'xs: list = input["xs"]\na = ""\nb = ""\nfor x in xs:\n'
+        f'    task("{PUBLISH}", {{"Message": "m"}})\n'
+        "    a = str(datetime.now())\n    a, b = b, a\nreturn [a, b]"
+    )
+    source_text = "from datetime import datetime\n" + source(body)
+    (compiled,) = compile_source(source_text).values()
+    assert [s["Type"] for s in compiled["States"].values()] == [
+        "Pass",
+        "Choice",
+        "Task",
+        "Succeed",
+    ]
+    assert compiled["States"]["publish"]["Assign"]["b"] == "{% $now() %}"
+
+
 @pytest.mark.parametrize(
     "body",
     [

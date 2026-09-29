@@ -111,8 +111,11 @@ class Reject(Enum):
         ),
     )
     CHANGES_EVALUATION_INSTANCE = (
-        BLANKET,
-        "the value reads the time, which another evaluation may read otherwise",
+        PROOF,
+        (
+            "the value reads the time, and would be read in more than one "
+            "evaluation, which may each read another time"
+        ),
     )
     DROPS_FAILURE = (
         PROOF,
@@ -319,17 +322,15 @@ def evaluated_once(
     right where their assignments are, with no call or wait between, give
     what the one evaluation of each assignment gave, as evaluated_as_before
     says: an assignment that stays, as those in kept do, is evaluated where
-    it is as well. One that reads the time refuses, as whether its reads
-    stay between the same calls and waits is not shown here. Each value is
-    judged by its code, a jsonata() expression that is not settled as well:
+    it is as well. The callers read the values in the Assign or the Output
+    that evaluates the assignment, or in a Choice, so the time read there is
+    read between the same calls and waits. Each value is judged by its
+    code, a jsonata() expression that is not settled as well:
     the syntax tree shows each function the code calls, by whatever name it
     binds it to, as a variable holds JSON, never a function."""
     reads = [Read(code, same_interval=True) for code in codes]
     for name, value in values.items():
         value = replace(value, opaque=False)
-        found = value.sensitivity
-        if found.evaluation_instance and not found.dependencies_unknown:
-            return Reject.CHANGES_EVALUATION_INSTANCE
         own = [Read(f"${name}", same_interval=True)] if name in kept else []
         reason = evaluated_as_before(value, name, reads + own)
         if reason is not None:
