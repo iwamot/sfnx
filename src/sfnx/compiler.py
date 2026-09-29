@@ -3922,12 +3922,11 @@ def read_into_transition(
     where = "read_into_transition"
     codes = expressions_in(assign)
     values = resolve_reads(current, codes, where)
+    # What the values read of $states they read alike: the new Assign goes in
+    # the transition's, which evaluates them now. What assign itself reads
+    # of $states thread_choices has weighed.
     if (
         values is None
-        or refused(
-            context_invariant([v.code for v in values.values()], Differs.STATES),
-            where,
-        )
         # The transition still evaluates what assign does not assign again.
         or refused(evaluated_once(values, codes, set(values) - set(assign)), where)
         or refused(captures({"Assign": assign}, values), where)
@@ -4916,10 +4915,11 @@ def way_assign(
     # Assign would fail.
     if any(n in assign and not v.defined for n, v in read.items()):
         return None
-    # The way still evaluates what the Pass does not assign again.
-    if refused(evaluated_once(read, codes, set(read) - set(assign)), where) or refused(
-        context_invariant([v.code for v in read.values()], Differs.STATES), where
-    ):
+    # The way still evaluates what the Pass does not assign again. What its
+    # values read of $states they read alike, as the Pass's assignments go
+    # in the way's own Assign, which evaluates them now; what the Pass reads
+    # of $states spread_passes has weighed.
+    if refused(evaluated_once(read, codes, set(read) - set(assign)), where):
         return None
     # A string that spells a name, or a binding of one, keeps the Pass.
     if refused(captures({"Assign": assign}, read), where):

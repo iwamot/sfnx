@@ -207,7 +207,6 @@ def test_the_variable_the_task_assigns_can_be_assigned_again():
     [
         R
         + ', retry=[{"ErrorEquals": [Exception]}])\nn = r["Payload"]\nwait(1)\nreturn n',
-        R + ')\na, b = r["Payload"]\nwait(1)\nreturn [a, b]',
     ],
 )
 def test_an_assignment_that_could_differ_keeps_its_pass(body):
@@ -215,6 +214,19 @@ def test_an_assignment_that_could_differ_keeps_its_pass(body):
     compiled = definition(body, imports)["States"]
     assert compiled["r"]["Assign"] == {"r": "{% $states.result %}"}
     assert any(state["Type"] == "Pass" for state in compiled.values())
+
+
+def test_an_unpacking_after_a_task_reads_its_result_in_its_assign():
+    """The Task's own Assign reads its result as $states.result, where the
+    unpacking's Pass would read the variable the Assign gives it."""
+    body = R + ')\na, b = r["Payload"]\nwait(1)\nreturn [a, b]'
+    compiled = states(body)
+    assert compiled["r"]["Assign"] == {
+        "a": "{% $states.result.Payload[0] %}",
+        "b": "{% $states.result.Payload[1] %}",
+    }
+    tasks = {"r": lambda arguments: {"Payload": [1, 2]}}
+    assert asl.run(definition(body), {}, tasks) == [1, 2]
 
 
 def test_a_random_value_read_for_each_item_after_a_task_is_evaluated_once():
