@@ -27,7 +27,44 @@ from sfnx.syntax import (
     same_code,
     sensitivity,
     strictness,
+    unsupported_reference,
 )
+
+
+@pytest.mark.parametrize(
+    "code, reference",
+    [
+        # Where nothing gives an item: the top of the expression, a
+        # function's body there, the first step of a path there.
+        ("foo", "foo"),
+        ("$", "$"),
+        ("$.foo", "$"),
+        ("foo[0]", "foo"),
+        ("{'a': foo}", "foo"),
+        ("$exists(foo) ? 1 : 0", "foo"),
+        ("(function() { $exists(foo) })()", "foo"),
+        ("$map($x, function($v) { foo })", "foo"),
+        # $$ is rejected everywhere.
+        ("$$", "$$"),
+        ("$x[$$.a = 1]", "$$"),
+        # A later step, a filter, a grouping and a sort give an item.
+        ("$x.foo", None),
+        ("$x.(foo)", None),
+        ("$x[foo]", None),
+        ("$x[$ > 1]", None),
+        ("$x{$string(a): foo}", None),
+        ("$x^(a)", None),
+        # A function called without its argument reads the input, which is
+        # undefined there, and is accepted; so is a $ in a string.
+        ("$string()", None),
+        ("'$ foo'", None),
+        ("$a + 1", None),
+        # What the parser cannot read.
+        ("$foo(", None),
+    ],
+)
+def test_what_step_functions_rejects_for_want_of_an_input(code, reference):
+    assert unsupported_reference(code) == reference
 
 
 @pytest.mark.parametrize(

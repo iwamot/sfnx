@@ -153,6 +153,16 @@ def test_the_parameter_of_a_comprehension_is_not_a_variable_it_reads():
             ),
             "b reads a, which jsonata() binds before it",
         ),
+        # Step Functions gives the expression no input: it rejects these.
+        (
+            (
+                'm: list[dict] = input["m"]\ni: int = jsonata("$exists(foo) ? 1 : 0")\n'
+                "return m[i]"
+            ),
+            "jsonata() reads foo where Step Functions gives it nothing to read",
+        ),
+        ('return jsonata("$.a")', "jsonata() reads $ where"),
+        ('return jsonata("$$")', "jsonata() reads $$ where"),
     ],
 )
 def test_diagnostics(body, message):

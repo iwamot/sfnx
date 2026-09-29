@@ -66,6 +66,7 @@ from sfnx.jsontypes import (
     union,
 )
 from sfnx.module import Constant, data, holds, qualified
+from sfnx.syntax import unsupported_reference
 
 COMPARISONS: dict[type[ast.cmpop], str] = {
     ast.Eq: "=",
@@ -2613,6 +2614,14 @@ class Translator:
             raise CompileError(
                 "jsonata() takes the expression as a string written in the "
                 f"source, or a name assigned one outside the machine: {usage}",
+                node,
+            )
+        reference = unsupported_reference(held.value)
+        if reference is not None:
+            raise CompileError(
+                f"jsonata() reads {reference} where Step Functions gives it "
+                "nothing to read, which it rejects: pass the value by name and "
+                'read its variable, as jsonata("$v.a", v=value)',
                 node,
             )
         bindings = []

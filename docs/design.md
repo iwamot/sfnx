@@ -83,12 +83,13 @@ A construct is accepted when ASL or JSONata has a counterpart for it and its mea
 
 ## What the compiler relies on
 
-From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14, 2026-09-18, 2026-09-22, 2026-09-23, 2026-09-24, 2026-09-25 and 2026-09-26).
+From the Step Functions and JSONata documentation, from [jsonata-python](https://github.com/rayokota/jsonata-python), and from Step Functions itself where noted (TestState, ValidateStateMachineDefinition and executions, measured on 2026-09-13, 2026-09-14, 2026-09-18, 2026-09-22, 2026-09-23, 2026-09-24, 2026-09-25, 2026-09-26 and 2026-09-29).
 
 ### JSONata in Step Functions
 
 - Step Functions implements JSONata 2.0.6 without `$eval`, and adds `$partition`, `$range`, `$hash`, `$random`, `$uuid` and `$parse`. An expression has a one-second limit and a memory limit; every failure is `States.QueryEvaluationError`.
 - An expression that returns undefined fails, in any field and inside objects, arrays and `Assign` (measured).
+- An expression has no input: validating the definition rejects `$`, and a field name such as `foo`, where no step of a path gives them an item, at the top of the expression, in a function's body there (`$map($xs, function($v) { foo })` too) or in the first step of a path there ("Reference to 'foo' at the top level is not supported"), and `$$` anywhere, in a filter too. A later step of a path, a filter, a grouping and a sort give them an item (`$states.input.m[foo]`, `$x.(foo)`). A function called without the argument its signature takes from the input, as `$string()` or `$substring(1, 2)`, gets undefined there, and each item inside a filter (TestState; measured on 2026-09-29).
 - A function is not a value: an expression that returns one, alone or inside an object or an array, fails with `States.QueryEvaluationError` ("returned an unsupported result type") in `Assign`, `Output` and a Choice's `Condition` alike (TestState; measured). A JSONata function is used only inside the expression that defines it.
 - `Assign` evaluates all its expressions with the values from before the state, then assigns. `Assign` and `Output` of a state are evaluated in parallel.
 - Binding a variable hides the built-in function of the same name (`count` hides `$count`), and ValidateStateMachineDefinition does not report it: calling the function fails when it runs (`T1006: Attempted to invoke a non-function`; measured).
