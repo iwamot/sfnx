@@ -275,11 +275,13 @@ def test_a_name_the_text_binds_or_spells_is_not_a_read(text, output):
     assert asl.run(compiled, {}) == [output, 1]
 
 
-def test_a_return_of_a_value_that_changes_keeps_its_pass():
-    """The return is the variable itself, whose value changes on each
-    evaluation, so the Pass evaluates it once, as Python does."""
+def test_a_return_of_a_value_that_changes_is_the_output():
+    """The Output evaluates it once, as Python does, as it does
+    random.random()."""
     compiled = definition('b = jsonata("$random()")\nreturn b')
-    assert [s["Type"] for s in compiled["States"].values()] == ["Pass", "Succeed"]
+    assert compiled["States"] == {
+        "return": {"Type": "Succeed", "Output": "{% $random() %}"}
+    }
 
 
 @pytest.mark.parametrize(

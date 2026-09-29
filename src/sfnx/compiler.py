@@ -31,7 +31,6 @@ from sfnx.expressions import (
     expression,
     literal,
     obj,
-    opaque,
     operand,
     spelling,
     template_of,
@@ -1515,12 +1514,14 @@ class Scope:
     def holds_still(self, values: list[Expr]) -> bool:
         """Whether values read the same in the Assign or the Output of the
         state that holds them as in a state after it. The State part of the
-        context names the state it is read in, and what a jsonata() expression
-        reads is not known. The time and a random value are read when the
-        Assign runs: for a Task, a Parallel, a Map or a Wait, when it ends
-        (measured), and for a Choice rule, a catcher or a Pass, where it is,
-        both after what comes before them, as Python reads them."""
-        return not any(value.opaque for value in values) and not refused(
+        context names the state it is read in, and what $eval, or code the
+        parser cannot read, reads is not known. The time and a random value
+        are read when the Assign runs: for a Task, a Parallel, a Map or a
+        Wait, when it ends (measured), and for a Choice rule, a catcher or a
+        Pass, where it is, both after what comes before them, as Python reads
+        them."""
+        unknown = any(v.sensitivity.dependencies_unknown for v in values)
+        return not unknown and not refused(
             context_invariant([v.code for v in values], Differs.CONTEXT),
             "holds_still",
         )
@@ -1542,7 +1543,6 @@ class Scope:
                     result.values[name],
                     code=f"$sfnx_read_{i}_",
                     template=f"{{% $sfnx_read_{i}_ %}}",
-                    opaque=False,
                 )
                 for i, name in enumerate(changing)
             }
@@ -3647,9 +3647,9 @@ def composed(
     read in place of variables it reads. The field's expression was judged
     with variables, which are never undefined and fail for nothing, in their
     place, so the code is never undefined where the field's expression is
-    not and no value is, fails for no value where the field's expression
-    fails for none and each value is never undefined and fails for none,
-    and is opaque where the field's expression or a value is.
+    not and no value is, and fails for no value where the field's
+    expression fails for none and each value is never undefined and fails
+    for none.
     A field that holds a template, whose properties are not known, gives
     the code none of them. Where the field is written as an object or an
     array with expressions among its values, shape is that template. The
@@ -3679,7 +3679,6 @@ def composed(
             precedence,
             leaf.type,
             leaf.boolean,
-            opaque=leaf.opaque or opaque(values),
             defined=leaf.defined and all(v.defined for v in values),
             total=leaf.total and all(v.total and v.defined for v in values),
         )

@@ -338,13 +338,9 @@ def evaluated_once(
     says: an assignment that stays, as those in kept do, is evaluated where
     it is as well. The callers read the values in the Assign or the Output
     that evaluates the assignment, or in a Choice, so the time read there is
-    read between the same calls and waits. Each value is judged by its
-    code, a jsonata() expression that is not settled as well:
-    the syntax tree shows each function the code calls, by whatever name it
-    binds it to, as a variable holds JSON, never a function."""
+    read between the same calls and waits."""
     reads = [Read(code, same_interval=True) for code in codes]
     for name, value in values.items():
-        value = replace(value, opaque=False)
         own = [Read(f"${name}", same_interval=True)] if name in kept else []
         reason = evaluated_as_before(value, name, reads + own)
         if reason is not None:
