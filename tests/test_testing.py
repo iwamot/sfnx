@@ -1289,6 +1289,30 @@ def test_functions_fail_where_step_functions_fails(code, cause):
     assert cause in execution.cause
 
 
+# A function whose signature leaves its first argument to the context reads
+# undefined where nothing gives one, and each item in a filter or a later
+# step of a path, the functions replaced to write as Step Functions does
+# among them (TestState; measured).
+@pytest.mark.parametrize(
+    "code, value",
+    [
+        ("$exists($string()) ? 1 : 0", 0),
+        ("$states.input.m[($exists($string()) ? 1 : 0)]", {"n": "b"}),
+        ("$states.input.s[$substring(1, 1) = 'b']", "ab"),
+        ("$states.input.t.$fromMillis()", "2026-01-01T00:00:00.000Z"),
+    ],
+)
+def test_a_left_out_argument_is_read_from_the_context(code, value):
+    output = machine({"Type": "Succeed", "Output": "{% " + code + " %}"})
+    given = {
+        "m": [{"foo": 1, "n": "a"}, {"n": "b"}],
+        "s": ["ab", "cd"],
+        "t": [1767225600000],
+    }
+    execution = testing.run(output, given)
+    assert execution.output == value
+
+
 # What a Wait reads at run time: Timestamp and Seconds measured with TestState.
 @pytest.mark.parametrize(
     "field, given, fails",
