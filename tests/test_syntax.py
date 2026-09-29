@@ -20,6 +20,7 @@ from sfnx.syntax import (
     names_read,
     path_alone,
     propagation,
+    reads_context,
     reads_own_context,
     reads_own_states,
     reads_state_name,
@@ -29,6 +30,49 @@ from sfnx.syntax import (
     strictness,
     unsupported_reference,
 )
+
+
+@pytest.mark.parametrize(
+    "code, reads",
+    [
+        # Called without the argument the context gives.
+        ("$string()", True),
+        ("$exists($string()) ? 1 : 0", True),
+        # The arguments written may take the second place and on, as a
+        # number first does for $substring, and 'b' and 2 do for $split.
+        ("$substring($s, 1)", True),
+        ("$substring(1, 2)", True),
+        ("$split('b', 2)", True),
+        ("$fromMillis($n)", True),
+        # -$n is a number or undefined, and undefined as the width leaves
+        # the first place to the context.
+        ("$pad($s, -$n)", True),
+        # Called with ? or passed or bound as a value, its arguments are not
+        # all written in the call.
+        ("$pad(?, -10)", True),
+        ("$map($xs, $string)", True),
+        ("($f := $string; $f())", True),
+        ("$map($xs, function($v) { $string() })", True),
+        # What the parser cannot read.
+        ("$foo(", True),
+        # Every argument written, or ones that can only take their own
+        # places: a string for $split's separator, a number for $pad's width.
+        ("$string($x)", False),
+        ("$substring($s, 1, 2)", False),
+        ("$split($v, '')", False),
+        ("$pad($s, -10)", False),
+        ("$s ~> $pad(-10)", False),
+        ("$formatNumber($x, '0.00')", False),
+        ("$fromMillis($millis() + 3600000)", False),
+        ("$match($text, /a/)", False),
+        # A later step or a filter gives the item it reads.
+        ("$xs.$string()", False),
+        ("$xs[$string() = 'a']", False),
+        ("$a + 1", False),
+    ],
+)
+def test_what_may_read_the_context(code, reads):
+    assert reads_context(code) is reads
 
 
 @pytest.mark.parametrize(

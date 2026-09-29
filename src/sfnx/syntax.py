@@ -9,10 +9,13 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
 from functools import cache
+from itertools import product
 
 import jsonata
 from jsonata.jexception import JException
+from jsonata.jsonata import Jsonata
 from jsonata.parser import Parser
+from jsonata.signature import Signature
 
 # A variable as JSONata spells one, found in the text of a string or a
 # regular expression.
@@ -782,6 +785,126 @@ def references(node: Parser.Symbol, given: bool) -> Iterator[str]:
         handled += ("steps",)
     for child in children(node, *handled):
         yield from references(child, given)
+
+
+# What a value may be, as a signature's pattern spells it: an array, a
+# string, a number, a boolean, null, a function, an object, or missing.
+SYMBOLS = "asnblfom"
+
+
+@cache
+def filled_from_context() -> dict[str, re.Pattern[str]]:
+    """The pattern of each built-in function whose first argument, left out,
+    is taken from the context, as its signature marks with `-`: $string,
+    $substring, $split and the others. The pattern is the library's own,
+    one group for each argument, in the order of the signature."""
+    frame = Jsonata.static_frame
+    assert frame is not None
+    found = {}
+    for name, function in frame.bindings.items():
+        signature = getattr(function, "signature", None)
+        assert isinstance(signature, Signature)
+        if signature._params and signature._params[0].context:
+            assert signature._regex is not None
+            found[name] = signature._regex
+    return found
+
+
+@cache
+def may_fill(name: str, arguments: tuple[str, ...]) -> bool:
+    """Whether a call of the function of a name may take its first argument
+    from the context, given what each argument may be, as symbols_of says:
+    for some of them, the pattern matches with nothing in the first group,
+    as $split('b', 2) does, which splits the context by 'b'."""
+    pattern = filled_from_context()[name]
+    for symbols in product(*arguments):
+        matched = pattern.fullmatch("".join(symbols))
+        if matched is not None and matched.group(1) == "":
+            return True
+    return False
+
+
+# What an operator gives: arithmetic a number, or undefined for an undefined
+# operand, a comparison a boolean or undefined, & a string, and and or a
+# boolean.
+GIVES = {
+    **dict.fromkeys(("+", "-", "*", "/", "%"), "nm"),
+    **dict.fromkeys(("=", "!=", "<", "<=", ">", ">=", "in"), "bm"),
+    "&": "s",
+    "and": "b",
+    "or": "b",
+}
+# What a number or a string written out, a regular expression and a function
+# defined in place are.
+WRITTEN = {"number": "n", "string": "s", "regex": "f", "lambda": "f"}
+
+
+def symbols_of(node: Parser.Symbol) -> str:
+    """What a node may give, as the symbols of a signature's pattern: one for
+    a value written out, a function, an object or an array constructor, or
+    an operator, as GIVES says, and any other anything."""
+    kind = node.type
+    if kind in WRITTEN:
+        return WRITTEN[kind]
+    if kind == "value" and isinstance(node.value, bool):
+        return "b"
+    if kind == "unary":
+        return {"{": "o", "[": "a", "-": "nm"}.get(str(node.value), SYMBOLS)
+    if kind == "binary":
+        return GIVES.get(str(node.value), SYMBOLS)
+    return SYMBOLS
+
+
+def reads_context(code: str) -> bool:
+    """Whether the code may read the context it is evaluated in, which is
+    undefined where Step Functions evaluates an expression, and each item
+    in a filter or a later step of a path: a call where no step gives an
+    item that may take its first argument from the context, as $string()
+    does, or a function that does so passed or bound as a value, or called
+    with ? or after ~>, whose arguments are not all written in the call.
+    What the parser cannot read may read anything."""
+    tree = tree_of(code)
+    return tree is None or any(filling(tree, False, False))
+
+
+def filling(node: Parser.Symbol, given: bool, applied: bool) -> Iterator[bool]:
+    """What reads_context finds in node: given says whether a step around it
+    gives it an item, and applied whether ~> puts a value, which may be
+    anything, before the arguments of a call that is node."""
+    kind = node.type
+    functions = filled_from_context()
+    if kind in {"function", "partial"}:
+        assert node.procedure is not None and node.arguments is not None
+        name = node.procedure.value if node.procedure.type == "variable" else None
+        if not given and name in functions:
+            arguments = tuple(symbols_of(a) for a in node.arguments)
+            if applied:
+                arguments = (SYMBOLS, *arguments)
+            yield kind == "partial" or may_fill(name, arguments)
+        callee: tuple[Parser.Symbol, ...] = (node.procedure,) if name else ()
+    else:
+        callee = ()
+    if kind == "variable" and node.value in functions:
+        # Passed or bound as a value, a function is called with arguments not
+        # written here; a callee is handled above.
+        yield True
+    for key in PER_ITEM:
+        for child in within(getattr(node, key, None)):
+            yield from filling(child, True, False)
+    handled: tuple[str, ...] = PER_ITEM
+    if kind == "apply":
+        assert node.lhs is not None and node.rhs is not None
+        yield from filling(node.lhs, given, False)
+        yield from filling(node.rhs, given, True)
+        handled += ("lhs", "rhs")
+    if kind == "path":
+        assert node.steps is not None
+        for index, step in enumerate(node.steps):
+            yield from filling(step, given or index > 0, False)
+        handled += ("steps",)
+    for child in children(node, *handled):
+        if not any(child is c for c in callee):
+            yield from filling(child, given, False)
 
 
 def binds(node: Parser.Symbol) -> frozenset[str]:

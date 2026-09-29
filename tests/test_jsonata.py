@@ -302,3 +302,26 @@ def test_the_way_into_a_loop_keeps_a_round_it_cannot_read(value, text):
     assert compiled["States"]["s"]["Assign"]["c"] == 1
     s, t = asl.run(compiled, {})
     assert t == (s if text == "$s" else "ab")
+
+
+# Each item that $substring(1, 1) reads, where the context gives one, and the
+# undefined it reads where none does, which picks the first item.
+PICKS = "$substring(1, 1) = 'b' ? 1 : 0"
+
+
+def test_a_position_that_may_read_the_context_is_bound_before_the_filter():
+    body = f'xs: list[str] = input["xs"]\nreturn xs[jsonata("{PICKS}")]'
+    compiled = definition(body)
+    assert compiled["States"]["return"]["Output"] == (
+        f"{{% ($v := ({PICKS}); $xs[$v]) %}}"
+    )
+    assert asl.run(compiled, {"xs": ["ab", "cd"]}) == "ab"
+
+
+def test_an_assignment_that_may_read_the_context_is_not_read_in_a_filter():
+    body = (
+        f'xs: list[str] = input["xs"]\ni: int = jsonata("{PICKS}")\n'
+        "wait(1)\nreturn xs[i]"
+    )
+    compiled = definition(body)
+    assert asl.run(compiled, {"xs": ["ab", "cd"]}) == "ab"
