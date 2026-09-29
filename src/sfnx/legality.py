@@ -218,15 +218,24 @@ def failure_kept(code: str, values: dict[str, Expr]) -> Reject | None:
 
 @dataclass(frozen=True)
 class Field:
-    """The code of a field a value would be read in: whether no call or wait
-    comes between the value's assignment and it, as for a field evaluated
-    before the state's call or wait, or in a state that makes none, where
-    the value is assigned before the state, and whether the state may
+    """The code of a field a state evaluates: whether before the state's call
+    or wait, or in a state that makes none, and whether the state may
     evaluate it more than once, as a retrier runs a state again and a Map's
     ItemSelector runs for each item."""
 
     code: str
-    before: bool
+    before_effect: bool
+    repeated: bool = False
+
+
+@dataclass(frozen=True)
+class Read:
+    """The code a value would be read in: whether no call or wait is shown to
+    come between the value's assignment and it, false wherever that is not
+    shown, and whether it may be evaluated more than once."""
+
+    code: str
+    same_interval: bool
     repeated: bool = False
 
 
@@ -259,36 +268,38 @@ def fields_of(state: dict[str, object]) -> list[Field]:
     for key, value in state.items():
         if key in NOT_EVALUATED:
             continue
-        before = kind not in BEFORE or key in BEFORE[kind]
+        before_effect = kind not in BEFORE or key in BEFORE[kind]
         repeated = retried or key in EACH_ITEM.get(kind, frozenset())
-        found += [Field(code, before, repeated) for code in expressions_in(value)]
+        found += [
+            Field(code, before_effect, repeated) for code in expressions_in(value)
+        ]
     return found
 
 
-def evaluated_as_before(value: Expr, name: str, fields: list[Field]) -> Reject | None:
+def evaluated_as_before(value: Expr, name: str, reads: list[Read]) -> Reject | None:
     """Whether a value that changes on evaluation, read in place of the
-    variable of a name in fields, gives what the one evaluation of its
+    variable of a name in reads, gives what the one evaluation of its
     assignment gave: one that may give another value each time is read at
-    most once, and the time is read in one field, which one evaluation reads
+    most once, and the time is read in one code, which one evaluation reads
     once however often it reads it (measured), with no call or wait between
     it and the assignment. What it reads that is not written out refuses. A
-    field the state evaluates more than once may read neither."""
+    code evaluated more than once may read neither."""
     found = value.sensitivity
     if not found.varies:
         return None
     if found.dependencies_unknown:
         return Reject.DEPENDENCIES_UNKNOWN
-    reading = [f for f in fields if name in names_read(f.code)]
+    reading = [r for r in reads if name in names_read(r.code)]
     if not reading:
         return None
-    if any(f.repeated for f in reading):
+    if any(r.repeated for r in reading):
         return (
             Reject.CHANGES_EVALUATION_COUNT
             if found.evaluation_count
             else Reject.CHANGES_EVALUATION_INSTANCE
         )
     if found.evaluation_count:
-        counts = [evaluations(f.code, name).maximum for f in reading]
+        counts = [evaluations(r.code, name).maximum for r in reading]
         if None in counts or sum(c or 0 for c in counts) > 1:
             return Reject.CHANGES_EVALUATION_COUNT
     # Read in another state between the same calls and waits: allowed by
@@ -296,7 +307,7 @@ def evaluated_as_before(value: Expr, name: str, fields: list[Field]) -> Reject |
     if found.evaluation_instance:
         if len(reading) > 1:
             return Reject.CHANGES_EVALUATION_INSTANCE
-        if not all(f.before for f in reading):
+        if not all(r.same_interval for r in reading):
             return Reject.CROSSES_EFFECT
     return None
 
@@ -313,14 +324,14 @@ def evaluated_once(
     judged by its code, a jsonata() expression that is not settled as well:
     the syntax tree shows each function the code calls, by whatever name it
     binds it to, as a variable holds JSON, never a function."""
-    fields = [Field(code, before=True) for code in codes]
+    reads = [Read(code, same_interval=True) for code in codes]
     for name, value in values.items():
         value = replace(value, opaque=False)
         found = value.sensitivity
         if found.evaluation_instance and not found.dependencies_unknown:
             return Reject.CHANGES_EVALUATION_INSTANCE
-        own = [Field(f"${name}", before=True)] if name in kept else []
-        reason = evaluated_as_before(value, name, fields + own)
+        own = [Read(f"${name}", same_interval=True)] if name in kept else []
+        reason = evaluated_as_before(value, name, reads + own)
         if reason is not None:
             return reason
     return None
@@ -339,7 +350,7 @@ def failure_seen_before(
     if holder is not state or not isinstance(value, Expr) or not value.defined:
         return False
     return any(
-        f.before and not f.repeated and same_code(f.code, value.code)
+        f.before_effect and not f.repeated and same_code(f.code, value.code)
         for f in fields_of(state)
         if state["Type"] in BEFORE
     )

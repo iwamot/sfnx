@@ -4,7 +4,7 @@ import textwrap
 import pytest
 
 from sfnx import testing
-from sfnx.compiler import compile_source
+from sfnx.compiler import compile_source, emitted, fold_into_catching_tasks, from_asl
 from sfnx.diagnostics import CompileError
 from tests import asl
 
@@ -1174,3 +1174,40 @@ def test_an_assignment_the_except_reads_stays_in_the_state_before_a_failure():
     with pytest.raises(asl.Failure) as failure:
         asl.run(compiled, {"l0": []})
     assert failure.value.error == "States.QueryEvaluationError"
+
+
+@pytest.mark.parametrize(
+    "assign, folded",
+    [
+        # The Pass takes n again from one read: the Task's draw goes.
+        ({"n": "{% $n + 1 %}"}, True),
+        # The Task keeps n, which would be drawn once more.
+        ({"m": "{% $n + 1 %}"}, False),
+    ],
+)
+def test_a_catching_task_takes_in_a_random_value_read_once(assign, folded):
+    """The Catch is for an error of the call, so it takes no failure of the
+    Assign, and its way reads nothing either assigns."""
+    written = {
+        "StartAt": "t",
+        "States": {
+            "t": {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::lambda:invoke",
+                "Catch": [{"ErrorEquals": ["Declined"], "Next": "c"}],
+                "Assign": {"n": "{% $random() %}"},
+                "Next": "p",
+            },
+            "p": {"Type": "Pass", "Assign": assign, "Next": "d"},
+            "c": {"Type": "Succeed", "Output": 0},
+            "d": {"Type": "Succeed", "Output": "{% $n %}"},
+        },
+    }
+    definition = from_asl(written)
+    assert isinstance(definition, dict)
+    fold_into_catching_tasks(definition, {})
+    states = emitted(definition["States"])
+    assert isinstance(states, dict)
+    assert ("p" not in states) is folded
+    if folded:
+        assert states["t"]["Assign"] == {"n": "{% ($random()) + 1 %}"}
