@@ -441,6 +441,10 @@ def test_code_that_may_differ_or_reads_something_has_no_value_here(code):
         ("$millis()", False, True, False),
         ("$map($xs, $random)", True, False, False),
         ("$eval('1')", False, False, True),
+        # What the parser cannot read may depend on anything; the names its
+        # text spells still count.
+        ("$foo(", False, False, True),
+        ("$random(", True, False, True),
     ],
 )
 def test_what_moving_code_must_keep(code, count, instance, unknown):
