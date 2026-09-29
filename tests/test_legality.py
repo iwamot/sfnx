@@ -107,6 +107,15 @@ def test_where_a_value_would_be_read_otherwise(holder, reason):
     assert captures(holder, {"a": expression("$x + 1", frozenset({"x"}))}) is reason
 
 
+@pytest.mark.parametrize("read", ["$a", "$xs[$a]"])
+def test_a_value_that_may_read_the_context_is_not_written_in(read):
+    """Read where the context is the same or in a filter alike: the value is
+    kept out wherever the variable is read."""
+    value = expression("$exists($string()) ? 1 : 0")
+    holder = {"Output": f"{{% {read} %}}"}
+    assert captures(holder, {"a": value}) is Reject.READS_CONTEXT
+
+
 def test_a_refusal_is_noted_with_its_kind(caplog):
     caplog.set_level(logging.DEBUG, "sfnx.legality")
     assert not refused(None, "here")

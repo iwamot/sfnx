@@ -37,6 +37,7 @@ from sfnx.syntax import (
     names_read,
     path_alone,
     propagation,
+    reads_context,
     reads_own_context,
     reads_own_states,
     reads_state_name,
@@ -135,6 +136,13 @@ class Reject(Enum):
     STATE_NAME_READ = (
         BLANKET,
         "the value reads the State part of the context, which names the state",
+    )
+    READS_CONTEXT = (
+        BLANKET,
+        (
+            "the value may read the context it is evaluated in, as $string() "
+            "does, which a filter where it would go gives otherwise"
+        ),
     )
 
     @property
@@ -391,7 +399,11 @@ def resolve_reads(
 
 def captures(holder: dict[str, object], values: dict[str, Expr]) -> Reject | None:
     """Whether writing values in place of their variables in holder would
-    change what they read, as reads_as says of each."""
+    change what they read, as reads_as says of each. A value that may read
+    the context it is evaluated in, as reads_context says, is not written in
+    at all, wherever the variable is read."""
+    if any(reads_context(v.code) for v in values.values()):
+        return Reject.READS_CONTEXT
     if all(reads_as(holder, n, v) for n, v in values.items()):
         return None
     return Reject.NAME_CAPTURE

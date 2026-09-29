@@ -66,7 +66,7 @@ from sfnx.jsontypes import (
     union,
 )
 from sfnx.module import Constant, data, holds, qualified
-from sfnx.syntax import unsupported_reference
+from sfnx.syntax import reads_context, unsupported_reference
 
 COMPARISONS: dict[type[ast.cmpop], str] = {
     ast.Eq: "=",
@@ -1788,7 +1788,14 @@ class Translator:
         self.container(
             node.value, value, ARRAY, "positions look into lists and strings"
         )
-        return index(value, position)
+        if not reads_context(position.code):
+            return index(value, position)
+        # A position that may read the context would read each item inside
+        # the filter, so it is bound before it, and a list that is more than
+        # a variable before the position, as Python evaluates the list first.
+        first = [value] if self.bind(value) else []
+        with self.once([*first, position], always=True) as (bindings, bound):
+            return block(bindings, index(bound[0] if first else value, bound[-1]))
 
     def slice(self, node: ast.expr, value: Expr, key: ast.Slice) -> Expr:
         """xs[a:b] and s[a:b]. A bound written with a minus sign counts back
