@@ -3,9 +3,12 @@ rather than from its text, so a name written in a string is told apart from
 one the expression reads or binds."""
 
 import json
+import math
 import re
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
+from enum import Enum
 from functools import cache
 
 import jsonata
@@ -181,6 +184,42 @@ def always_read(code: str) -> frozenset[str]:
     return frozenset() if tree is None else eager(tree, frozenset())
 
 
+class Strictness(Enum):
+    """Whether evaluating code evaluates a read of a variable: every time, only
+    on some evaluations, as in a branch of a conditional, or never."""
+
+    ALWAYS = "always"
+    CONDITIONAL = "conditional"
+    NEVER = "never"
+
+
+def strictness(code: str, name: str) -> Strictness:
+    """How the code reads the variable of a name, as always_read and
+    names_read say."""
+    if name in always_read(code):
+        return Strictness.ALWAYS
+    if name in names_read(code):
+        return Strictness.CONDITIONAL
+    return Strictness.NEVER
+
+
+class UndefinedPropagation(Enum):
+    """Whether code gives undefined, which fails an Assign or an Output, where
+    a variable it reads is undefined: certainly, where the code is the
+    variable itself, and not known otherwise, as $type() and & give a value
+    for undefined."""
+
+    PROPAGATES = "propagates"
+    UNKNOWN = "unknown"
+
+
+def propagation(code: str, name: str) -> UndefinedPropagation:
+    """How an undefined variable of a name passes through the code."""
+    if lone_variable(code) == name:
+        return UndefinedPropagation.PROPAGATES
+    return UndefinedPropagation.UNKNOWN
+
+
 def eager(node: Parser.Symbol, bound: frozenset[str]) -> frozenset[str]:
     """What always_read says of node, with the names bound around it, which
     are not the variables of those names."""
@@ -222,6 +261,165 @@ def eager(node: Parser.Symbol, bound: frozenset[str]) -> frozenset[str]:
         ]
         return frozenset().union(*(eager(part, bound) for part in parts))
     return frozenset()
+
+
+@dataclass(frozen=True)
+class EvaluationCount:
+    """How often each evaluation of code evaluates a read of a variable: at
+    least minimum times, and at most maximum, None where no bound is shown,
+    as for a read in a function a comprehension runs for each item. Both are
+    bounds on the safe side, not counts."""
+
+    minimum: int
+    maximum: int | None
+
+
+def evaluations(code: str, name: str) -> EvaluationCount:
+    """How often the code evaluates the variable of a name: at least once
+    where it reads it every time, as always_read says, and at most as
+    most_reads bounds it."""
+    most = most_reads(code, name)
+    return EvaluationCount(
+        1 if name in always_read(code) else 0,
+        None if most == math.inf else int(most),
+    )
+
+
+def shape(node: Parser.Symbol) -> object:
+    """A node as what it means, apart from where it is written: its type, its
+    value and the shapes of the nodes under it, field by field. Parentheses
+    around one expression, with no filter of their own, are that
+    expression."""
+    if wraps(node):
+        assert node.expressions is not None
+        return shape(node.expressions[0])
+    parts = []
+    for key, value in sorted(vars(node).items()):
+        if key in POSITIONAL:
+            continue
+        found = list(within(value))
+        if found:
+            parts.append((key, tuple(shape(n) for n in found)))
+        elif isinstance(value, (str, int, float, bool)) or value is None:
+            parts.append((key, value))
+    return (node.type, tuple(parts))
+
+
+def wraps(node: Parser.Symbol) -> bool:
+    """Whether a node is parentheses around one expression, with no filter
+    of their own."""
+    return (
+        node.type == "block"
+        and len(node.expressions or []) == 1
+        and not (filtered(node))
+    )
+
+
+# The fields of a node that say where it is written, or how the parser went
+# about it, rather than what it means.
+POSITIONAL = frozenset(
+    {"_outer_instance", "position", "id", "lbp", "bp", "level", "_jsonata_lambda"}
+)
+
+
+@cache
+def shapes(code: str) -> Counter[object] | None:
+    """The shape of each node of the code's syntax tree, counted, or None
+    where the parser cannot read it."""
+    tree = tree_of(code)
+    if tree is None:
+        return None
+    return Counter(shape(node) for node in nodes(tree) if not wraps(node))
+
+
+def same_code(first: str, second: str) -> bool:
+    """Whether two codes have the same syntax tree, however they are spaced
+    or parenthesized; not where the parser cannot read either."""
+    one, other = tree_of(first), tree_of(second)
+    return one is not None and other is not None and shape(one) == shape(other)
+
+
+def occurrences(code: str, part: str) -> int | None:
+    """How many times the syntax tree of code holds that of part, or None
+    where the parser cannot read either."""
+    found, wanted = shapes(code), tree_of(part)
+    if found is None or wanted is None:
+        return None
+    return found[shape(wanted)]
+
+
+# The fields of a node that are evaluated once for each item: the filters and
+# the grouping of a step, and the terms of a sort.
+PER_ITEM = ("predicate", "stages", "group", "terms")
+
+
+def most_reads(code: str, name: str) -> float:
+    """How often, at most, the code reads the variable of a name each time
+    it is evaluated: a bound on the safe side, not a count. A read in a
+    function's body, a filter, a grouping, a sort term or a step of a path
+    after the first may be evaluated once for each item, so it counts as
+    unbounded, however many items there turn out to be. A conditional
+    counts the branch that reads more. Where the parser cannot read the
+    code, what it reads is not known, so it is unbounded."""
+    tree = tree_of(code)
+    if tree is None:
+        return math.inf
+    return most(tree, name, frozenset())
+
+
+def most(node: Parser.Symbol, name: str, bound: frozenset[str]) -> float:
+    """What most_reads says of node, with the names bound around it, which
+    are not the variable of that name."""
+    kind = node.type
+    rest = bound | binds(node)
+    if any(repeats(child, name, rest) for child in per_item(node)):
+        return math.inf
+    if kind == "variable":
+        return 1 if node.value == name and name not in bound else 0
+    if kind == "bind":
+        assert node.rhs is not None
+        return most(node.rhs, name, bound)
+    if kind == "lambda":
+        assert node.body is not None
+        return math.inf if repeats(node.body, name, bound | parameters(node)) else 0
+    if kind == "condition":
+        assert node.condition is not None and node.then is not None
+        otherwise = getattr(node, "_else", None)
+        branches = [node.then, *([otherwise] if otherwise is not None else [])]
+        return most(node.condition, name, bound) + max(
+            most(branch, name, bound) for branch in branches
+        )
+    if kind == "block":
+        assert node.expressions is not None
+        found: float = 0
+        inner = bound
+        for expression in node.expressions:
+            found += most(expression, name, inner)
+            if expression.type == "bind":
+                inner = inner | {text(expression.lhs)}
+        return found
+    if kind == "path":
+        assert node.steps is not None
+        head, *steps = node.steps
+        found = most(head, name, rest)
+        rest = rest | binds(head)
+        for step in steps:
+            if repeats(step, name, rest):
+                return math.inf
+            rest = rest | binds(step)
+        return found
+    return sum(most(child, name, rest) for child in children(node, *PER_ITEM))
+
+
+def per_item(node: Parser.Symbol) -> Iterator[Parser.Symbol]:
+    for key in PER_ITEM:
+        yield from within(getattr(node, key, None))
+
+
+def repeats(node: Parser.Symbol, name: str, bound: frozenset[str]) -> bool:
+    """Whether node reads the variable of a name, where each reading may be
+    one of many."""
+    return name in set(free(node, bound))
 
 
 # The integers a double holds exactly, which JSONata computes with as Python
@@ -402,16 +600,57 @@ def reads_state_name(code: str) -> bool:
     )
 
 
-# What gives another value each time it is called: the time, a random value,
-# and $eval, which may call either and reads variables by names not written
-# out.
-CHANGING = frozenset({"millis", "now", "random", "uuid", "eval"})
+# What gives another value each time it is called: a random value, which
+# every call gives anew; the time, which one evaluation of an expression reads
+# once, however many calls it makes (measured); and $eval, which may call
+# either and reads variables by names not written out.
+COUNTED = frozenset({"random", "uuid"})
+TIMED = frozenset({"millis", "now"})
+UNRESOLVED = frozenset({"eval"})
+CHANGING = COUNTED | TIMED | UNRESOLVED
+
+
+@dataclass(frozen=True)
+class Sensitivity:
+    """What a move of code must keep for it to give what it gave.
+    evaluation_count: each evaluation may give another value, as $random()
+    and $uuid() do, so the move must keep how often it is evaluated.
+    evaluation_instance: one evaluation of a {% %} gives one value however
+    often it reads it, and another evaluation may give another, as $now()
+    and $millis() do, so the move must keep it within the same evaluation,
+    or between the same calls and waits. dependencies_unknown: what it reads
+    is not written out, as with $eval, which reads variables by name and may
+    do either of the others."""
+
+    evaluation_count: bool = False
+    evaluation_instance: bool = False
+    dependencies_unknown: bool = False
+
+    @property
+    def varies(self) -> bool:
+        """Whether evaluating it again may give another value."""
+        return (
+            self.evaluation_count
+            or self.evaluation_instance
+            or (self.dependencies_unknown)
+        )
+
+
+def sensitivity(code: str) -> Sensitivity:
+    """What moving the code must keep, from the functions of CHANGING it
+    reads, to call them or to pass them on, as to $map."""
+    found = names_read(code)
+    return Sensitivity(
+        evaluation_count=bool(found & COUNTED),
+        evaluation_instance=bool(found & TIMED),
+        dependencies_unknown=bool(found & UNRESOLVED),
+    )
 
 
 def changes(code: str) -> bool:
-    """Whether the code may give another value when evaluated again: it reads
-    a function of CHANGING, to call it or to pass it on, as to $map."""
-    return bool(names_read(code) & CHANGING)
+    """Whether the code may give another value when evaluated again, as
+    sensitivity says."""
+    return sensitivity(code).varies
 
 
 def free(node: Parser.Symbol, bound: frozenset[str]) -> Iterator[str]:

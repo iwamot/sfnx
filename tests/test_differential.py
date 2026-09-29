@@ -7,10 +7,12 @@ both. A distributed_map whose function raises fails with
 States.ExceedToleratedFailureThreshold in Step Functions, so the CPython side
 raises that error for it too."""
 
+import contextlib
 import textwrap
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 
 from hypothesis import HealthCheck, event, given, settings
 from hypothesis import strategies as st
@@ -424,7 +426,7 @@ class Program:
             forms += ["forever", "try", "wait"]
             forms += ["parallel", "map", "distributed"]
         if self.volatile:
-            forms += ["random", "uuid", "now", "retry"]
+            forms += ["random", "uuid", "now", "retry", "each"]
         form = self.pick(forms)
         targets = [kind for kind, names in env.assignable.items() if names]
         inner = replace(env, depth=env.depth + 1)
@@ -469,6 +471,16 @@ class Program:
             name = self.pick(env.assignable[STRING])
             made = "uuid.uuid4()" if form == "uuid" else "datetime.now()"
             self.emit(indent, f"{name} = str({made})")
+        elif form == "each" and env.assignable[NUMBER] and env.assignable[NUMBERS]:
+            # A random value right after a Task, which a comprehension reads for
+            # each item, as the Task's Assign and Output may hold it.
+            name = self.pick(env.assignable[NUMBER])
+            target = self.pick(env.assignable[NUMBERS])
+            call = f'task("{LAMBDA}", {{"FunctionName": "f", "Payload": {{"n": 1}}}})'
+            self.emit(indent, f'{name}: int = {call}["Payload"]')
+            self.emit(indent, f"{name}: int = int(random.random() * 4)")
+            item = self.fresh("x")
+            self.emit(indent, f"{target} = [{name} + {item} for {item} in [1, 2]]")
         elif form == "retry" and env.assignable[NUMBER]:
             name = self.pick(env.assignable[NUMBER])
             payload = self.number(env, 1)
@@ -730,6 +742,55 @@ def in_cpython(program: str, execution_input: object) -> tuple[str, object]:
         return "error", ["States.ExceedToleratedFailureThreshold", str(exc)]
 
 
+@dataclass(frozen=True)
+class Written:
+    """A moment that str() writes as Step Functions writes $now()."""
+
+    text: str
+
+    def __str__(self) -> str:
+        return self.text
+
+
+def cpython_counts(program: str, execution_input: object) -> Counter[str]:
+    """How often CPython calls each function that gives another value on each
+    call, as the program runs to its end or to an error."""
+    counts: Counter[str] = Counter()
+
+    def counted(name: str, value: object) -> Callable[[], object]:
+        def give() -> object:
+            counts[name] += 1
+            return value
+
+        return give
+
+    namespace: dict[str, object] = {}
+    exec(compile(program, "<program>", "exec"), namespace)
+    # The values in_definition gives where they do not vary, as text where
+    # the program writes them as text, so both take the same way.
+    namespace["random"] = SimpleNamespace(random=counted("random", 0.0))
+    namespace["uuid"] = SimpleNamespace(uuid4=counted("uuid", "u0"))
+    namespace["datetime"] = SimpleNamespace(
+        now=counted("now", Written("2026-01-01T00:00:00.000Z"))
+    )
+    declined = namespace["Declined"]
+    assert isinstance(declined, type)
+
+    def task(resource: str, arguments: object, **_: object) -> object:
+        payload = lambda_payload(arguments)
+        if payload < 0:
+            raise declined(str(payload))
+        return {"Payload": payload * 2}
+
+    namespace["task"] = task
+    main = namespace["main"]
+    assert callable(main)
+    # The calls up to an error count as well.
+    with contextlib.suppress(declined):
+        main(execution_input)
+    return counts
+
+
 def in_asl(program: str, execution_input: object) -> tuple[str, object]:
     (definition,) = definitions(program, "<program>", False, checking=True).values()
     try:
@@ -876,3 +937,26 @@ def test_the_passes_keep_what_the_definition_does(data):
     if after.counts == before.counts:
         assert after.error == before.error, shown
         assert same(before.output, after.output), shown
+
+
+@settings(
+    max_examples=200,
+    derandomize=True,
+    database=None,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+@given(st.data())
+def test_the_definition_calls_what_changes_no_more_often_than_cpython(data):
+    """Each function that gives another value on each call is called no more
+    often by the definition than by CPython: an expression the states build
+    read where the assignment's value is, before any pass runs, evaluates it
+    no more often than Python, which the passes then keep, as the test above
+    checks. A value nothing reads may not be evaluated at all."""
+    program = Program(data, volatile=True).source()
+    execution_input = data.draw(INPUTS)
+    expected = cpython_counts(program, execution_input)
+    actual = in_definition(program, execution_input, True, False).counts
+    assert all(actual[n] <= expected[n] for n in actual), (
+        f"{program}\ninput: {execution_input}\nCPython: {expected}\nASL: {actual}"
+    )

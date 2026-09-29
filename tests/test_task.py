@@ -195,6 +195,149 @@ def test_an_assignment_that_could_differ_keeps_its_pass(body):
     assert any(state["Type"] == "Pass" for state in compiled.values())
 
 
+def test_a_random_value_read_for_each_item_after_a_task_is_evaluated_once():
+    """Python evaluates random.random() once, before the comprehension; each
+    item reads that value."""
+    body = f'r: list[int] = task("{LAMBDA}", {{"FunctionName": "f"}})\nx = random.random()\nreturn [x + i for i in r]'
+    compiled = definition(body, "import random\nfrom sfnx import state_machine, task")
+    first, second, third = asl.run(compiled, {}, {"r": lambda arguments: [0, 0, 0]})
+    assert first == second == third
+
+
+def test_a_value_that_changes_the_arguments_read_once_goes_in_them():
+    body = f'x = random.random()\ny = task("{LAMBDA}", {{"FunctionName": "f", "Payload": x}})\nreturn y'
+    compiled = definition(body, "import random\nfrom sfnx import state_machine, task")
+    assert compiled["States"] == {
+        "y": {
+            "Type": "Task",
+            "Resource": LAMBDA,
+            "Arguments": {"FunctionName": "f", "Payload": "{% $random() %}"},
+            "End": True,
+        }
+    }
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="example c: the Arguments evaluate the same expression first, but it "
+    "may be undefined, and what an undefined field of the Arguments does is "
+    "not measured yet",
+)
+def test_an_assignment_the_arguments_evaluate_first_goes():
+    body = f'x = input["a"]\ny = task("{LAMBDA}", {{"FunctionName": "f", "Payload": x}})\nreturn y'
+    assert states(body) == {
+        "y": {
+            "Type": "Task",
+            "Resource": LAMBDA,
+            "Arguments": {"FunctionName": "f", "Payload": f"{{% {INPUT}.a %}}"},
+            "End": True,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    "value, payload",
+    [
+        # Never undefined, and read whole as a field of the Arguments, which
+        # evaluate it before the Assign would, with the same variables.
+        (
+            'input.get("a", 1) * 2',
+            f"{{% ($exists({INPUT}.a) ? {INPUT}.a : 1) * 2 %}}",
+        ),
+        # Nothing in it can fail or be undefined.
+        (
+            'str(input.get("a", 1))',
+            f"{{% $string($exists({INPUT}.a) ? {INPUT}.a : 1) %}}",
+        ),
+    ],
+)
+def test_an_assignment_whose_failure_the_arguments_meet_first_goes(value, payload):
+    body = f'x = {value}\ny = task("{LAMBDA}", {{"FunctionName": "f", "Payload": x}})\nreturn y'
+    assert states(body) == {
+        "y": {
+            "Type": "Task",
+            "Resource": LAMBDA,
+            "Arguments": {"FunctionName": "f", "Payload": payload},
+            "End": True,
+        }
+    }
+
+
+def test_the_fields_of_a_state_read_the_variables_from_before_it():
+    """What failure_seen_before relies on: the Arguments, the Assign and the
+    Output of a Task all read a variable as it was before the state, however
+    its Assign assigns it again."""
+    machine = {
+        "QueryLanguage": "JSONata",
+        "StartAt": "v",
+        "States": {
+            "v": {"Type": "Pass", "Assign": {"v": 1}, "Next": "t"},
+            "t": {
+                "Type": "Task",
+                "Resource": LAMBDA,
+                "Arguments": {"FunctionName": "f", "Payload": "{% $v %}"},
+                "Assign": {"v": 2, "w": "{% $v %}"},
+                "Output": "{% $v %}",
+                "Next": "r",
+            },
+            "r": {"Type": "Succeed", "Output": "{% [$states.input, $v, $w] %}"},
+        },
+    }
+    sent = []
+    tasks = {"t": lambda arguments: sent.append(arguments["Payload"])}
+    assert asl.run(machine, {}, tasks) == [1, 2, 1]
+    assert sent == [1]
+
+
+def test_a_value_that_changes_the_arguments_read_twice_keeps_its_pass():
+    """Each reading in the Arguments would evaluate it again."""
+    body = f'x = random.random()\ntask("{LAMBDA}", {{"FunctionName": "f", "Payload": [x, x]}})'
+    compiled = definition(body, "import random\nfrom sfnx import state_machine, task")
+    assert compiled["States"]["x"] == {
+        "Type": "Pass",
+        "Assign": {"x": "{% $random() %}"},
+        "Next": "invoke",
+    }
+
+
+def reading(states: dict, code: str) -> set[tuple[str, str]]:
+    """The fields of the states whose expressions hold code."""
+    return {
+        (name, field)
+        for name, state in states.items()
+        for field, value in state.items()
+        if code in json.dumps(value)
+    }
+
+
+@pytest.mark.parametrize(
+    "body, allowed",
+    [
+        # Read before the call: in a Pass before it, or in its Arguments; not
+        # in its Assign or Output, or a state after it, which run after it.
+        (
+            (
+                f't = str(datetime.now())\nr = task("{LAMBDA}", {{"FunctionName": "f"}})\n'
+                "return [r, t]"
+            ),
+            {("t", "Assign"), ("r", "Arguments")},
+        ),
+        # Read between two calls: after the first ends, in its Assign or
+        # Output, and before the second, in its Arguments; not after it.
+        (
+            (
+                f'r = task("{LAMBDA}", {{"FunctionName": "f"}})\nt = str(datetime.now())\n'
+                f's = task("{LAMBDA}", {{"FunctionName": "g", "Payload": t}})\nreturn s'
+            ),
+            {("r", "Assign"), ("r", "Output"), ("s", "Arguments")},
+        ),
+    ],
+)
+def test_the_time_stays_between_the_calls_it_is_read_between(body, allowed):
+    imports = "from datetime import datetime\n\nfrom sfnx import state_machine, task"
+    assert reading(definition(body, imports)["States"], "$now()") <= allowed
+
+
 def test_a_random_value_a_jsonata_expression_calls_goes_in_the_assign():
     """The Task's Assign runs when it ends (measured), where Python calls
     $random() after the call, and the syntax tree of the text says it calls
@@ -286,6 +429,8 @@ def test_the_time_and_a_random_value_go_in_the_assign_of_a_task(value, code):
         R + ")\nn = str(uuid.uuid4())\npair = [n, n]\nreturn pair",
         R + ")\nn = str(datetime.now())\nreturn [n, n]",
         R + ")\nn = str(uuid.uuid4())\nreturn pair(n)",
+        # The function of a comprehension reads it once for each item.
+        R + ")\nn = str(uuid.uuid4())\nreturn [n for i in [1, 2]]",
     ],
 )
 def test_a_value_that_changes_read_twice_after_a_task_is_read_as_its_variable(body):

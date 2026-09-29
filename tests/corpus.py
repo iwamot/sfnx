@@ -149,6 +149,7 @@ def two_equal_numbers_below_one(value: object) -> bool:
 # The conditions a result on AWS is judged by when its value cannot be fixed.
 CONDITIONS: Mapping[str, Callable[[object], bool]] = {
     "a number in [0, 0.5)": lambda v: is_number(v) and 0 <= v < 0.5,
+    "a number in [0, 1)": lambda v: is_number(v) and 0 <= v < 1,
     "false": lambda v: v is False,
     "two numbers in [0, 1)": two_numbers_below_one,
     "two equal numbers in [0, 1)": two_equal_numbers_below_one,
@@ -196,6 +197,17 @@ try:
     return rs[0]["missing"]
 except Exception:
     return "caught"
+"""
+READ_FOR_EACH_ITEM = """\
+def one():
+    return 1
+
+def two():
+    return 2
+
+r = parallel(one, two)
+x = random.random()
+return [x for i in r]
 """
 CATCH_IN_A_MAP = """\
 xs: list = input["xs"]
@@ -996,6 +1008,35 @@ CASES: tuple[Case, ...] = (
         on_aws=Condition("two equal numbers in [0, 1)"),
         backs="each `{% %}` is evaluated on its own",
         states=("Pass", "Succeed"),
+    ),
+    Case(
+        "volatile-read-once-goes-in-the-output",
+        "volatile",
+        "x = random.random()\nreturn x",
+        {},
+        Value(0.75),
+        "a random value the return reads once is evaluated in the Output, "
+        "once, where the Pass that assigned it would evaluate it",
+        python=False,
+        random=(0.75, 0.25),
+        calls=1,
+        on_aws=Condition("a number in [0, 1)"),
+        states=("Succeed",),
+    ),
+    Case(
+        "volatile-read-for-each-item-is-evaluated-once",
+        "volatile",
+        READ_FOR_EACH_ITEM,
+        {},
+        Value([0.75, 0.75]),
+        "a random value after a Parallel that a comprehension reads for each "
+        "item goes in the Parallel's Assign, not in the function, which "
+        "would evaluate it once for each item",
+        python=False,
+        random=(0.75, 0.25),
+        calls=1,
+        on_aws=Condition("two equal numbers in [0, 1)"),
+        states=("Parallel", "Succeed"),
     ),
 )
 

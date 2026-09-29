@@ -67,26 +67,19 @@
             "start_date": "Failed to format",
             "elapsed": "Failed to calculate"
           },
-          "Next": "checkpoint_count"
+          "Next": "return"
         }
       ],
       "Assign": {
         "start_date": "{% $states.result[0] %}",
         "elapsed": "{% $states.result[1] %}"
       },
-      "Next": "checkpoint_count"
-    },
-    "checkpoint_count": {
-      "Type": "Pass",
-      "Assign": {
-        "checkpoint_count": "{% $checkpoint_count + 1 %}"
-      },
       "Next": "return"
     },
     "return": {
       "Type": "Succeed",
       "Output": {
-        "Summary": "{% 'This Hello World execution began on ' & $start_date & '. The state machine ran for ' & $string($elapsed) & ' seconds before the snapshot was taken, passing through ' & $string($checkpoint_count) & ' checkpoints, and has successfully completed.' %}"
+        "Summary": "{% 'This Hello World execution began on ' & $start_date & '. The state machine ran for ' & $string($elapsed) & ' seconds before the snapshot was taken, passing through ' & $string($checkpoint_count + 1) & ' checkpoints, and has successfully completed.' %}"
       }
     }
   }
