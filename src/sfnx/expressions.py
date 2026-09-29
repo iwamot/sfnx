@@ -4,7 +4,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sfnx.jsontypes import (
     ARRAY,
@@ -17,7 +17,7 @@ from sfnx.jsontypes import (
     of,
     union,
 )
-from sfnx.syntax import EXACT, changes
+from sfnx.syntax import EXACT, Sensitivity, sensitivity
 
 # JSONata binding powers. A subexpression is parenthesized when it binds
 # looser than the place it is put in; an expression written in jsonata() may
@@ -137,6 +137,11 @@ KEEP_DEFINED = frozenset(
         "uppercase",
     }
 )
+# Functions that, called with no argument, give a value and fail for none:
+# a random number, a UUID and the time. Assumed, not measured, as
+# docs/design.md records: the passes read such a value in the place of its
+# variable on this ground, which a measurement to the contrary would undo.
+NULLARY = frozenset({"random", "uuid", "now", "millis"})
 # & writes any value as text, so it fails for none.
 TOTAL_OPERATORS = frozenset({"=", "!=", "in", "and", "or", "&"})
 
@@ -190,11 +195,18 @@ class Expr:
     fails: frozenset[frozenset[tuple[str, int]]] = frozenset()
 
     @property
+    def sensitivity(self) -> Sensitivity:
+        """What moving the code must keep, as the syntax tree says; what an
+        opaque code reads is not known."""
+        found = sensitivity(self.code)
+        return replace(found, dependencies_unknown=True) if self.opaque else found
+
+    @property
     def volatile(self) -> bool:
         """Whether the code may give another value when it is evaluated again,
         as $random() and $uuid() do, so what writes it twice binds it once
         first: the syntax tree says so, or the code is opaque."""
-        return self.opaque or changes(self.code)
+        return self.sensitivity.varies
 
 
 def expression(
@@ -417,8 +429,10 @@ def call(
         # $append of nothing and a value gives the value (measured).
         defined=function in DEFINED
         or (function == "append" and any(a.defined for a in arguments))
-        or (function in KEEP_DEFINED and all(a.defined for a in arguments)),
-        total=function in TOTAL and all(a.total for a in arguments),
+        or (function in KEEP_DEFINED and all(a.defined for a in arguments))
+        or (function in NULLARY and not arguments),
+        total=(function in TOTAL and all(a.total for a in arguments))
+        or (function in NULLARY and not arguments),
     )
 
 

@@ -8,7 +8,6 @@ import pytest
 from sfnx import testing
 from sfnx.compiler import (
     Rounds,
-    always_reads,
     both,
     compile_source,
     definitions,
@@ -1312,40 +1311,6 @@ def test_an_if_whose_branch_calls_a_function_directly_keeps_its_choice():
     )
     states = definition(body)["States"]
     assert [s["Type"] for s in states.values()].count("Choice") == 1
-
-
-@pytest.mark.parametrize(
-    "code, reads",
-    [
-        ("x", True),
-        ("y", False),
-        ("a if x else b", True),
-        ("x if a else b", False),
-        ("x or a", True),
-        ("a or x", False),
-        ("not x", True),
-        ("x < a < b", True),
-        ("a < x", True),
-        ("a < b < x", False),
-        ("x + 1", True),
-        ("1 - x", True),
-        ('x["k"]', True),
-        ("x.k", True),
-        ("isinstance(x, int)", True),
-        ("len(x)", True),
-        ("max(x, 1)", False),
-        ("d.get(k, x)", False),
-        ("[x for a in b]", False),
-        # A constructor evaluates each item, key and value.
-        ("[a, x]", True),
-        ("(a, x)", True),
-        ('{"k": x}', True),
-        ("{x: 1}", True),
-        ("[a, b]", False),
-    ],
-)
-def test_where_an_expression_always_reads_a_variable(code, reads):
-    assert always_reads(ast.parse(code, mode="eval").body, "x") == reads
 
 
 @pytest.mark.parametrize(

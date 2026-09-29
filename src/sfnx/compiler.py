@@ -55,23 +55,43 @@ from sfnx.jsontypes import (
     of,
     union,
 )
+from sfnx.legality import (
+    EVALUATION_ERRORS,
+    Differs,
+    Field,
+    Reject,
+    assigned_value,
+    captures,
+    context_invariant,
+    evaluated_as_before,
+    expressions_in,
+    failsafe,
+    failure_escapes,
+    failure_kept,
+    failure_seen_before,
+    fields_of,
+    held_elsewhere,
+    read_at_most_once,
+    refused,
+    resolve_reads,
+    retries_evaluation,
+    stable,
+    takes_evaluation,
+)
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
 from sfnx.syntax import (
-    always_read,
+    Strictness,
     atomic,
-    changes,
     constant,
-    facts,
     lone_variable,
     looser_than_and,
     mentions,
     names_read,
     path_alone,
-    reads_own_context,
-    reads_own_states,
-    reads_state_name,
     reads_the_name,
+    sensitivity,
+    strictness,
 )
 from sfnx.translate import (
     StateCall,
@@ -91,9 +111,6 @@ MAX_WAIT = 99_999_999
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z")
 # The functions whose calls are states of their own.
 STATE_CALLS = ("task", "activity", "parallel", "inline_map", "distributed_map")
-# The errors a catcher or a retrier matches when a state's Assign or Output
-# fails.
-EVALUATION_ERRORS = frozenset({EVERYTHING, "States.QueryEvaluationError"})
 
 
 def machine_options(decorator: ast.expr, context: Module) -> dict[str, object]:
@@ -541,7 +558,7 @@ class Scope:
         if kind == "Choice":
             return key == "Default"
         if kind in {"Task", "Parallel", "Map"}:
-            return self.may_fold(container) or all(map(failsafe, values))
+            return not refused(failure_escapes(container, values), "spread")
         return kind in {"Pass", "Wait"}
 
     def describe(
@@ -1197,7 +1214,7 @@ class Scope:
         others = [v for n, v in self.pending.items() if n != name]
         if (
             first is not None
-            and not replaceable(first, value_node, name)
+            and not replaceable(first, value, self.spelling(name))
             and not kept(first, others)
         ):
             self.flush()
@@ -1310,12 +1327,12 @@ class Scope:
                 if value.variables & self.pending.keys():
                     return None
             read.append(value)
-        for name, node in zip(names, nodes, strict=True):
+        for name, value in zip(names, values, strict=True):
             first = self.pending.get(name)
             others = [v for n, v in zip(names, read, strict=True) if n != name]
             if (
                 first is not None
-                and not replaceable(first, node, name)
+                and not replaceable(first, value, self.spelling(name))
                 and not kept(first, others)
             ):
                 return None
@@ -1376,7 +1393,7 @@ class Scope:
         return (
             not self.opening
             and self.folded.keys() == self.pending.keys()
-            and (self.may_fold(result.state) or all(map(failsafe, folded)))
+            and not refused(failure_escapes(result.state, folded), "fold")
             and self.holds_still(folded)
         )
 
@@ -1390,18 +1407,9 @@ class Scope:
         which a list or a dict would drop without failing. Where two may
         fail, the Output may fail on another of them first, as its message
         then says, which a hand-writer would not spend a state to keep."""
-        whole = value_node.id if isinstance(value_node, ast.Name) else None
-        uncertain = [
-            name
-            for name, value in pending.items()
-            if not (value.defined and value.total) and name != whole
-        ]
-        if not uncertain:
-            return True
-        return all(
-            pending[name].defined and always_reads(value_node, name)
-            for name in uncertain
-        )
+        code = self.read_with({}, value_node).code
+        spelled = {self.spelling(name): value for name, value in pending.items()}
+        return not refused(failure_kept(code, spelled), "return_pending")
 
     def read_by_name(self, value_node: ast.expr, pending: dict[str, Expr]) -> bool:
         """Whether a value reads a pending variable where no expression can
@@ -1453,7 +1461,7 @@ class Scope:
             return False
         # A value that cannot fail leaves neither a Catch nor a retrier a
         # failure of the Output to take.
-        if not (self.may_fold(result.state) or failsafe(value)):
+        if refused(failure_escapes(result.state, value), "end_with_result"):
             return False
         state = result.state
         self.graph.tails = []
@@ -1503,14 +1511,6 @@ class Scope:
             return None
         return result
 
-    def may_fold(self, state: dict[str, object]) -> bool:
-        """Whether what follows a Task, a Parallel or a Map can go in its Assign
-        or its Output. Not where one that fails would do otherwise than the
-        state after it: a Catch would take the failure, and a retrier for
-        States.ALL or States.QueryEvaluationError would run the state again
-        (measured)."""
-        return may_fold(state)
-
     def holds_still(self, values: list[Expr]) -> bool:
         """Whether values read the same in the Assign or the Output of the
         state that holds them as in a state after it. The State part of the
@@ -1519,16 +1519,19 @@ class Scope:
         Assign runs: for a Task, a Parallel, a Map or a Wait, when it ends
         (measured), and for a Choice rule, a catcher or a Pass, where it is,
         both after what comes before them, as Python reads them."""
-        return not any(
-            value.opaque or reads_own_context(value.code) for value in values
+        return not any(value.opaque for value in values) and not refused(
+            context_invariant([v.code for v in values], Differs.CONTEXT),
+            "holds_still",
         )
 
     def read_result(self, result: Result, value_node: ast.expr) -> Expr | None:
         """A value as the Assign or the Output of the state just added reads
         it: the variables the state assigns as what they take, and the others
-        as they were before it. None for one that reads a value that changes
-        on evaluation more than once: each reading would evaluate it again,
-        where Python reads the one value the variable holds."""
+        as they were before it. None for one that may read a value that
+        changes on evaluation more than once, as most_reads bounds it: each
+        reading would evaluate it again, where Python reads the one value the
+        variable holds. A read in the function of a comprehension is one for
+        each item."""
         value = self.read_with(result.values, value_node)
         changing = [name for name, v in result.values.items() if v.volatile]
         if changing:
@@ -1543,8 +1546,11 @@ class Scope:
                 for i, name in enumerate(changing)
             }
             marked = self.read_with({**result.values, **marks}, value_node)
-            written = json.dumps(marked.template)
-            if any(written.count(mark.code) > 1 for mark in marks.values()):
+            codes = expressions_in(marked.template)
+            if any(
+                refused(read_at_most_once(codes, mark.code[1:]), "read_result")
+                for mark in marks.values()
+            ):
                 return None
         return value
 
@@ -2812,8 +2818,9 @@ class Scope:
         its place where that value leaves nothing to evaluate, and a state of
         its own keeps one that may fail, as Python evaluates it first."""
         first = self.pending.get(counter)
-        zero = ast.copy_location(ast.Constant(0), node)
-        if first is not None and not replaceable(first, zero, counter):
+        if first is not None and not replaceable(
+            first, literal(0), self.spelling(counter)
+        ):
             self.flush()
         self.defer(counter, literal(0), node, starting(node))
         return self.variable(counter, of(NUMBER))
@@ -2919,12 +2926,6 @@ class Scope:
     def range_loop(self, node: ast.For, target: str, assigned: set[str]) -> None:
         assert isinstance(node.iter, ast.Call)
         start, stop, step = self.translator.range_arguments(node.iter)
-        # What the loop variable starts from, which range(stop) writes as 0.
-        begins = (
-            node.iter.args[0]
-            if len(node.iter.args) > 1
-            else ast.copy_location(ast.Constant(0), node.iter)
-        )
 
         def attempt() -> tuple[Loop, dict[str, Type | None]]:
             if start.variables & self.pending.keys():
@@ -2940,7 +2941,9 @@ class Scope:
                 self.defer(copy, stop, node, starting(node))
                 limit = self.variable(copy, of(NUMBER))
             first = self.pending.get(target)
-            if first is not None and not replaceable(first, begins, target):
+            if first is not None and not replaceable(
+                first, start, self.spelling(target)
+            ):
                 self.flush()
             self.defer(target, start, node, starting(node))
             self.bindings[target] = self.variable(target, of(NUMBER))
@@ -3167,12 +3170,7 @@ def conditional_assignment(node: ast.If) -> tuple[ast.Name, ast.expr, bool] | No
     return target, ast.copy_location(value, node), complete
 
 
-# The functions whose first argument is evaluated wherever the call is,
-# in the JSONata they compile to as in Python.
-FIRST_ARGUMENT = frozenset({"isinstance", "len", "str", "int", "float", "bool"})
-
-
-def replaceable(first: Expr, node: ast.expr, name: str) -> bool:
+def replaceable(first: Expr, value: Expr, spelled: str) -> bool:
     """Whether a pending first value of a name can give way to the new value
     in node in the same state: it changes on no evaluation and is never
     undefined, and it either cannot fail, leaving nothing to evaluate, or the
@@ -3180,7 +3178,7 @@ def replaceable(first: Expr, node: ast.expr, name: str) -> bool:
     return (
         not first.volatile
         and first.defined
-        and (first.total or always_reads(node, name))
+        and (first.total or strictness(value.code, spelled) is Strictness.ALWAYS)
     )
 
 
@@ -3192,44 +3190,6 @@ def kept(first: Expr, others: list[Expr]) -> bool:
     changes on evaluation would be evaluated once there, where the two
     assignments read it apart."""
     return not first.volatile and any(o.code == first.code for o in others)
-
-
-def always_reads(node: ast.AST, name: str) -> bool:
-    """Whether an expression reads a variable every time it is evaluated, in
-    the JSONata it compiles to: through the test of a conditional
-    expression, the first operand of and / or, the operand of not, the first
-    two operands of a comparison, both operands of arithmetic, what a
-    subscript or an attribute reads from, the first argument of a few
-    built-in functions, and the items of a list and the keys and values of a
-    dict written out, which a constructor evaluates each. Other places, such
-    as a default of get(), JSONata may not evaluate."""
-    if isinstance(node, ast.Name):
-        return node.id == name
-    if isinstance(node, (ast.List, ast.Tuple)):
-        return any(always_reads(item, name) for item in node.elts)
-    if isinstance(node, ast.Dict):
-        parts = [*(k for k in node.keys if k is not None), *node.values]
-        return any(always_reads(part, name) for part in parts)
-    if isinstance(node, ast.IfExp):
-        return always_reads(node.test, name)
-    if isinstance(node, ast.BoolOp):
-        return always_reads(node.values[0], name)
-    if isinstance(node, ast.UnaryOp):
-        return always_reads(node.operand, name)
-    if isinstance(node, ast.Compare):
-        return always_reads(node.left, name) or always_reads(node.comparators[0], name)
-    if isinstance(node, ast.BinOp):
-        return always_reads(node.left, name) or always_reads(node.right, name)
-    if isinstance(node, (ast.Subscript, ast.Attribute)):
-        return always_reads(node.value, name)
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in FIRST_ARGUMENT
-        and node.args
-    ):
-        return always_reads(node.args[0], name)
-    return False
 
 
 def branches(value: ast.expr) -> list[ast.expr]:
@@ -3457,29 +3417,6 @@ def starting(loop: ast.For) -> Origin:
     return Origin(loop, "loop start", header=True)
 
 
-def may_fold(state: dict[str, object]) -> bool:
-    """Whether what follows a Task, a Parallel or a Map can go in its Assign
-    or its Output: its failure there ends the execution, as the failure of a
-    state after it would."""
-    return not takes_evaluation(state, "Catch") and not retries_evaluation(state)
-
-
-def retries_evaluation(state: dict[str, object]) -> bool:
-    """Whether a retrier of a state takes a failure of its Assign or its
-    Output, which would call the state again."""
-    return takes_evaluation(state, "Retry")
-
-
-def takes_evaluation(state: dict[str, object], field: str) -> bool:
-    """Whether a catcher or a retrier of a state takes a failure of its
-    Assign or its Output: only States.ALL and States.QueryEvaluationError
-    do (measured)."""
-    handlers = state.get(field, [])
-    assert isinstance(handlers, list)
-    errors = {e for handler in handlers for e in handler["ErrorEquals"]}
-    return bool(errors & EVALUATION_ERRORS)
-
-
 def fold_into_catching_tasks(
     definition: dict[str, object],
     enclosing: Enclosing,
@@ -3509,6 +3446,7 @@ def fold_into_catching_tasks(
     assigns them, but for one that changes on evaluation, which the state's
     Assign evaluates already, and nothing else of `$states` than the context
     the two share."""
+    # This takes away UD-PASS-NOT-CATCHABLE where it can.
     states = definition["States"]
     assert isinstance(states, dict)
     folded = True
@@ -3526,12 +3464,19 @@ def fold_into_catching_tasks(
                 or "Output" in task
                 or after is None
                 or set(led[after]) != {name}
-                or not (
-                    safe
-                    or not takes_evaluation(task, "Catch")
-                    or same_tries(enclosing.get(after, ()), enclosing[name])
-                )
-                or retries_evaluation(task)
+            ):
+                continue
+            where = "fold_into_catching_tasks"
+            if refused(
+                None
+                if safe
+                or not takes_evaluation(task, "Catch")
+                or same_tries(enclosing.get(after, ()), enclosing[name])
+                else Reject.OTHER_HANDLERS,
+                where,
+            ) or refused(
+                Reject.HANDLER_TAKES_FAILURE if retries_evaluation(task) else None,
+                where,
             ):
                 continue
             following = states[after]
@@ -3548,24 +3493,25 @@ def fold_into_catching_tasks(
             ):
                 continue
             codes = expressions_in({k: v for k, v in following.items() if k != "Next"})
-            if any(reads_own_states(code) for code in codes):
+            if refused(context_invariant(codes, Differs.STATES), where):
                 continue
             own = task.get("Assign", {})
             assert isinstance(own, dict)
-            reads = {read for code in codes for read in names_read(code)}
-            found = {n: assigned_value(v) for n, v in own.items() if n in reads}
-            values = {n: v for n, v in found.items() if v is not None}
-            if len(values) < len(found) or not all(
-                reads_as(following, n, v) for n, v in values.items()
-            ):
+            values = resolve_reads(own, codes, where)
+            if values is None or refused(captures(following, values), where):
                 continue
             # A value that changes on evaluation, read again in the Pass's or
             # the Succeed's place, would be evaluated once more, as the state's
             # Assign still evaluates it.
-            if any(changes(v.code) for v in values.values()):
+            if refused(stable([v.code for v in values.values()]), where):
                 continue
             exposed = assigned_before_failures(own, following)
-            if not safe and caught_reads(task, live_reads(states)) & exposed:
+            if refused(
+                Reject.EXPOSES_PARTIAL_ASSIGN
+                if not safe and caught_reads(task, live_reads(states)) & exposed
+                else None,
+                where,
+            ):
                 continue
             moved = {
                 key: value if key == "Comment" else read_through(value, values)
@@ -3768,30 +3714,6 @@ def as_expr(leaf: object) -> Expr:
     return assigned_value(leaf) or expression(template_code(leaf))
 
 
-def assigned_value(template: object) -> Expr | None:
-    """What an Assign writes for a variable, as an expression to read in its
-    place: an expression, or a value written out, whose JSON is JSONata too.
-    An object or an array with expressions among its values is no one
-    expression. An expression keeps what the field's Expr knows of it, as
-    whether it may fail or be undefined; the names it reads are those of
-    its code, $states and functions among them, and it binds as tightly as
-    an atom only where it is a path alone, which is what may be written in
-    place of a variable read more than once."""
-    if isinstance(template, Expr) and code_of(template) is not None:
-        code = template.code
-        precedence = ATOM if path_alone(code) else WRITTEN
-        return replace(
-            template, variables=frozenset(names_read(code)), precedence=precedence
-        )
-    template = template_of(template)
-    if isinstance(template, (dict, list)):
-        if not written(template):
-            return None
-        code = json.dumps(template, ensure_ascii=False, default=template_of)
-        return Expr(code, template, defined=True, total=True)
-    return literal(template)
-
-
 def live_reads(states: dict[str, dict[str, object]]) -> dict[str, set[str]]:
     """The variables read on a way from each state, before a state on it
     assigns them again: what the state's own expressions read, and what is
@@ -3921,10 +3843,6 @@ def thread_choices(
                 assert isinstance(target, str)
                 own = holder.get("Assign", {})
                 assert isinstance(own, dict)
-                # A Task's, a Parallel's or a Map's own Assign has its Catch
-                # and its retriers take a failure the Choice would not, which
-                # an Assign that cannot fail does not have.
-                movable = holder is not state or may_fold(state)
                 taken: dict[str, object] = {}
                 sources: list[str] = []
                 passed = rounds.of(holder) if rounds is not None else set()
@@ -3945,10 +3863,20 @@ def thread_choices(
                         for read in names_read(code)
                     }
                     current = then(own, taken)
-                    own_states = any(
-                        reads_own_states(c) for c in expressions_in(assign)
-                    )
-                    if assign and (not (movable or failsafe(assign)) or own_states):
+                    # A Task's, a Parallel's or a Map's own Assign has its
+                    # Catch and its retriers take a failure the Choice would
+                    # not, which an Assign that cannot fail does not have.
+                    where = "thread_choices"
+                    if assign and (
+                        (
+                            holder is state
+                            and refused(failure_escapes(state, assign), where)
+                        )
+                        or refused(
+                            context_invariant(expressions_in(assign), Differs.STATES),
+                            where,
+                        )
+                    ):
                         break
                     if assign and reads & current.keys():
                         # Choices that lead to each other would each be gone
@@ -3956,7 +3884,7 @@ def thread_choices(
                         # them changes on each.
                         if rounds is None or target in passed:
                             break
-                        assign = read_into_transition(assign, reads, current)
+                        assign = read_into_transition(assign, current)
                         if assign is None:
                             break
                         passed.add(target)
@@ -3985,18 +3913,21 @@ def thread_choices(
 
 
 def read_into_transition(
-    assign: dict[str, object], reads: set[str], current: dict[str, object]
+    assign: dict[str, object], current: dict[str, object]
 ) -> dict[str, object] | None:
     """An Assign that reads what a transition assigns, as that transition's
     Assign reads it: each such name as the expression it is assigned, as
     way_assign reads them, or None where one cannot be read so."""
-    found = {n: assigned_value(v) for n, v in current.items() if n in reads}
-    values = {n: v for n, v in found.items() if v is not None}
-    state: dict[str, object] = {"Assign": assign}
+    where = "read_into_transition"
+    values = resolve_reads(current, expressions_in(assign), where)
     if (
-        len(values) < len(found)
-        or any(changes_or_reads_the_state(v.code) for v in values.values())
-        or not all(reads_as(state, n, v) for n, v in values.items())
+        values is None
+        or refused(
+            context_invariant([v.code for v in values.values()], Differs.STATES),
+            where,
+        )
+        or refused(stable([v.code for v in values.values()]), where)
+        or refused(captures({"Assign": assign}, values), where)
     ):
         return None
     return {k: written_sum(read_through(v, values)) for k, v in assign.items()}
@@ -4088,7 +4019,7 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
     says, even where nothing after the state reads it."""
     states = definition["States"]
     assert isinstance(states, dict)
-    if any("eval" in names_read(c) for c in expressions_in(states)):
+    if any(sensitivity(c).dependencies_unknown for c in expressions_in(states)):
         return
     changed = True
     while changed:
@@ -4103,8 +4034,15 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
                 following = live[target] if target is not None else set()
                 if holder is state:
                     following = following | excepted(state, live)
+                # Allowed by AD-DEAD-FAILURE.
                 dead = [
-                    k for k in own if k not in following and not copied(own[k], codes)
+                    k
+                    for k in own
+                    if k not in following
+                    and (
+                        not held_elsewhere(own[k], codes)
+                        or failure_seen_before(own[k], holder, state)
+                    )
                 ]
                 for k in dead:
                     del own[k]
@@ -4126,23 +4064,6 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
             del states[name]
             changed = True
             break
-
-
-def copied(template: object, codes: list[str]) -> bool:
-    """Whether another expression holds the expression of a value that may
-    fail, as reading the variable in its place writes it: a value written
-    out or a variable alone has nothing to fail, whatever holds it."""
-    found = [code.strip() for code in expressions_in(template)]
-    return any(
-        not (lone_variable(code) is not None or code in NEVER_FAILS)
-        and sum(code in other for other in codes) > 1
-        for code in found
-    )
-
-
-# What a state reads of its own that is always there: the result of a Task,
-# a Parallel or a Map, and the error output of a catcher.
-NEVER_FAILS = frozenset({"$states.result", "$states.errorOutput"})
 
 
 def drop_unreachable(definition: dict[str, object]) -> None:
@@ -4505,11 +4426,15 @@ def read_as_values(
     codes = expressions_in(choice)
     reads = {read for code in codes for read in names_read(code)}
     used = {n: template_code(v) for n, v in values.items() if n in reads}
-    if any(reads_state_name(code) for code in codes) or any(
-        changes(code) for code in used.values()
+    where = "take_in_choices"
+    if (
+        refused(context_invariant(codes, Differs.STATE), where)
+        or refused(stable(list(used.values())), where)
+        or refused(
+            captures(choice, {n: expression(code) for n, code in used.items()}),
+            where,
+        )
     ):
-        return None
-    if not all(reads_as(choice, n, expression(code)) for n, code in used.items()):
         return None
     pattern = re.compile(r"\$(" + "|".join(map(re.escape, used)) + r")(?!\w)")
 
@@ -4611,21 +4536,6 @@ def both(first: object, second: object) -> object:
     )
 
 
-def failsafe(field: object) -> bool:
-    """Whether nothing in a field fails or is undefined, so neither a Catch
-    nor a retrier of the state that holds it has a failure of it to take: a
-    value written out, and expressions that never are undefined and fail for
-    no value. Where one reads a variable the state assigns as the expression
-    the state assigns it, it fails only where the state's Assign fails."""
-    if isinstance(field, Expr):
-        return field.defined and field.total
-    if isinstance(field, dict):
-        return all(failsafe(v) for v in field.values())
-    if isinstance(field, list):
-        return all(failsafe(v) for v in field)
-    return not (isinstance(field, str) and field.startswith("{%"))
-
-
 def fold_start(
     definition: dict[str, object], enclosing: Enclosing | None = None
 ) -> None:
@@ -4675,9 +4585,12 @@ def fold_start(
         name: v if isinstance(v, Expr) else written_value(v)
         for name, v in assign.items()
     }
-    # A value that changes on evaluation or reads the State of the context,
-    # which names the state it is read in, keeps the Pass.
-    if any(v.volatile or reads_own_context(v.code) for v in values.values()):
+    # A value that reads what is not written out, or the State of the
+    # context, which names the state it is read in, keeps the Pass.
+    where = "fold_start"
+    if any(v.sensitivity.dependencies_unknown for v in values.values()) or refused(
+        context_invariant([v.code for v in values.values()], Differs.CONTEXT), where
+    ):
         return
     following = opening["Next"]
     state = states[following]
@@ -4688,11 +4601,28 @@ def fold_start(
     # evaluates its Assign after it has run, where only a value that cannot
     # fail fails nowhere else than Python's, neither a Catch nor a retrier
     # has a failure to take, and no branch or processor runs for nothing.
-    certain = all(failsafe(v) and not v.volatile for v in values.values())
+    # A value the input lacks fails after the call or the wait: allowed by
+    # AD-DEFERRED-FAILURE.
+    certain = failsafe(list(values.values()))
+    # A value that changes on evaluation goes only where it is read after: it
+    # would otherwise be evaluated in a holder's Assign as well as where it
+    # is read, and the time would be read after the call or the wait.
+    live = live_reads(states)
+    kept = {
+        name: [
+            i
+            for i, holder in enumerate(holders_of(state))
+            if not v.volatile or name in read_after(state, holder, live)
+        ]
+        for name, v in values.items()
+    }
     if not (
         kind in {"Choice", "Wait"}
-        or (kind == "Task" and may_fold(state))
-        or (kind in {"Succeed", "Fail", "Task", "Parallel", "Map"} and certain)
+        or (
+            kind == "Task"
+            and not refused(failure_escapes(state, list(values.values())), where)
+        )
+        or (kind in {"Succeed", "Fail", "Parallel", "Map"} and certain)
     ):
         return
     inner = [state.get("Branches", []), state.get("ItemProcessor", {})]
@@ -4704,21 +4634,47 @@ def fold_start(
     ):
         return
     others = [name for name in leading(states).get(following, []) if name != start]
-    if others or not all(reads_as(state, name, values[name]) for name in values):
+    if others or refused(captures(state, values), where):
         return
+    fields = fields_of(state)
+    for name, value in values.items():
+        # Each holder that takes it evaluates it on its way out, the Choice's
+        # where the Choice is, and the others' after the call or the wait.
+        taking = [Field(f"${name}", kind == "Choice") for _ in kept[name]]
+        if refused(evaluated_as_before(value, name, fields + taking), where):
+            return
     for name, value in values.items():
         substitute(state, name, value)
     narrow(enclosing, states, following, start)
-    for holder in holders_of(state):
+    # The substitution wrote the rules and the catchers anew.
+    for i, holder in enumerate(holders_of(state)):
         own = holder.get("Assign", {})
         assert isinstance(own, dict)
-        holder["Assign"] = then(assign, own)
+        taken = {k: v for k, v in assign.items() if i in kept[k]}
+        if not (taken or own):
+            continue
+        holder["Assign"] = then(taken, own)
         # Each holder describes the assignments, as a Pass would.
         comment = joined_comments(opening.get("Comment"), holder.get("Comment"))
         if comment is not None:
             holder["Comment"] = comment
     del states[start]
     definition["StartAt"] = following
+
+
+def read_after(
+    state: dict[str, object], holder: dict[str, object], live: dict[str, set[str]]
+) -> set[str]:
+    """What is read on the way out of a state that holder's Assign runs on,
+    before it is assigned again: a Choice's own Assign runs on its Default,
+    and what the state's catchers read of what its own Assign assigns counts
+    for it, as excepted says."""
+    key = "Default" if holder is state and state["Type"] == "Choice" else "Next"
+    target = holder.get(key)
+    found = set(live[target]) if isinstance(target, str) else set()
+    if holder is state:
+        found |= excepted(state, live)
+    return found
 
 
 def written_value(template: object) -> Expr:
@@ -4743,31 +4699,6 @@ def holders_of(state: dict[str, object]) -> list[dict[str, object]]:
     others = state.get("Choices" if state["Type"] == "Choice" else "Catch", [])
     assert isinstance(others, list)
     return [state, *others]
-
-
-def reads_as(state: dict[str, object], name: str, value: Expr) -> bool:
-    """Whether a value can be written where a state reads the variable of a
-    name: no expression in the state binds that name, or a name the value
-    reads, which would take them over, no string in one spells the name, as
-    the text of jsonata() may, which is not a read and stays as it is, and
-    the parser reads each, as what one it cannot read binds is not known."""
-    names = {name, *(read for read in names_read(value.code))}
-    found = [facts(code) for code in expressions_in(state)]
-    return all(
-        f is not None and name not in f.spelled and not f.bound & names for f in found
-    )
-
-
-def expressions_in(node: object) -> list[str]:
-    """The JSONata of the {% %} strings in a state, past its Comment."""
-    node = template_of(node)
-    if isinstance(node, dict):
-        return [c for k, v in node.items() if k != "Comment" for c in expressions_in(v)]
-    if isinstance(node, list):
-        return [c for item in node for c in expressions_in(item)]
-    if isinstance(node, str) and node.startswith("{%") and node.endswith("%}"):
-        return [node[2:-2]]
-    return []
 
 
 def substitute(node: dict[str, object], name: str, value: Expr) -> None:
@@ -4884,7 +4815,9 @@ def spread_passes(
             assign = state["Assign"]
             assert isinstance(assign, dict)
             codes = expressions_in(assign)
-            if any(reads_own_states(c) or "eval" in names_read(c) for c in codes):
+            if any(sensitivity(c).dependencies_unknown for c in codes) or refused(
+                context_invariant(codes, Differs.STATES), "spread_passes"
+            ):
                 continue
             ways = [
                 (holder, key, owner, owner_name)
@@ -4908,14 +4841,6 @@ def spread_passes(
             del states[name]
             spread = True
             break
-
-
-def changes_or_reads_the_state(code: str) -> bool:
-    """Whether code reads $states other than the context all states share,
-    or gives another value when evaluated again: the time, a random value,
-    or $eval, which a jsonata() expression may call and which reads
-    variables by the names in its text."""
-    return reads_own_states(code) or changes(code)
 
 
 def assign_before(
@@ -4945,17 +4870,16 @@ def way_assign(
     spread_passes says, or None where the way cannot hold them."""
     # Only a Pass, a Wait, a Choice, a Task, a Parallel or a Map has a Next;
     # of them, only the last three may have a Catch or a retrier.
+    where = "spread_passes"
     if (
         holder is owner
         and owner["Type"] in {"Task", "Parallel", "Map"}
-        and not (may_fold(owner) or failsafe(assign))
+        and refused(failure_escapes(owner, assign), where)
     ):
         return None
     own = assigns(holder)
-    reads = {read for code in codes for read in names_read(code)}
-    found = {n: assigned_value(v) for n, v in own.items() if n in reads}
-    read = {n: v for n, v in found.items() if v is not None}
-    if len(read) < len(found):
+    read = resolve_reads(own, codes, where)
+    if read is None:
         return None
     # A name both assign drops the way's value, which the Pass's new value
     # evaluates in its place where it reads it: one that may be undefined
@@ -4964,11 +4888,12 @@ def way_assign(
     if any(n in assign and not v.defined for n, v in read.items()):
         return None
     # A value read again in the Pass's place would give another value.
-    if any(changes_or_reads_the_state(v.code) for v in read.values()):
+    if refused(stable([v.code for v in read.values()]), where) or refused(
+        context_invariant([v.code for v in read.values()], Differs.STATES), where
+    ):
         return None
     # A string that spells a name, or a binding of one, keeps the Pass.
-    pass_state: dict[str, object] = {"Assign": assign}
-    if not all(reads_as(pass_state, n, v) for n, v in read.items()):
+    if refused(captures({"Assign": assign}, read), where):
         return None
     moved = {k: written_sum(read_through(v, read)) for k, v in assign.items()}
     return then(own, moved)
@@ -5004,8 +4929,11 @@ def read_what_it_assigns(
     or a retrier too: a variable the state assigns reads the expression its
     Assign evaluates alike, so the Output fails only where the Assign does,
     which the Catch or the retrier takes as it would without the Output."""
-    if not (may_fold(state) or failsafe(output)) or any(
-        changes_or_reads_the_state(c) for c in codes
+    where = "end_before_returns"
+    if (
+        refused(failure_escapes(state, output), where)
+        or refused(stable(codes), where)
+        or refused(context_invariant(codes, Differs.STATES), where)
     ):
         return None
     return read_assigned(state, output, codes)
@@ -5024,15 +4952,14 @@ def read_assigned(
     the Output reads in its place, so a value that fails or is undefined
     fails in the Assign, where Python fails, even where the Output would
     drop it."""
-    own = assigns(state)
-    reads = {read for code in codes for read in names_read(code)}
-    found = {n: assigned_value(v) for n, v in own.items() if n in reads}
-    values = {n: v for n, v in found.items() if v is not None}
+    where = "read_assigned"
+    values = resolve_reads(assigns(state), codes, where)
     # What the state's own Assign reads of $states the Output reads alike.
-    if len(values) < len(found) or any(changes(v.code) for v in values.values()):
-        return None
-    holder: dict[str, object] = {"Output": output}
-    if not all(reads_as(holder, n, v) for n, v in values.items()):
+    if (
+        values is None
+        or refused(stable([v.code for v in values.values()]), where)
+        or refused(captures({"Output": output}, values), where)
+    ):
         return None
     return read_through(output, values)
 
@@ -5159,24 +5086,31 @@ def return_in_place_of_passes(definition: dict[str, object]) -> None:
             ending = states[after]
             output = ending["Output"]
             code = as_expr(output).code
-            if reads_state_name(code):
+            where = "return_in_place_of_passes"
+            if refused(context_invariant([code], Differs.STATE), where):
                 continue
-            found = {n: assigned_value(v) for n, v in assigns(state).items()}
-            values = {n: v for n, v in found.items() if v is not None}
-            if len(values) < len(found) or any(
-                v.volatile or reads_own_context(v.code) for v in values.values()
+            values = resolve_reads(assigns(state), None, where)
+            # The Output is evaluated where the Pass would be, with no call
+            # or wait between them.
+            fields = [Field(c, before=True) for c in expressions_in(output)]
+            if (
+                values is None
+                or any(
+                    refused(evaluated_as_before(v, n, fields), where)
+                    for n, v in values.items()
+                )
+                or refused(
+                    context_invariant(
+                        [v.code for v in values.values()], Differs.CONTEXT
+                    ),
+                    where,
+                )
             ):
                 continue
-            whole = lone_variable(code)
-            read = always_read(code)
-            if not all(
-                v.defined and n in read
-                for n, v in values.items()
-                if not failsafe(v) and n != whole
-            ):
+            if refused(failure_kept(code, values), where):
                 continue
             used = {n: v for n, v in values.items() if n in names_read(code)}
-            if not all(reads_as(ending, n, v) for n, v in used.items()):
+            if refused(captures(ending, used), where):
                 continue
             succeed: dict[str, object] = {"Type": "Succeed"}
             comment = joined_comments(state.get("Comment"), ending.get("Comment"))
@@ -5227,7 +5161,7 @@ def end_before_returns(definition: dict[str, object]) -> None:
                 output = read_what_it_assigns(state, output, codes)
                 if output is None:
                     continue
-        elif any(reads_state_name(code) for code in codes):
+        elif refused(context_invariant(codes, Differs.STATE), "end_before_returns"):
             continue
         else:
             output = read_assigned(state, output, codes)
@@ -5257,7 +5191,9 @@ def same_states(states: dict[str, dict[str, object]]) -> dict[str, str]:
             sort_keys=True,
             default=template_of,
         )
-        if any(reads_state_name(code) for code in expressions_in(state)):
+        if refused(
+            context_invariant(expressions_in(state), Differs.STATE), "share_states"
+        ):
             continue
         if key not in kept:
             kept[key] = name
@@ -5421,6 +5357,10 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
     expression reads are noted first, so that misread can tell where a pass
     made one read another."""
     assert not loose_expressions(definition)
+    # Each state knows the try bodies it is in, which narrow and
+    # fold_into_catching_tasks read.
+    states = definition["States"]
+    assert isinstance(states, dict) and states.keys() <= scope.enclosing.keys()
     if scope.checking:
         note_reads(definition)
     rounds = Rounds()
@@ -5805,7 +5745,7 @@ def rename_states(
     definition that reads the name of a state, as the context's State may,
     or $eval, which may build one from text, keeps every name."""
     codes = expressions_in(definition)
-    if any(reads_the_name(c) or "eval" in names_read(c) for c in codes):
+    if any(reads_the_name(c) or sensitivity(c).dependencies_unknown for c in codes):
         return
     scopes = list(machines_in(definition))
     kept = {name for scope in scopes for name in scope_states(scope)}

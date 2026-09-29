@@ -209,6 +209,8 @@ def test_select():
         "volatile-short-circuit",
         "volatile-separate-calls",
         "volatile-read-twice-keeps-its-state",
+        "volatile-read-once-goes-in-the-output",
+        "volatile-read-for-each-item-is-evaluated-once",
     ]
     assert corpus.select(CASES, [], []) == list(CASES)
     with pytest.raises(ValueError, match="no such case or category: nope, truth-one"):

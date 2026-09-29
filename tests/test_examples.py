@@ -341,6 +341,15 @@ def test_hello_world_waits_runs_both_branches_and_counts_two_checkpoints():
     )
 
 
+def test_hello_world_counts_the_last_checkpoint_in_its_output():
+    """The summary writes the count every time it is evaluated, so the last
+    checkpoint takes no Pass of its own."""
+    states = definition("hello_world")["States"]
+    assert "checkpoint_count" not in states
+    summary = states["return"]["Output"]["Summary"]
+    assert "$string($checkpoint_count + 1)" in summary
+
+
 def test_hello_world_fails_under_the_template_s_error_name():
     states = definition("hello_world")["States"]
     assert isinstance(states, dict)

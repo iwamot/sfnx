@@ -391,6 +391,8 @@ Each of these is rejected with what to write instead:
 
 A Python spelling the compiler accepts follows Python for the values that reach it. These are where it does not, grouped under the reason each difference stays. They are the differences known so far; others may remain.
 
+A difference the optimization passes rely on has a name, which the code that relies on it cites. One named `AD-` is one a pass may bring about where it moves or drops what a state evaluates. One named `UD-` comes of what ASL cannot write; a pass never brings one about where it was not, and takes one away where it can.
+
 ### JSON has no such value
 
 Numbers are doubles, and JSON has no infinity, no complex number and no set. What the definition holds is what JSON can hold.
@@ -493,6 +495,8 @@ A minus sign written in the source counts from the end; a negative number that a
 | `type(e).__name__` | `e` caught from a class that assigns `error = "..."` | the name the class declares, which is the error's name in Step Functions | the class name |
 | `f(x)` on a line of its own | a function that returns a value that fails, such as `return x["missing"]` | not evaluated, as nothing reads it | `KeyError` |
 | `[f(x) for x in xs if c]` | a `c` and an `f` that each give another value on every call, such as `random.random()` | `$filter` tests every item, then `$map` reads a result for each item it kept | the condition and the result of one item before the next item, so a dropped item takes no result |
+| `AD-FAILURE-ORDER`: assignments right before a `return` that reads each of them, where more than one may fail | a value for which more than one of them fails | `States.QueryEvaluationError`, whose cause may be of another than the first | the error of the first |
+| `AD-TIMING-WITHIN-EFFECT-INTERVAL`: `t = str(datetime.now())`, `time.time()` | any time | read in the state before or after the statement's, between the same calls and waits, so some milliseconds apart | read where the statement is |
 
 ### The ASL's own semantics
 
@@ -500,9 +504,9 @@ A Map Run reports what it tolerated instead of raising what its children raised,
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
-| a statement in a `try` body without a `task()`, `parallel()` or map call that does not go in the Task before it, such as `data = json.loads(text)` after `text = task(...)["Body"]` where the `except` reads `text` | an expression in it that fails, such as `text` that is not JSON | `States.QueryEvaluationError` ends the execution: the statement is a Pass or a Choice, which cannot catch. Written in the statement of the `task()` call, as `data = json.loads(task(...)["Body"])`, the expression is evaluated by the Task, and its Catch runs the `except`; a `retry=` for `Exception` or `QueryEvaluationError` on that `task()` then calls it again first | the `except` for the error runs |
-| an assignment that starts the machine, a branch or a map's function, followed by a `task()` or `wait()` call, such as `order = input["order"]` | an input without the key | `States.QueryEvaluationError` after the Task has run or the wait is over, unless the Task or the Wait reads the value: the assignment is in its `Assign` | `KeyError` before the call or the wait |
-| an assignment nothing reads before the name is assigned again or the machine, the branch or the map's function ends, on every way or on one, such as `order = input["order"]` never read, or read only where an `if` right after it does not assign `order` again | an input without the key | the assignment is not made on that way, so nothing fails there, and the calls on it run | `KeyError` |
+| `UD-PASS-NOT-CATCHABLE`: a statement in a `try` body without a `task()`, `parallel()` or map call that does not go in the Task before it, such as `data = json.loads(text)` after `text = task(...)["Body"]` where the `except` reads `text` | an expression in it that fails, such as `text` that is not JSON | `States.QueryEvaluationError` ends the execution: the statement is a Pass or a Choice, which cannot catch. Written in the statement of the `task()` call, as `data = json.loads(task(...)["Body"])`, the expression is evaluated by the Task, and its Catch runs the `except`; a `retry=` for `Exception` or `QueryEvaluationError` on that `task()` then calls it again first | the `except` for the error runs |
+| `AD-DEFERRED-FAILURE`: an assignment that starts the machine, a branch or a map's function, followed by a `task()` or `wait()` call, such as `order = input["order"]` | an input without the key | `States.QueryEvaluationError` after the Task has run or the wait is over, unless the Task or the Wait reads the value: the assignment is in its `Assign` | `KeyError` before the call or the wait |
+| `AD-DEAD-FAILURE`: an assignment nothing reads before the name is assigned again or the machine, the branch or the map's function ends, on every way or on one, such as `order = input["order"]` never read, or read only where an `if` right after it does not assign `order` again | an input without the key | the assignment is not made on that way, so nothing fails there, and the calls on it run | `KeyError` |
 | `distributed_map(f, ...)` | `f` raises | within `tolerated_failure_count=` or `tolerated_failure_percentage=`, `{"Status": "FAILED", "Error": ..., "Cause": ...}` in the item's place in the list; otherwise `States.ExceedToleratedFailureThreshold`, which an `except` of the raised class does not catch | the exception `f` raised |
 
 ## At run time

@@ -1,20 +1,32 @@
+import math
+
 import pytest
 
 from sfnx.syntax import (
+    EvaluationCount,
+    Strictness,
+    UndefinedPropagation,
     always_read,
     atomic,
     changes,
     constant,
+    evaluations,
     facts,
     lone_variable,
     looser_than_and,
     mentions,
+    most_reads,
     names_read,
+    occurrences,
     path_alone,
+    propagation,
     reads_own_context,
     reads_own_states,
     reads_state_name,
     reads_the_name,
+    same_code,
+    sensitivity,
+    strictness,
 )
 
 
@@ -270,6 +282,36 @@ def test_what_code_reads_every_time_it_is_evaluated(code, read):
 
 
 @pytest.mark.parametrize(
+    "code, most",
+    [
+        ("$y + 1", 0),
+        ("$x", 1),
+        ("[$x, $x]", 2),
+        ("$f($x)", 1),
+        ("$c ? $x : 1", 1),
+        ("$c ? $x", 1),
+        ("$x ? $x : $x", 2),
+        ("($v := $x; $v + $v)", 1),
+        ("($x := 1; $x + $x)", 0),
+        ("$x.a", 1),
+        # Each item reads it again: in a function, a filter, a grouping, a
+        # sort term, a step of a path after the first.
+        ("$map($r, function($i) { $x + $i })", math.inf),
+        ("$r[$x > 0]", math.inf),
+        ("$r{$x: 1}", math.inf),
+        ("$r^($x)", math.inf),
+        ("$r.($x)", math.inf),
+        # A parameter of the name is not the variable.
+        ("$map($r, function($x) { $x })", 0),
+        # What code the parser cannot read reads is not known.
+        ("$y +", math.inf),
+    ],
+)
+def test_how_often_code_may_read_a_variable(code, most):
+    assert most_reads(code, "x") == most
+
+
+@pytest.mark.parametrize(
     "code, value",
     [
         ("(2 - 2) * -1", 0),
@@ -307,3 +349,102 @@ def test_code_that_reads_nothing_is_its_value(code, value):
 )
 def test_code_that_may_differ_or_reads_something_has_no_value_here(code):
     assert constant(code) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "code, count, instance, unknown",
+    [
+        ("$a + 1", False, False, False),
+        ("$random()", True, False, False),
+        ("$uuid() & $now()", True, True, False),
+        ("$millis()", False, True, False),
+        ("$map($xs, $random)", True, False, False),
+        ("$eval('1')", False, False, True),
+    ],
+)
+def test_what_moving_code_must_keep(code, count, instance, unknown):
+    found = sensitivity(code)
+    assert (
+        found.evaluation_count,
+        found.evaluation_instance,
+        found.dependencies_unknown,
+    ) == (count, instance, unknown)
+    assert found.varies == (count or instance or unknown)
+
+
+@pytest.mark.parametrize(
+    "code, how",
+    [
+        ("$x", Strictness.ALWAYS),
+        ("$y", Strictness.NEVER),
+        ("$x ? $a : $b", Strictness.ALWAYS),
+        ("$c ? $x : $b", Strictness.CONDITIONAL),
+        ("$x or $a", Strictness.ALWAYS),
+        ("$a or $x", Strictness.CONDITIONAL),
+        ("$not($x)", Strictness.ALWAYS),
+        ("$x < $a and $a < $b", Strictness.ALWAYS),
+        ("$a < $b and $b < $x", Strictness.CONDITIONAL),
+        ("$x + 1", Strictness.ALWAYS),
+        ("$x.k", Strictness.ALWAYS),
+        ("$count($x)", Strictness.ALWAYS),
+        ("$max([$x, 1])", Strictness.ALWAYS),
+        # A divisor written as a variable is tested first; the dividend is
+        # read only where it is not zero.
+        ("$b = 0 ? $error('division by zero') : $x / $b", Strictness.CONDITIONAL),
+        ("$map($b, function($a) { $x })", Strictness.CONDITIONAL),
+        ("[$a, $x]", Strictness.ALWAYS),
+        ('{"k": $x}', Strictness.ALWAYS),
+        ("'n: ' & $string($x)", Strictness.ALWAYS),
+        ("[$a, $b]", Strictness.NEVER),
+    ],
+)
+def test_how_code_reads_a_variable(code, how):
+    assert strictness(code, "x") is how
+
+
+@pytest.mark.parametrize(
+    "code, how",
+    [
+        ("$x", UndefinedPropagation.PROPAGATES),
+        ("$x + 1", UndefinedPropagation.UNKNOWN),
+        ("$type($x)", UndefinedPropagation.UNKNOWN),
+        ("$y", UndefinedPropagation.UNKNOWN),
+    ],
+)
+def test_how_undefined_passes_through_code(code, how):
+    assert propagation(code, "x") is how
+
+
+@pytest.mark.parametrize(
+    "code, count",
+    [
+        ("$x", EvaluationCount(1, 1)),
+        ("$y", EvaluationCount(0, 0)),
+        ("$c ? $x : 1", EvaluationCount(0, 1)),
+        ("[$x, $x]", EvaluationCount(1, 2)),
+        ("$map($r, function($i) { $x })", EvaluationCount(0, None)),
+    ],
+)
+def test_how_often_code_evaluates_a_read(code, count):
+    assert evaluations(code, "x") == count
+
+
+@pytest.mark.parametrize(
+    "code, part, count",
+    [
+        ("$a.b + 1", "$a.b", 1),
+        # The text holds it; the syntax tree does not.
+        ("$a.bc + 1", "$a.b", 0),
+        ("$x * ($a + 1) + ($a+1)", "$a + 1", 2),
+        ("($v := $a + 1; $v)", "$a + 1", 1),
+        ("$a +", "$a", None),
+    ],
+)
+def test_how_often_code_holds_another(code, part, count):
+    assert occurrences(code, part) == count
+
+
+def test_the_same_code_however_it_is_written():
+    assert same_code("$a+1", " ($a + 1) ")
+    assert not same_code("$a + 1", "1 + $a")
+    assert not same_code("$a +", "$a +")

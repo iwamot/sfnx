@@ -87,16 +87,18 @@ def test_a_read_of_a_pending_assignment_reads_its_expression():
     assert definition["States"]["a"]["Assign"] == {"a": n, "b": [n], "c": 2}
 
 
-def test_a_read_of_a_value_that_changes_starts_a_new_state():
-    """Reading its expression again would give another value."""
-    source = "import random\n" + machine("a = random.random()\nb = [a]\nreturn b")
-    definition = compile_one(source)
-    assert definition["States"]["a"] == {
-        "Type": "Pass",
-        "Assign": {"a": "{% $random() %}"},
-        "Next": "return",
-    }
-    assert definition["States"]["return"]["Output"] == ["{% $a %}"]
+@pytest.mark.parametrize(
+    "body, output",
+    [
+        ("a = random.random()\nreturn a", "{% $random() %}"),
+        ("a = random.random()\nb = [a]\nreturn b", ["{% $random() %}"]),
+    ],
+)
+def test_a_value_that_changes_read_once_by_the_return_goes_in_its_output(body, output):
+    """The Output evaluates it once, as the Pass would, with no Task or Wait
+    between the two."""
+    definition = compile_one("import random\n" + machine(body))
+    assert definition["States"] == {"return": {"Type": "Succeed", "Output": output}}
 
 
 def test_reassignment_starts_a_new_state_with_a_serial_name():
@@ -139,8 +141,9 @@ def test_a_first_value_nothing_reads_goes(first):
 
 @pytest.mark.parametrize(
     "first",
-    # A random value, which the Choice would evaluate again in its test, and
-    # the State of the context, which names the state it is read in.
+    # A random value, which the Choice would evaluate twice, in its test and
+    # in the Assign of its Default, which reads it after, and the State of
+    # the context, which names the state it is read in.
     ["random.random()", 'context["State"]["Name"]'],
 )
 def test_a_start_value_the_next_state_would_read_otherwise_keeps_its_pass(first):
@@ -184,11 +187,13 @@ def test_a_swap_reads_the_pending_values_in_the_same_state():
 def test_a_swap_keeps_its_state_where_a_pending_value_cannot_be_shared():
     """b reads a, which read as its expression would give another value, so
     the swap does not share the first Pass, and the return right after it
-    reads the values the first Pass assigns, each in the other's place."""
+    reads the values the first Pass assigns, each in the other's place:
+    the random value once, so the Output evaluates it in the Pass's place."""
     body = "a = random.random()\nb = 2\na, b = b, a\nreturn [a, b]"
     definition = compile_one("import random\n" + machine(body))
-    assert definition["States"]["a"]["Assign"]["b"] == 2
-    assert definition["States"]["return"]["Output"] == ["{% $b %}", "{% $a %}"]
+    assert definition["States"] == {
+        "return": {"Type": "Succeed", "Output": [2, "{% $random() %}"]}
+    }
 
 
 @pytest.mark.parametrize(
@@ -281,8 +286,9 @@ def test_joining_text_cannot_fail_so_it_goes_in_the_return():
 @pytest.mark.parametrize(
     "body, types",
     [
-        # c reads a, which read as its expression would give another value.
-        ("a = random.random()\nc, d = a, 1\nreturn [c, d]", ["Pass", "Succeed"]),
+        # c reads a, which read as its expression would give another value;
+        # the return reads it twice, so a keeps its Pass.
+        ("a = random.random()\nc, d = a, 1\nreturn [c, d, a]", ["Pass", "Succeed"]),
         # The text of jsonata() reads x by its name, which no expression
         # replaces, and spells it in a string, which stays as it is.
         (
@@ -712,7 +718,7 @@ def test_names_do_not_depend_on_lines():
         ('x = input.get("a")\nreturn [x]', ["return"]),
         ("x = 1", ["return"]),
         # Nothing reads x, so it goes; one that changes on evaluation is
-        # evaluated once.
+        # evaluated once, where the Output would evaluate it twice.
         ('x = input["a"]\nreturn 1', ["return"]),
         ("x = random.random()\nreturn [x, x]", ["x", "return"]),
     ],
@@ -991,3 +997,29 @@ def test_what_the_except_clause_assigns_after_the_failure_is_not_compared():
     too, wherever the passes put it."""
     assert misread(except_body(False)) == []
     assert misread(except_body(True)) == []
+
+
+def test_a_value_is_held_by_another_expression_as_its_syntax_tree():
+    """d's expression is not in ds's, however its text is, so d, which
+    nothing reads, goes; ds, read in the Output, stays."""
+    body = (
+        'd: dict = input["d"]\nds: list[dict] = input["ds"]\n'
+        'return min(ds, key=lambda item: item["p"])'
+    )
+    definition = compile_one(machine(body))
+    first = definition["States"][definition["StartAt"]]
+    assert first["Assign"] == {"ds": "{% $states.context.Execution.Input.ds %}"}
+
+
+def test_a_return_that_reads_a_value_in_text_every_time_takes_its_place():
+    """An f-string evaluates each value it writes every time, so the return
+    fails where the Pass would, and the Pass goes."""
+    body = 'c: int = input.get("c", 0)\nc += 1\nreturn f"{c} checkpoints"'
+    c = "$exists($states.context.Execution.Input.c)"
+    value = f"({c} ? $states.context.Execution.Input.c : 0) + 1"
+    assert compile_one(machine(body))["States"] == {
+        "return": {
+            "Type": "Succeed",
+            "Output": f"{{% $string({value}) & ' checkpoints' %}}",
+        }
+    }

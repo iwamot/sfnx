@@ -6,7 +6,7 @@ What the tests guarantee, and how to check the generated definitions against Ste
 
 | Check | What it compares | Runs |
 |---|---|---|
-| `tests/test_differential.py` | random programs in CPython and, compiled, in `sfnx.testing` | every `validate.sh` |
+| `tests/test_differential.py` | random programs in CPython and, compiled, in `sfnx.testing`; the definition before and after the passes; and how often each makes a call that gives another value, which the definition makes no more often than CPython | every `validate.sh` |
 | `tests/test_corpus.py` | the fixed cases of `tests/corpus.py` in the interpreter, with `$random` fixed and counted, and in CPython where the case claims agreement | every `validate.sh` |
 | `tests/aws_corpus.py` | the same fixed cases in Step Functions | on request, with AWS credentials |
 
