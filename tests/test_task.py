@@ -83,13 +83,35 @@ R = f'r = task("{LAMBDA}", {{"FunctionName": "f"}}'
 
 
 @pytest.mark.parametrize(
+    "value, code",
+    [
+        ('jsonata("$random()")', "$random()"),
+        ("time.time()", "$millis() / 1000"),
+    ],
+)
+def test_a_return_that_changes_on_evaluation_is_the_output_after_a_task(value, code):
+    """The Output is evaluated once, after the call, as the return's state
+    after the Task would be."""
+    body = R + f")\nreturn [r, {value}]"
+    imports = "import time\nfrom sfnx import jsonata, state_machine, task"
+    assert definition(body, imports)["States"] == {
+        "r": {
+            "Type": "Task",
+            "Resource": LAMBDA,
+            "Arguments": {"FunctionName": "f"},
+            "Output": ["{% $states.result %}", f"{{% {code} %}}"],
+            "End": True,
+        }
+    }
+
+
+@pytest.mark.parametrize(
     "body",
     [
         # A retrier for these errors would run the Task again.
         R + ', retry=[{"ErrorEquals": [Exception]}])\nreturn r["Payload"]',
         R + ', retry=[{"ErrorEquals": [QueryEvaluationError]}])\nreturn r["Payload"]',
         # What could differ between the Task and the state after it.
-        R + ')\nreturn [r, jsonata("$random()")]',
         R + ')\nreturn [r, context["State"]["Name"]]',
         # Another state comes between.
         R + ")\nwait(1)\nreturn r",

@@ -984,10 +984,12 @@ def test_a_way_that_assigns_variables_alone_holds_the_statement_after_it():
     assert run(body, {"a": 1, "b": 2, "xs": [0, 0, 0]}) == [1, 2]
 
 
-# What the way assigns t: from the input, which may fail or be undefined, and
-# a division, which may fail but is never undefined.
+# What the way assigns t: from the input, which may fail or be undefined, a
+# division, which may fail but is never undefined, and a random value, which
+# changes on evaluation.
 FROM_INPUT = expression("$states.input.t")
 DIVIDED = expression("10 / $d", defined=True)
+RANDOM = expression("$random()", defined=True, total=True)
 
 
 @pytest.mark.parametrize(
@@ -1002,6 +1004,10 @@ DIVIDED = expression("10 / $d", defined=True)
         # An undefined value would pass through $type() where the way's
         # Assign fails.
         (FROM_INPUT, "{% $type($t) %}", None),
+        # A random value read once in place of the way's, which goes.
+        (RANDOM, "{% $t + 1 %}", {"t": "{% ($random()) + 1 %}"}),
+        # Read twice, it would be drawn twice.
+        (RANDOM, "{% [$t, $t] %}", None),
     ],
 )
 def test_a_way_holds_a_pass_that_assigns_its_name_again(way, then, taken):
@@ -1010,6 +1016,27 @@ def test_a_way_holds_a_pass_that_assigns_its_name_again(way, then, taken):
     assert isinstance(assign, dict)
     found = way_assign(holder, holder, assign, expressions_in(assign))
     assert emitted(found) == taken
+
+
+def test_a_task_that_draws_a_value_holds_the_swap_after_it():
+    """The swap reads a once and assigns it again, so the Task's Assign draws
+    the value once, where the swap's Pass would read it."""
+    body = (
+        'xs: list = input["xs"]\na = 0\nb = 0\nfor x in xs:\n'
+        f'    task("{PUBLISH}", {{"Message": "m"}})\n'
+        "    a = random.random()\n    a, b = b, a\nreturn [a, b]"
+    )
+    (compiled,) = compile_source("import random\n" + source(body)).values()
+    assert [s["Type"] for s in compiled["States"].values()] == [
+        "Pass",
+        "Choice",
+        "Task",
+        "Succeed",
+    ]
+    drawn = iter([0.5, 0.25])
+    with asl.replaced(random=lambda *arguments: next(drawn)):
+        tasks = {"publish": lambda arguments: {}}
+        assert asl.run(compiled, {"xs": [0, 0]}, tasks) == [0.5, 0.25]
 
 
 @pytest.mark.parametrize(

@@ -103,8 +103,11 @@ class Reject(Enum):
         ),
     )
     CHANGES_EVALUATION_COUNT = (
-        BLANKET,
-        "the value may give another value each time it is evaluated, as $random() does",
+        PROOF,
+        (
+            "the value may give another value each time it is evaluated, as "
+            "$random() does, and would be evaluated more often than its assignment"
+        ),
     )
     CHANGES_EVALUATION_INSTANCE = (
         BLANKET,
@@ -178,18 +181,11 @@ def context_invariant(codes: list[str], differs: Differs) -> Reject | None:
     return Reject.STATE_CONTEXT_CHANGES if any(map(reads, codes)) else None
 
 
-def stable(values: list[Expr] | list[str]) -> Reject | None:
-    """Whether evaluating each value again gives what it gave, as its
-    Sensitivity says; an Expr counts the code of a jsonata() expression that
-    is not settled, and the code alone does not. Any sensitivity refuses."""
-    for value in values:
-        found = value.sensitivity if isinstance(value, Expr) else sensitivity(value)
-        if found.dependencies_unknown:
-            return Reject.DEPENDENCIES_UNKNOWN
-        if found.evaluation_count:
-            return Reject.CHANGES_EVALUATION_COUNT
-        if found.evaluation_instance:
-            return Reject.CHANGES_EVALUATION_INSTANCE
+def dependencies_known(codes: list[str]) -> Reject | None:
+    """Whether what each code reads is written out, which the other checks
+    need to judge it."""
+    if any(sensitivity(code).dependencies_unknown for code in codes):
+        return Reject.DEPENDENCIES_UNKNOWN
     return None
 
 
@@ -214,10 +210,12 @@ def failure_kept(code: str, values: dict[str, Expr]) -> Reject | None:
 
 @dataclass(frozen=True)
 class Field:
-    """The code of a field a value would be read in: whether it is evaluated
-    before the state's call or wait, or in a state that makes none, and
-    whether the state may evaluate it more than once, as a retrier runs a
-    state again and a Map's ItemSelector runs for each item."""
+    """The code of a field a value would be read in: whether no call or wait
+    comes between the value's assignment and it, as for a field evaluated
+    before the state's call or wait, or in a state that makes none, where
+    the value is assigned before the state, and whether the state may
+    evaluate it more than once, as a retrier runs a state again and a Map's
+    ItemSelector runs for each item."""
 
     code: str
     before: bool
@@ -264,8 +262,8 @@ def evaluated_as_before(value: Expr, name: str, fields: list[Field]) -> Reject |
     variable of a name in fields, gives what the one evaluation of its
     assignment gave: one that may give another value each time is read at
     most once, and the time is read in one field, which one evaluation reads
-    once however often it reads it (measured), on the same side of the
-    state's call or wait. What it reads that is not written out refuses. A
+    once however often it reads it (measured), with no call or wait between
+    it and the assignment. What it reads that is not written out refuses. A
     field the state evaluates more than once may read neither."""
     found = value.sensitivity
     if not found.varies:
@@ -292,6 +290,31 @@ def evaluated_as_before(value: Expr, name: str, fields: list[Field]) -> Reject |
             return Reject.CHANGES_EVALUATION_INSTANCE
         if not all(f.before for f in reading):
             return Reject.CROSSES_EFFECT
+    return None
+
+
+def evaluated_once(
+    values: dict[str, Expr], codes: list[str], kept: set[str]
+) -> Reject | None:
+    """Whether values, read in place of their variables in codes evaluated
+    right where their assignments are, with no call or wait between, give
+    what the one evaluation of each assignment gave, as evaluated_as_before
+    says: an assignment that stays, as those in kept do, is evaluated where
+    it is as well. One that reads the time refuses, as whether its reads
+    stay between the same calls and waits is not shown here. Each value is
+    judged by its code, a jsonata() expression that is not settled as well:
+    the syntax tree shows each function the code calls, by whatever name it
+    binds it to, as a variable holds JSON, never a function."""
+    fields = [Field(code, before=True) for code in codes]
+    for name, value in values.items():
+        value = replace(value, opaque=False)
+        found = value.sensitivity
+        if found.evaluation_instance and not found.dependencies_unknown:
+            return Reject.CHANGES_EVALUATION_INSTANCE
+        own = [Field(f"${name}", before=True)] if name in kept else []
+        reason = evaluated_as_before(value, name, fields + own)
+        if reason is not None:
+            return reason
     return None
 
 
