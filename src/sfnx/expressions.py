@@ -17,7 +17,7 @@ from sfnx.jsontypes import (
     of,
     union,
 )
-from sfnx.syntax import changes
+from sfnx.syntax import EXACT, changes
 
 # JSONata binding powers. A subexpression is parenthesized when it binds
 # looser than the place it is put in; an expression written in jsonata() may
@@ -139,9 +139,6 @@ KEEP_DEFINED = frozenset(
 )
 # & writes any value as text, so it fails for none.
 TOTAL_OPERATORS = frozenset({"=", "!=", "in", "and", "or", "&"})
-# The integers a double holds exactly, which JSONata computes with as Python
-# does.
-EXACT = 2**53
 
 
 @dataclass(frozen=True)

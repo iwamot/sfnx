@@ -2,11 +2,13 @@
 rather than from its text, so a name written in a string is told apart from
 one the expression reads or binds."""
 
+import json
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
 
+import jsonata
 from jsonata.jexception import JException
 from jsonata.parser import Parser
 
@@ -220,6 +222,120 @@ def eager(node: Parser.Symbol, bound: frozenset[str]) -> frozenset[str]:
         ]
         return frozenset().union(*(eager(part, bound) for part in parts))
     return frozenset()
+
+
+# The integers a double holds exactly, which JSONata computes with as Python
+# does.
+EXACT = 2**53
+# The functions a constant may call, which give the same value in JSONata
+# and in jsonata-python for any value written out.
+CONSTANT_FUNCTIONS = frozenset({"count", "exists", "not", "boolean", "append", "type"})
+ARITHMETIC = frozenset({"+", "-", "*", "/", "%"})
+ORDER = frozenset({"<", ">", "<=", ">="})
+
+
+def constant(code: str) -> tuple[bool, object]:
+    """The value of code that reads no variable and gives the same value
+    wherever it is evaluated, as (True, value), or (False, None): numbers,
+    strings, true, false and null written out, arithmetic, = and !=, the
+    order of numbers, and, or, conditionals, arrays and objects written out,
+    a key or an index written out, and the functions of CONSTANT_FUNCTIONS.
+    Not where JSONata and jsonata-python may disagree, as on the order of
+    strings, a number written as text, a number a double does not hold or
+    one that is not whole, which is left for JSONata to write, nor on a
+    placeholder the deployment replaces, nor where the value is undefined,
+    which an Assign fails on, or fails to evaluate, as it fails there too."""
+    found, written = evaluated(code)
+    return (True, json.loads(written)) if found else (False, None)
+
+
+@cache
+def evaluated(code: str) -> tuple[bool, str]:
+    """What constant says of code, with the value as JSON text, so that each
+    caller gets a value of its own."""
+    tree = tree_of(code)
+    if tree is None or not closed(
+        tree, strings=any(n.type == "string" for n in nodes(tree))
+    ):
+        return False, ""
+    try:
+        value = jsonata.Jsonata(code).evaluate(None)
+    except (JException, ArithmeticError, TypeError, ValueError):
+        return False, ""
+    if not representable(value):
+        return False, ""
+    return True, json.dumps(plain(value), ensure_ascii=False)
+
+
+def closed(node: Parser.Symbol, strings: bool) -> bool:
+    """Whether node is made only of what constant evaluates, where strings
+    says whether the code writes any string out, which the order would then
+    compare."""
+    kind = node.type
+    if kind == "number":
+        # A number the parser rounded to 2**53 may have been written larger.
+        assert isinstance(node.value, (int, float))
+        return abs(node.value) < EXACT
+    if kind == "string":
+        # A placeholder, which the deployment writes another text in place of.
+        assert isinstance(node.value, str)
+        return "${" not in node.value
+    if kind == "value":
+        return True
+    if kind == "binary":
+        if node.value not in ARITHMETIC | ORDER | {"=", "!=", "and", "or"}:
+            return False
+        if node.value in ORDER and strings:
+            return False
+    elif kind == "unary":
+        if node.value not in {"-", "[", "{"}:
+            return False
+    elif kind == "function":
+        procedure = node.procedure
+        if procedure is None or procedure.type != "variable":
+            return False
+        if procedure.value not in CONSTANT_FUNCTIONS:
+            return False
+        return all(closed(a, strings) for a in node.arguments or [])
+    elif kind == "path":
+        # A path that starts from a name reads the input of the expression.
+        assert node.steps is not None
+        if node.steps[0].type == "name":
+            return False
+    elif kind == "name":
+        # A key after the start of a path, which node.stages may filter.
+        return all(closed(stage, strings) for stage in node.stages or [])
+    elif kind not in {"condition", "block", "filter"}:
+        return False
+    return all(closed(child, strings) for child in children(node))
+
+
+def representable(value: object) -> bool:
+    """Whether a value is JSON that a double holds as jsonata-python gives it."""
+    if isinstance(value, (bool, str)):
+        return True
+    if isinstance(value, int):
+        return abs(value) < EXACT
+    if isinstance(value, float):
+        # A number that is not whole is left for JSONata to write.
+        return value.is_integer() and abs(value) < EXACT
+    if isinstance(value, list):
+        return all(representable(v) for v in value)
+    if isinstance(value, dict):
+        return all(isinstance(k, str) and representable(v) for k, v in value.items())
+    return False
+
+
+def plain(value: object) -> object:
+    """A value as JSON: lists and dicts of the parser's kinds as plain ones,
+    and a float that is whole as an int, as JSON writes both alike."""
+    if isinstance(value, list):
+        return [plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: plain(v) for k, v in value.items()}
+    if isinstance(value, float) and value.is_integer() and abs(value) < EXACT:
+        return int(value)
+    return value
 
 
 def mentions(code: str, name: str) -> bool:

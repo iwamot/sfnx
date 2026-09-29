@@ -61,6 +61,7 @@ from sfnx.syntax import (
     always_read,
     atomic,
     changes,
+    constant,
     facts,
     lone_variable,
     looser_than_and,
@@ -4403,21 +4404,31 @@ def take_in_choices(
                     )
                     for later in later_rules
                 ]
+                # Each way out went past what the transition it takes the place
+                # of went past, and what the second's own went past.
+                before = rounds.of(rule)
+                for way, later in zip(ways, second["Choices"], strict=True):
+                    rounds.passed[id(way)] = (way, before | rounds.of(later))
                 if rule is first:
                     first["Choices"] = [*rules, *ways]
                     first["Default"] = later_default
+                    rounds.of(first).update(rounds.of(second))
                     if values or own:
                         first["Assign"] = then(values, own)
                 else:
                     test = rule["Condition"]
-                    ways = [
+                    tested = [
                         {**way, "Condition": both(test, way["Condition"])}
                         for way in ways
                     ]
+                    for way, old in zip(tested, ways, strict=True):
+                        rounds.passed[id(way)] = (way, set(rounds.of(old)))
+                    ways = tested
                     rest = {**rule, "Next": later_default}
                     if values or own:
                         rest["Assign"] = then(values, own)
                     rest = commented_with(rest, second.get("Comment"), after=True)
+                    rounds.passed[id(rest)] = (rest, before | rounds.of(second))
                     first["Choices"] = [
                         *rules[:index],
                         *ways,
@@ -5026,6 +5037,87 @@ def read_assigned(
     return read_through(output, values)
 
 
+def fold_constants(definition: dict[str, object]) -> None:
+    """Each expression that reads no variable and gives the same value
+    wherever it is evaluated, as constant says, as the value written out, as
+    a hand-writer writes 0 for (2 - 2) * -1: where values written in the
+    source are read in place of variables, what is left is such an
+    expression. A Condition is left to thread_choices, which decides a test
+    from the values known along each way, a loop's first round only; the
+    Error and Cause of a Fail take only a string."""
+    states = definition["States"]
+    assert isinstance(states, dict)
+
+    def folded(
+        leaf: object, kinds: tuple[type, ...] | None, field: bool = False
+    ) -> object:
+        if isinstance(leaf, Expr) and isinstance(leaf.template, (dict, list)):
+            return replace(leaf, template=folded(leaf.template, None))
+        if isinstance(leaf, dict):
+            return {k: folded(v, None) for k, v in leaf.items()}
+        if isinstance(leaf, list):
+            return [folded(v, None) for v in leaf]
+        code = code_of(leaf)
+        if code is None:
+            return leaf
+        found, value = constant(code)
+        if not found or (kinds is not None and not isinstance(value, kinds)):
+            return leaf
+        # Written out, a string that opens or closes like a template would be
+        # read as one.
+        if any(
+            isinstance(v, str) and (v.startswith("{%") or v.endswith("%}"))
+            for v in leaves(value)
+        ):
+            return leaf
+        # A field keeps what the check knows of the assignment it makes.
+        if field and isinstance(leaf, Expr):
+            return replace(
+                written_value(value),
+                defines=leaf.defines,
+                excepts=leaf.excepts,
+            )
+        return value
+
+    for state in states.values():
+        holders: list[dict[str, object]] = [state, *state.get("Choices", [])]
+        holders += state.get("Catch", [])
+        for holder in holders:
+            for key in list(holder):
+                # A rule and a catcher are holders of their own, which the
+                # passes know by what they are; a Condition is not folded.
+                if key in UNREAD or key in {
+                    "Type",
+                    "Next",
+                    "Default",
+                    "End",
+                    "Choices",
+                    "Catch",
+                    "Retry",
+                    "Condition",
+                }:
+                    continue
+                kinds: tuple[type, ...] | None = None
+                if key in {"Error", "Cause"}:
+                    kinds = (str,)
+                value = holder[key]
+                if key == "Assign" and isinstance(value, dict):
+                    holder[key] = {
+                        k: folded(v, None, field=True) for k, v in value.items()
+                    }
+                else:
+                    holder[key] = folded(value, kinds, field=True)
+
+
+def leaves(value: object) -> list[object]:
+    """The scalars of a value written out."""
+    if isinstance(value, dict):
+        return [leaf for v in value.values() for leaf in leaves(v)]
+    if isinstance(value, list):
+        return [leaf for v in value for leaf in leaves(v)]
+    return [value]
+
+
 def return_in_place_of_passes(definition: dict[str, object]) -> None:
     """A Pass that goes on to a Succeed, as a Succeed whose Output reads what
     the Pass assigns as the expressions it assigns them, as a hand-writer
@@ -5335,6 +5427,7 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
     enclosing = scope.enclosing
     while True:
         before = copy.deepcopy(definition)
+        traced(fold_constants, definition)
         traced(thread_choices, definition, None, enclosing)
         traced(drop_dead_assignments, definition)
         traced(fold_into_catching_tasks, definition, enclosing)

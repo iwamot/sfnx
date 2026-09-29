@@ -56,7 +56,8 @@ def test_through_the_module():
 
 def test_a_variable_named_context_is_a_variable():
     states = output('context = {"a": 1}\nreturn [context["a"], context]')
-    assert states["return"]["Output"] == ["{% {'a': 1}.a %}", {"a": 1}]
+    # Read in place, the key of a dict written out is written out too.
+    assert states["return"]["Output"] == [1, {"a": 1}]
 
 
 def test_the_task_token_in_a_callback():

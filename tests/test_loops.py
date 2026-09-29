@@ -1052,7 +1052,7 @@ def test_a_statement_a_way_into_it_cannot_hold_keeps_its_pass(body):
         # The first item of a list written in the source is known too.
         (
             "n = 3\nfor i, x in enumerate([5, 6]):\n    n = x\nreturn n",
-            {"i": 1, "n": "{% ([5, 6])[0] %}"},
+            {"i": 1, "n": 5},
             {},
             6,
         ),
