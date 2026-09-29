@@ -1023,3 +1023,35 @@ def test_a_return_that_reads_a_value_in_text_every_time_takes_its_place():
             "Output": f"{{% $string({value}) & ' checkpoints' %}}",
         }
     }
+
+
+READ_FURTHER = (
+    'd: dict[str, list[int]] = input["d"]\nys = [x * 2 for x in d["items"]]\n'
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        READ_FURTHER + "return ys",
+        (
+            READ_FURTHER
+            + 'y = task("arn:aws:states:::lambda:invoke", {"FunctionName": "f", '
+            + '"Payload": ys})\nreturn y'
+        ),
+    ],
+)
+def test_a_value_a_comprehension_reads_further_in_its_place_still_fails(body):
+    """d is read in place as the start of a longer path, where a missing key
+    gives an empty list; its assignment stays, so a missing d fails as Python
+    fails, after the call where one follows (AD-DEFERRED-FAILURE)."""
+    source = (
+        "from sfnx import state_machine, task\n\n\n@state_machine\ndef pay(input):\n"
+        + textwrap.indent(body, "    ")
+    )
+    definition = compile_one(source)
+    tasks = {"y": lambda arguments: arguments["Payload"]}
+    with pytest.raises(asl.Failure) as failed:
+        asl.run(definition, {}, tasks)
+    assert failed.value.error == "States.QueryEvaluationError"
+    assert asl.run(definition, {"d": {"items": [1, 2]}}, tasks) == [2, 4]
