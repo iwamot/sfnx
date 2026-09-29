@@ -5223,7 +5223,7 @@ def same_states(states: dict[str, dict[str, object]]) -> dict[str, str]:
             default=template_of,
         )
         if refused(
-            context_invariant(expressions_in(state), Differs.STATE), "share_states"
+            context_invariant(expressions_in(state), Differs.NAME), "share_states"
         ):
             continue
         if key not in kept:

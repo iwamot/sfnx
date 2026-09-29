@@ -677,6 +677,26 @@ def test_paths_that_end_otherwise_keep_their_states(body):
     ]
 
 
+@pytest.mark.parametrize(
+    "field, shared",
+    [
+        # Each entry into the one state is an entry into one of the two, at
+        # the time it would have been entered (measured).
+        ("EnteredTime", True),
+        # The one state has one name.
+        ("Name", False),
+    ],
+)
+def test_paths_that_read_the_state_they_end_in_share_it_but_for_its_name(field, shared):
+    body = (
+        f'if input["a"]:\n    return context["State"]["{field}"]\n'
+        f'return context["State"]["{field}"]'
+    )
+    compiled = tasks_definition(body)
+    ends = [n for n, s in compiled["States"].items() if s["Type"] == "Succeed"]
+    assert len(ends) == (1 if shared else 2)
+
+
 def test_a_shared_end_names_the_source_of_each_path():
     body = 'if input["a"]:\n    return None\nreturn None'
     (plain,) = compile_source(source(body)).values()
