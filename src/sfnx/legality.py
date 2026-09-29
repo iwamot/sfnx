@@ -30,11 +30,11 @@ from sfnx.expressions import (
 from sfnx.syntax import (
     Strictness,
     UndefinedPropagation,
+    evaluates,
     evaluations,
     facts,
     lone_variable,
     names_read,
-    occurrences,
     path_alone,
     propagation,
     reads_own_context,
@@ -329,14 +329,16 @@ def held_elsewhere(template: object, codes: list[str]) -> bool:
     fail, as reading the variable in its place writes it: a value written
     out or a variable alone has nothing to fail, whatever holds it, nor has
     one that can neither fail nor be undefined. The syntax trees are
-    compared where the text holds it, so $a.b is not held by $a.bc; one the
-    parser cannot read may hold anything."""
+    compared, as evaluates says, however the code is spaced or
+    parenthesized where it is read in place, so $a.b is held by
+    $count($a.b[0].c) and not by $a.bc; one the parser cannot read may hold
+    anything."""
     if failsafe(template):
         return False
     found = [code.strip() for code in expressions_in(template)]
     return any(
         not (lone_variable(code) is not None or code in NEVER_FAILS)
-        and sum(code in other and occurrences(other, code) != 0 for other in codes) > 1
+        and sum(evaluates(other, code) is not False for other in codes) > 1
         for code in found
     )
 

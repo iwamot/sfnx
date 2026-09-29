@@ -5,7 +5,6 @@ one the expression reads or binds."""
 import json
 import math
 import re
-from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import Enum
@@ -285,17 +284,19 @@ def evaluations(code: str, name: str) -> EvaluationCount:
     )
 
 
-def shape(node: Parser.Symbol) -> object:
+def shape(node: Parser.Symbol, bare: bool = False) -> object:
     """A node as what it means, apart from where it is written: its type, its
     value and the shapes of the nodes under it, field by field. Parentheses
     around one expression, with no filter of their own, are that
-    expression."""
+    expression. Bare, the node's own filters, grouping and sort terms, and
+    how it keeps an array, are left out, which evaluating it before them
+    evaluates anyway."""
     if wraps(node):
         assert node.expressions is not None
-        return shape(node.expressions[0])
+        return shape(node.expressions[0], bare)
     parts = []
     for key, value in sorted(vars(node).items()):
-        if key in POSITIONAL:
+        if key in POSITIONAL or (bare and key in UNFILTERED):
             continue
         found = list(within(value))
         if found:
@@ -315,6 +316,11 @@ def wraps(node: Parser.Symbol) -> bool:
     )
 
 
+# What a bare shape leaves out: what a node does with its value once it has
+# evaluated it.
+UNFILTERED = frozenset(
+    {"predicate", "stages", "group", "terms", "keep_array", "keep_singleton_array"}
+)
 # The fields of a node that say where it is written, or how the parser went
 # about it, rather than what it means.
 POSITIONAL = frozenset(
@@ -322,14 +328,72 @@ POSITIONAL = frozenset(
 )
 
 
+def steps_of(node: Parser.Symbol) -> list[Parser.Symbol]:
+    """The steps of a path, or the node itself as the one step of an
+    expression that is no path."""
+    if wraps(node):
+        assert node.expressions is not None
+        return steps_of(node.expressions[0])
+    if node.type == "path":
+        assert node.steps is not None
+        return list(node.steps)
+    return [node]
+
+
+def evaluated_key(steps: list[Parser.Symbol], bare: bool) -> object:
+    """What evaluating the first steps of a path evaluates: the steps before
+    the last as they are, and the last as it is or bare, as a path read
+    further evaluates a step before its filters and the steps after it."""
+    *before, last = steps
+    kept = shape(last, bare=True) if bare else ("filtered", shape(last))
+    return (tuple(shape(step) for step in before), kept)
+
+
+def unfiltered(node: Parser.Symbol) -> bool:
+    """Whether a node has none of what a bare shape leaves out."""
+    return not any(getattr(node, key, None) for key in UNFILTERED)
+
+
 @cache
-def shapes(code: str) -> Counter[object] | None:
-    """The shape of each node of the code's syntax tree, counted, or None
-    where the parser cannot read it."""
+def evaluated_parts(code: str) -> frozenset[object] | None:
+    """What evaluating the code evaluates: each node of its syntax tree, and
+    each path read up to each of its steps, or None where the parser cannot
+    read it."""
     tree = tree_of(code)
     if tree is None:
         return None
-    return Counter(shape(node) for node in nodes(tree) if not wraps(node))
+    found = set()
+    for node in nodes(tree):
+        if wraps(node):
+            continue
+        steps = steps_of(node)
+        for k in range(1, len(steps) + 1):
+            found.add(evaluated_key(steps[:k], bare=True))
+            found.add(evaluated_key(steps[:k], bare=False))
+    return frozenset(found)
+
+
+def evaluates(code: str, part: str) -> bool | None:
+    """Whether evaluating the code evaluates part: part's syntax tree is in
+    the code's, as a node or as the start of a path, however it is spaced or
+    parenthesized, as `$a.b` is in `$count($a.b[0].c)`; a part that filters
+    its last step is in the code only with that filter. None where the
+    parser cannot read either."""
+    found, wanted = evaluated_parts(code), part_key(part)
+    if found is None or wanted is None:
+        return None
+    return wanted in found
+
+
+@cache
+def part_key(part: str) -> object:
+    """What evaluates says a code must evaluate to evaluate part, or None
+    where the parser cannot read it."""
+    tree = tree_of(part)
+    if tree is None:
+        return None
+    steps = steps_of(tree)
+    return evaluated_key(steps, bare=unfiltered(steps[-1]))
 
 
 def same_code(first: str, second: str) -> bool:
@@ -337,15 +401,6 @@ def same_code(first: str, second: str) -> bool:
     or parenthesized; not where the parser cannot read either."""
     one, other = tree_of(first), tree_of(second)
     return one is not None and other is not None and shape(one) == shape(other)
-
-
-def occurrences(code: str, part: str) -> int | None:
-    """How many times the syntax tree of code holds that of part, or None
-    where the parser cannot read either."""
-    found, wanted = shapes(code), tree_of(part)
-    if found is None or wanted is None:
-        return None
-    return found[shape(wanted)]
 
 
 # The fields of a node that are evaluated once for each item: the filters and

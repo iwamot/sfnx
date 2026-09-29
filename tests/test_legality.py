@@ -251,6 +251,18 @@ def test_what_reads_a_variable_at_most_once(codes, reason):
         (MAY_FAIL, [f"{INPUT}.a"], False),
         # The text holds it, the syntax tree does not.
         (MAY_FAIL, [f"{INPUT}.a", f"{INPUT}.ab"], False),
+        # The syntax tree holds it, the text does not: as the start of a path
+        # read further, or in parentheses.
+        (
+            MAY_FAIL,
+            [f"{INPUT}.a", f"$map({INPUT}.a.items, function($v) {{ $v }})"],
+            True,
+        ),
+        (
+            expression(f"({INPUT}.a)"),
+            [f"({INPUT}.a)", f"$map({INPUT}.a, function($v) {{ $v }})"],
+            True,
+        ),
         # Nothing in it can fail or be undefined.
         (SAFE, ["$exists($a)", "[$exists($a)]"], False),
         (expression("$a"), ["$a", "[$a]"], False),

@@ -10,6 +10,7 @@ from sfnx.syntax import (
     atomic,
     changes,
     constant,
+    evaluates,
     evaluations,
     facts,
     lone_variable,
@@ -17,7 +18,6 @@ from sfnx.syntax import (
     mentions,
     most_reads,
     names_read,
-    occurrences,
     path_alone,
     propagation,
     reads_own_context,
@@ -430,18 +430,27 @@ def test_how_often_code_evaluates_a_read(code, count):
 
 
 @pytest.mark.parametrize(
-    "code, part, count",
+    "code, part, found",
     [
-        ("$a.b + 1", "$a.b", 1),
+        ("$a.b + 1", "$a.b", True),
         # The text holds it; the syntax tree does not.
-        ("$a.bc + 1", "$a.b", 0),
-        ("$x * ($a + 1) + ($a+1)", "$a + 1", 2),
-        ("($v := $a + 1; $v)", "$a + 1", 1),
+        ("$a.bc + 1", "$a.b", False),
+        # The syntax tree holds it; the text does not.
+        ("$x * ($a + 1)", "$a+1", True),
+        ("[$map($a.b, function($v) { $v })]", "($a.b)", True),
+        ("($v := $a + 1; $v)", "$a + 1", True),
+        # A path read further evaluates its start first, filters and all.
+        ("$count($a.b.c)", "$a.b", True),
+        ("$count($a.b[0].c)", "$a.b", True),
+        ("$a.c.b", "$a.b", False),
+        # A part that filters its last step is there only with the filter.
+        ("$count($a.b[0].c)", "$a.b[0]", True),
+        ("$count($a.b) + $a.b[1]", "$a.b[0]", False),
         ("$a +", "$a", None),
     ],
 )
-def test_how_often_code_holds_another(code, part, count):
-    assert occurrences(code, part) == count
+def test_what_evaluating_code_evaluates(code, part, found):
+    assert evaluates(code, part) is found
 
 
 def test_the_same_code_however_it_is_written():
