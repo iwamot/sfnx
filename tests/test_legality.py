@@ -71,6 +71,13 @@ def test_where_a_failure_ends_the_execution_as_it_did(handlers, value, reason):
         ),
         ("$states.context.State.EnteredTime", Differs.STATE, Reject.STATE_NAME_READ),
         ("$states.context.Task.Token", Differs.STATE, None),
+        # One state in the place of another that does the same: only the
+        # name differs, which a read of the State part as a whole may read.
+        ("$states.context.State.EnteredTime", Differs.NAME, None),
+        ("$states.context.State.RetryCount", Differs.NAME, None),
+        ("$states.context.State.Name", Differs.NAME, Reject.NAME_READ),
+        ("$states.context.State", Differs.NAME, Reject.NAME_READ),
+        ("$states.context", Differs.NAME, Reject.NAME_READ),
     ],
 )
 def test_what_reads_the_same_of_states_where_it_goes(code, differs, reason):

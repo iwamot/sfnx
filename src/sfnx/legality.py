@@ -41,6 +41,7 @@ from sfnx.syntax import (
     reads_own_context,
     reads_own_states,
     reads_state_name,
+    reads_the_name,
     same_code,
     sensitivity,
     strictness,
@@ -140,6 +141,13 @@ class Reject(Enum):
         BLANKET,
         "the value reads the State part of the context, which names the state",
     )
+    NAME_READ = (
+        PROOF,
+        (
+            "the value may read the name of the state, which the state that "
+            "takes its place has otherwise"
+        ),
+    )
     READS_CONTEXT = (
         BLANKET,
         (
@@ -157,12 +165,16 @@ class Differs(Enum):
     """What of $states is not the same where a value would go as where it is:
     every part that is a state's own (its input, its result, its error
     output, and the parts of the context not every state shares), the parts
-    of the context not every state shares, or only the State part, which
-    names the state."""
+    of the context not every state shares, only the State part, which names
+    the state, or only the name, where one state takes the place of another
+    that does the same: each entry into either is an entry into it, when it
+    was entered and how often it was retried alike, as both count from each
+    entry (measured)."""
 
     STATES = "states"
     CONTEXT = "context"
     STATE = "state"
+    NAME = "name"
 
 
 def refused(reason: Reject | None, where: str) -> bool:
@@ -186,6 +198,8 @@ def failure_escapes(state: dict[str, object], values: object) -> Reject | None:
 def context_invariant(codes: list[str], differs: Differs) -> Reject | None:
     """Whether code reads the same of $states where a value would go as where
     it is, given what of $states differs between the two."""
+    if differs is Differs.NAME:
+        return Reject.NAME_READ if any(map(reads_the_name, codes)) else None
     if differs is Differs.STATE:
         return Reject.STATE_NAME_READ if any(map(reads_state_name, codes)) else None
     reads = reads_own_states if differs is Differs.STATES else reads_own_context
