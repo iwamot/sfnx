@@ -4,7 +4,7 @@ import json
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from sfnx.jsontypes import (
     ARRAY,
@@ -155,9 +155,6 @@ class Expr:
     what is known about the value; boolean says the code always yields a JSON
     boolean, so a condition can use it without $boolean. constructor says the
     code is an array constructor, which one around it keeps as one element.
-    opaque says a jsonata() expression that is not settled is in the code,
-    which may read variables by names it does not write out, or call a
-    function that gives another value under a name it binds.
     defined says the code never gives undefined, which fails an Assign or an
     Output but passes through a test such as $type() without failing: a
     literal, a variable, which no Assign leaves undefined, d.get(), $exists(),
@@ -176,7 +173,6 @@ class Expr:
     type: Type | None = None
     boolean: bool = False
     constructor: bool = False
-    opaque: bool = False
     defined: bool = False
     total: bool = False
     # Which assignments each variable the code reads may hold the value of,
@@ -196,16 +192,16 @@ class Expr:
 
     @property
     def sensitivity(self) -> Sensitivity:
-        """What moving the code must keep, as the syntax tree says; what an
-        opaque code reads is not known."""
-        found = sensitivity(self.code)
-        return replace(found, dependencies_unknown=True) if self.opaque else found
+        """What moving the code must keep, as its syntax tree says, a jsonata()
+        expression's as well, which shows each function it calls by whatever
+        name it binds it to, as a variable holds JSON, never a function."""
+        return sensitivity(self.code)
 
     @property
     def volatile(self) -> bool:
         """Whether the code may give another value when it is evaluated again,
         as $random() and $uuid() do, so what writes it twice binds it once
-        first: the syntax tree says so, or the code is opaque."""
+        first, as the syntax tree says."""
         return self.sensitivity.varies
 
 
@@ -216,7 +212,6 @@ def expression(
     type: Type | None = None,
     boolean: bool = False,
     constructor: bool = False,
-    opaque: bool = False,
     defined: bool = False,
     total: bool = False,
 ) -> Expr:
@@ -228,7 +223,6 @@ def expression(
         type,
         boolean,
         constructor,
-        opaque,
         defined,
         total,
     )
@@ -322,11 +316,6 @@ def uses(values: list[Expr]) -> frozenset[str]:
     return frozenset().union(*(value.variables for value in values))
 
 
-def opaque(values: list[Expr]) -> bool:
-    """Whether a value among values is opaque."""
-    return any(value.opaque for value in values)
-
-
 def array(items: list[Expr]) -> Expr:
     item_type: Type | None = None
     if items:
@@ -339,7 +328,6 @@ def array(items: list[Expr]) -> Expr:
         uses(items),
         type=Type(frozenset({ARRAY}), item_type, empty=not items),
         constructor=True,
-        opaque=opaque(items),
         defined=all(item.defined for item in items),
         total=all(item.total for item in items),
     )
@@ -357,7 +345,7 @@ def element(item: Expr) -> str:
         return "[" + item.code + "]"
     kind = call("type", [item], of(STRING))
     test = binary(kind, "=", literal("array"), COMPARE, of(BOOLEAN), True)
-    wrapped = Expr("[[" + item.code + "]]", None, item.variables, opaque=item.opaque)
+    wrapped = Expr("[[" + item.code + "]]", None, item.variables)
     return conditional(test, wrapped, item, item.type).code
 
 
@@ -376,7 +364,6 @@ def obj(entries: list[tuple[str, Expr]]) -> Expr:
             values=values,
             fields=tuple((k, v.type) for k, v in entries),
         ),
-        opaque=opaque([v for _, v in entries]),
         defined=all(v.defined for _, v in entries),
         total=all(v.total for _, v in entries),
     )
@@ -425,7 +412,6 @@ def call(
         uses(arguments),
         type=type,
         boolean=boolean,
-        opaque=opaque(arguments),
         # $append of nothing and a value gives the value (measured).
         defined=function in DEFINED
         or (function == "append" and any(a.defined for a in arguments))
@@ -485,7 +471,6 @@ def binary(
         precedence,
         type,
         boolean,
-        opaque=opaque([left, right]),
         defined=left.defined and right.defined,
         total=operator in TOTAL_OPERATORS and left.total and right.total,
     )
@@ -544,7 +529,6 @@ def conditional(test: Expr, then: Expr, otherwise: Expr, type: Type | None) -> E
         CONDITIONAL,
         type,
         then.boolean and otherwise.boolean,
-        opaque=opaque([test, then, otherwise]),
         defined=then.defined and otherwise.defined,
         total=test.total and then.total and otherwise.total,
     )
@@ -562,7 +546,6 @@ def grouped(value: Expr) -> Expr:
         ATOM,
         value.type,
         value.boolean,
-        opaque=value.opaque,
     )
 
 
@@ -575,7 +558,6 @@ def kept(test: Expr, value: Expr) -> Expr:
         uses([test, value]),
         CONDITIONAL,
         value.type,
-        opaque=opaque([test, value]),
     )
 
 
@@ -586,7 +568,6 @@ def entry(key: Expr, value: Expr) -> Expr:
         "{" + operand(key, CONDITIONAL + 1) + ": " + value.code + "}",
         uses([key, value]),
         type=of(OBJECT, values=value.type),
-        opaque=opaque([key, value]),
     )
 
 
@@ -594,9 +575,7 @@ def merged(objects: Expr, values: Type | None) -> Expr:
     """The objects of a sequence merged into one, a later key winning over an
     earlier one, as a later entry of a dict comprehension does. $merge of no
     object is {}, so a sequence with nothing in it gives an empty dict."""
-    listed = expression(
-        "[" + objects.code + "]", objects.variables, opaque=objects.opaque
-    )
+    listed = expression("[" + objects.code + "]", objects.variables)
     return call("merge", [listed], of(OBJECT, values=values))
 
 
@@ -615,7 +594,6 @@ def block(bindings: list[tuple[str, Expr]], body: Expr) -> Expr:
         ATOM,
         body.type,
         body.boolean,
-        opaque=opaque([*values, body]),
         defined=body.defined,
         total=body.total and all(value.total for value in values),
     )
@@ -629,7 +607,7 @@ def negate(value: Expr) -> Expr:
         code = "-" + value.code
     else:
         code = f"-({value.code})"
-    return expression(code, value.variables, UNARY, of(NUMBER), opaque=value.opaque)
+    return expression(code, value.variables, UNARY, of(NUMBER))
 
 
 def field(value: Expr, key: str) -> Expr:
@@ -642,7 +620,6 @@ def field(value: Expr, key: str) -> Expr:
         f"{operand(value, ATOM)}.{step}",
         value.variables,
         type=values,
-        opaque=value.opaque,
         total=value.total,
     )
 
@@ -665,6 +642,4 @@ def index(value: Expr, position: Expr) -> Expr:
     base = value.code
     base = f"({base})" if base.endswith("]") else operand(value, ATOM)
     code = f"{base}[{position.code}]"
-    return expression(
-        code, uses([value, position]), type=items, opaque=opaque([value, position])
-    )
+    return expression(code, uses([value, position]), type=items)

@@ -175,11 +175,10 @@ NOW = expression("$now()", defined=True, total=True)
         (NOW, ["$x"], {"x"}, Reject.CHANGES_EVALUATION_INSTANCE),
         (NOW, ["$x", "$x"], set(), Reject.CHANGES_EVALUATION_INSTANCE),
         (expression("$eval('1')"), ["$x"], set(), Reject.DEPENDENCIES_UNKNOWN),
-        # An Expr that is not settled is judged by its code, which shows the
-        # functions it calls under any name.
-        (expression("$a + 1", opaque=True), ["[$x, $x]"], {"x"}, None),
+        # The syntax tree shows the functions code calls under any name.
+        (expression("$a + 1"), ["[$x, $x]"], {"x"}, None),
         (
-            expression("($r := $random; $r())", opaque=True),
+            expression("($r := $random; $r())"),
             ["$x"],
             {"x"},
             Reject.CHANGES_EVALUATION_COUNT,

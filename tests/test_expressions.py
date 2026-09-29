@@ -36,8 +36,8 @@ def test_a_definition_is_emitted_with_each_expr_as_its_template():
     }
 
 
-def exact(code: str, defined: bool, total: bool, opaque: bool = False) -> Expr:
-    return expression(code, defined=defined, total=total, opaque=opaque)
+def exact(code: str, defined: bool, total: bool) -> Expr:
+    return expression(code, defined=defined, total=total)
 
 
 @pytest.mark.parametrize(
@@ -91,11 +91,11 @@ def test_the_syntax_tree_says_whether_code_changes(code, volatile):
     assert expression(code).volatile == volatile
 
 
-def test_an_opaque_value_makes_the_code_opaque():
+def test_a_value_that_changes_makes_the_code_change_as_its_syntax_tree_says():
     leaf = exact("$x + 1", True, True)
-    value = exact("$f()", True, True, opaque=True)
-    code = composed(leaf, "$f() + 1", [value])
-    assert code.opaque and code.volatile
+    value = exact("($r := $random; $r())", True, True)
+    code = composed(leaf, "($r := $random; $r()) + 1", [value])
+    assert code.volatile
 
 
 def test_a_template_s_properties_are_not_known():

@@ -1747,8 +1747,8 @@ def changing_definition(body: str) -> dict:
         # A name the expression written in jsonata() reads is one the variable
         # must not hide, though the program never declared it.
         (
-            'v: float = input["v"]\nreturn jsonata("$v + 1") % 2',
-            "($v_2 := ($v + 1); $v_2 - 2 * $floor($v_2 / 2))",
+            'v: float = input["v"]\nreturn jsonata("$v + $random()") % 2',
+            "($v_2 := ($v + $random()); $v_2 - 2 * $floor($v_2 / 2))",
         ),
         (
             "return [x % random.random() for x in xs]",

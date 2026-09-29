@@ -34,7 +34,6 @@ from sfnx.expressions import (
     merged,
     negate,
     obj,
-    opaque,
     spelling,
     string,
     uses,
@@ -240,13 +239,13 @@ UNSETTLED = frozenset(["random", "uuid", "now", "millis", "eval"])
 
 
 def settled(written: str, bound: set[str], variables: set[str]) -> bool:
-    """Whether JSONata written by hand reads only the names jsonata() binds
-    for it and gives the same value wherever it is evaluated: every $name in
+    """Whether JSONata written by hand reads no variable of the definition,
+    so that it reads only the names jsonata() binds for it: every $name in
     it calls a function, is a function that does not change, or is bound by
     the call or inside the text, under a name no variable has, as a lambda's
-    parameter or a block's := does. `$` and `$$` read the input, and
-    $states the state it is in. A $ in a string or a regular expression reads
-    as a name, which only keeps the expression unsettled."""
+    parameter or a block's := does. Anything else, a $ in a string or a
+    regular expression among them, counts the names the text spells as
+    variables it reads, the safe side."""
     if re.search(r"\$(?![^\W\d])", written):
         return False
     inside = set(re.findall(r"\$(\w+)\s*:=", written)) | {
@@ -739,9 +738,7 @@ class Translator:
             )
             if may_be_list(item):
                 # $reduce would iterate the items of a single list $filter kept.
-                result = expression(
-                    result.code + "[]", result.variables, opaque=result.opaque
-                )
+                result = expression(result.code + "[]", result.variables)
         accumulator = unused("a", self.hides([source, inner, *tests]) | {spelled})
         carried = expression("$" + accumulator, type=inner.type)
         body = call("append", [carried, inner], inner.type)
@@ -756,7 +753,6 @@ class Translator:
             reduced.variables,
             type=inner.type,
             constructor=True,
-            opaque=reduced.opaque,
             defined=True,
             total=source.total and all(t.total for t in tests) and inner.total,
         )
@@ -804,9 +800,7 @@ class Translator:
         if mapped:
             if tests and may_be_list(item):
                 # $map would iterate the items of a single list $filter kept.
-                result = expression(
-                    result.code + "[]", result.variables, opaque=result.opaque
-                )
+                result = expression(result.code + "[]", result.variables)
             result = call(
                 "map", [result, function([self.spelling(name)], element)], None
             )
@@ -836,7 +830,6 @@ class Translator:
             result.variables,
             type=of(ARRAY, items=element.type),
             constructor=True,
-            opaque=result.opaque,
             defined=defined,
             total=total,
         )
@@ -1315,7 +1308,6 @@ class Translator:
         listed = expression(
             "[" + ", ".join(p.code for p in parts) + "]",
             uses(parts),
-            opaque=opaque(parts),
         )
         return call("merge", [listed], of(OBJECT))
 
@@ -1844,7 +1836,6 @@ class Translator:
             f"function(${self.parameter('v', [value, test])}, ${position}) "
             f"{{ {test.code} }}",
             test.variables,
-            opaque=test.opaque,
         )
         kept = call("filter", [value, predicate], value.type)
         code = f"$append([], {kept.code}[])" if may_be_list(item) else f"[{kept.code}]"
@@ -1853,7 +1844,6 @@ class Translator:
             kept.variables,
             type=of(ARRAY, items=item),
             constructor=True,
-            opaque=kept.opaque,
         )
 
     def substring(self, text: Expr, lower: Bound | None, upper: Bound | None) -> Expr:
@@ -2159,7 +2149,6 @@ class Translator:
             listed = expression(
                 "[" + ", ".join(v.code for v in values) + "]",
                 uses(values),
-                opaque=opaque(values),
             )
             return call(name, [listed], of(NUMBER))
         if name in {"abs", "round", "sum", "max", "min"}:
@@ -2490,7 +2479,6 @@ class Translator:
             uses([start, stop]),
             type=numbers,
             constructor=True,
-            opaque=opaque([start, stop]),
         )
 
     def ordered(self, node: ast.Call) -> Expr:
@@ -2663,20 +2651,13 @@ class Translator:
             values.append(value)
         written = held.value
         reads = self.variables(written, bound)
-        # The text is not parsed, so what it reads and calls is unknown unless
-        # every name in it is one the call binds, a function or a name it binds
-        # itself: it may call $random under that name, or under one it binds
-        # the function to.
-        unsettled = True
         if settled(written, set(bound), {self.spelling(n) for n in self.bindings}):
             reads = frozenset()
-            unsettled = opaque(values)
         if not bindings:
-            return expression(written, reads, precedence=WRITTEN, opaque=unsettled)
+            return expression(written, reads, precedence=WRITTEN)
         return expression(
             "(" + "".join(bindings) + written + ")",
             uses(values) | reads,
-            opaque=unsettled,
         )
 
     def variables(self, written: str, bound: list[str]) -> frozenset[str]:
@@ -2954,7 +2935,6 @@ class Translator:
             mapping.variables,
             type=of(ARRAY, items=values),
             constructor=True,
-            opaque=mapping.opaque,
         )
 
     def get(self, mapping: Expr, arguments: list[ast.expr]) -> Expr:
@@ -3039,7 +3019,6 @@ class Translator:
                 batches.variables,
                 type=of(ARRAY, items=items.type),
                 constructor=True,
-                opaque=batches.opaque,
             )
         return None
 
@@ -3842,7 +3821,6 @@ def keys_of(mapping: Expr) -> Expr:
         keys.variables,
         type=of(ARRAY, items=of(STRING)),
         constructor=True,
-        opaque=keys.opaque,
         defined=True,
         total=keys.total,
     )
@@ -4026,7 +4004,6 @@ def function(parameters: list[str], body: Expr) -> Expr:
     return expression(
         f"function({spelled}) {{ {body.code} }}",
         body.variables,
-        opaque=body.opaque,
     )
 
 
