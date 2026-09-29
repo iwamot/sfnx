@@ -487,11 +487,8 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     expression.register_lambda("hash", digest)
     expression.register_lambda("partition", partition)
     # The functions whose Step Functions behavior differs from jsonata-python's.
-    expression.register_lambda("fromMillis", from_millis)
-    expression.register_lambda("decodeUrlComponent", decode_url_component)
-    expression.register_lambda("base64decode", base64_decode)
-    expression.register_lambda("formatNumber", format_number)
-    expression.register_lambda("string", string)
+    for name, function in DIFFERING.items():
+        expression.register_function(name, Replaced(name, function))
     for name, function in REPLACED.get({}).items():
         expression.register_lambda(name, function)
     try:
@@ -514,6 +511,33 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
             f"{code} returned an unsupported result type",
         )
     return value
+
+
+class Replaced(jsonata.Jsonata.JFunction):
+    """A function in the place of the built-in function of a name, which
+    takes its first argument from the context where the built-in's
+    signature leaves that place to it, as $string() reads each item in a
+    filter, and checks its arguments itself, in the words of the errors
+    Step Functions gives (measured)."""
+
+    def __init__(self, name: str, function: Callable[..., object]) -> None:
+        super().__init__(None, None)
+        frame = jsonata.Jsonata.static_frame
+        assert frame is not None
+        built_in = frame.lookup(name)
+        assert isinstance(built_in, jsonata.Jsonata.JFunction)
+        signature = built_in.signature
+        assert signature is not None and signature._regex is not None
+        self.pattern = signature._regex
+        self.symbol = signature.get_symbol
+        self.implementation = function
+
+    def call(self, input: object, args: object) -> object:
+        written = list(args) if isinstance(args, list) else []
+        found = self.pattern.fullmatch("".join(map(self.symbol, written)))
+        if found is not None and found.group(1) == "":
+            written = [input, *written]
+        return self.implementation(*written)
 
 
 def is_json(value: object) -> bool:
@@ -806,6 +830,17 @@ def from_millis(*args: object) -> str | None:
     return Functions.datetime_from_millis(
         millis, picture, timezone_of(args[2] if len(args) > 2 else None)
     )
+
+
+# The built-in functions whose Step Functions behavior differs from
+# jsonata-python's, as Step Functions evaluates them.
+DIFFERING: dict[str, Callable[..., object]] = {
+    "fromMillis": from_millis,
+    "decodeUrlComponent": decode_url_component,
+    "base64decode": base64_decode,
+    "formatNumber": format_number,
+    "string": string,
+}
 
 
 # The algorithms $hash takes, spelled only this way (measured).
