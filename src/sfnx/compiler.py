@@ -63,7 +63,9 @@ from sfnx.legality import (
     assigned_value,
     captures,
     context_invariant,
+    dependencies_known,
     evaluated_as_before,
+    evaluated_once,
     expressions_in,
     failsafe,
     failure_escapes,
@@ -75,7 +77,6 @@ from sfnx.legality import (
     refused,
     resolve_reads,
     retries_evaluation,
-    stable,
     takes_evaluation,
 )
 from sfnx.locations import PREFIX, Locations, Origin
@@ -3500,10 +3501,10 @@ def fold_into_catching_tasks(
             values = resolve_reads(own, codes, where)
             if values is None or refused(captures(following, values), where):
                 continue
-            # A value that changes on evaluation, read again in the Pass's or
-            # the Succeed's place, would be evaluated once more, as the state's
-            # Assign still evaluates it.
-            if refused(stable([v.code for v in values.values()]), where):
+            # The state's Assign still evaluates what the Pass does not
+            # assign again.
+            kept = set(values) - set(assigns(following))
+            if refused(evaluated_once(values, codes, kept), where):
                 continue
             exposed = assigned_before_failures(own, following)
             if refused(
@@ -3919,14 +3920,16 @@ def read_into_transition(
     Assign reads it: each such name as the expression it is assigned, as
     way_assign reads them, or None where one cannot be read so."""
     where = "read_into_transition"
-    values = resolve_reads(current, expressions_in(assign), where)
+    codes = expressions_in(assign)
+    values = resolve_reads(current, codes, where)
     if (
         values is None
         or refused(
             context_invariant([v.code for v in values.values()], Differs.STATES),
             where,
         )
-        or refused(stable([v.code for v in values.values()]), where)
+        # The transition still evaluates what assign does not assign again.
+        or refused(evaluated_once(values, codes, set(values) - set(assign)), where)
         or refused(captures({"Assign": assign}, values), where)
     ):
         return None
@@ -4429,7 +4432,7 @@ def read_as_values(
     where = "take_in_choices"
     if (
         refused(context_invariant(codes, Differs.STATE), where)
-        or refused(stable(list(used.values())), where)
+        or refused(evaluated_on_each_way(choice, values, used), where)
         or refused(
             captures(choice, {n: expression(code) for n, code in used.items()}),
             where,
@@ -4486,6 +4489,30 @@ def read_as_values(
     assert isinstance(rules, list) and isinstance(default, str)
     assert isinstance(own, dict)
     return rules, default, own
+
+
+def evaluated_on_each_way(
+    choice: dict[str, object], values: dict[str, object], used: dict[str, str]
+) -> Reject | None:
+    """Whether the values a transition assigns, read in place of their
+    variables in a Choice it leads to, are evaluated as often as the
+    transition evaluated them, as evaluated_once says, on each way out: a
+    rule's tests up to its own, then the rest of the rule, whose Assign goes
+    on the way with the transition's, or every test, then the Choice's own
+    Assign, on the Default."""
+    read = {n: as_expr(values[n]) for n in used}
+    rules = choice["Choices"]
+    assert isinstance(rules, list)
+    tests = [expressions_in(rule["Condition"]) for rule in rules]
+    rests = [{k: v for k, v in rule.items() if k != "Condition"} for rule in rules]
+    ways = [(tests[: i + 1], rest) for i, rest in enumerate(rests)]
+    ways.append((tests, {"Assign": assigns(choice)}))
+    for tested, rest in ways:
+        codes = [code for test in tested for code in test] + expressions_in(rest)
+        reason = evaluated_once(read, codes, set(read) - set(assigns(rest)))
+        if reason is not None:
+            return reason
+    return None
 
 
 def template_code(template: object) -> str:
@@ -4887,8 +4914,8 @@ def way_assign(
     # Assign would fail.
     if any(n in assign and not v.defined for n, v in read.items()):
         return None
-    # A value read again in the Pass's place would give another value.
-    if refused(stable([v.code for v in read.values()]), where) or refused(
+    # The way still evaluates what the Pass does not assign again.
+    if refused(evaluated_once(read, codes, set(read) - set(assign)), where) or refused(
         context_invariant([v.code for v in read.values()], Differs.STATES), where
     ):
         return None
@@ -4922,9 +4949,10 @@ def read_what_it_assigns(
     """The Output of a return for a Task, a Parallel or a Map to end with,
     or None where it cannot: only where a failure of its Output ends the
     execution, as the Succeed's would, and where the return reads nothing
-    of $states, which is the Succeed's own there, nor the time, a random
-    value or $eval, which a jsonata() expression may read in ways not known
-    here. The Output reads what the state assigns as read_assigned says. A
+    of $states, which is the Succeed's own there, nor $eval, which a
+    jsonata() expression may read in ways not known here. The Output is
+    evaluated once, as the Succeed's was, after the same calls and waits.
+    The Output reads what the state assigns as read_assigned says. A
     return in which nothing can fail or be undefined goes in after a Catch
     or a retrier too: a variable the state assigns reads the expression its
     Assign evaluates alike, so the Output fails only where the Assign does,
@@ -4932,7 +4960,7 @@ def read_what_it_assigns(
     where = "end_before_returns"
     if (
         refused(failure_escapes(state, output), where)
-        or refused(stable(codes), where)
+        or refused(dependencies_known(codes), where)
         or refused(context_invariant(codes, Differs.STATES), where)
     ):
         return None
@@ -4954,10 +4982,11 @@ def read_assigned(
     drop it."""
     where = "read_assigned"
     values = resolve_reads(assigns(state), codes, where)
-    # What the state's own Assign reads of $states the Output reads alike.
+    # What the state's own Assign reads of $states the Output reads alike,
+    # and the Assign stays.
     if (
         values is None
-        or refused(stable([v.code for v in values.values()]), where)
+        or refused(evaluated_once(values, codes, set(values)), where)
         or refused(captures({"Output": output}, values), where)
     ):
         return None

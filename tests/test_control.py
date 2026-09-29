@@ -897,6 +897,55 @@ def test_a_function_that_changes_passed_on_is_not_taken_in():
         assert asl.run(compiled, {"a": True}) == ["hi", [0.9, 0.1]]
 
 
+@pytest.mark.parametrize(
+    "rule, own, read",
+    [
+        # The rule assigns a again from one read: the transition's draw goes.
+        (
+            {"Condition": "{% $i < 3 %}", "Assign": {"a": "{% $a + 1 %}"}},
+            {},
+            "{% $random() + 1 %}",
+        ),
+        # The test reads a on each way; the Default keeps the transition's a,
+        # which would draw it again.
+        ({"Condition": "{% $a > 1 %}", "Assign": {"a": 0}}, {}, None),
+        # Each way assigns a again after the one read of the test.
+        ({"Condition": "{% $a > 1 %}", "Assign": {"a": 0}}, {"a": 1}, 0),
+    ],
+)
+def test_a_choice_reads_a_random_value_once_on_each_way(rule, own, read):
+    choice = {
+        "Type": "Choice",
+        "Choices": [{**rule, "Next": "n"}],
+        "Default": "d",
+        **({"Assign": own} if own else {}),
+    }
+    lifted = from_asl({"a": "{% $random() %}"})
+    assert isinstance(lifted, dict)
+    found = read_as_values(from_asl(choice), lifted)
+    if read is None:
+        assert found is None
+        return
+    assert found is not None
+    rules = emitted(found[0])
+    assert isinstance(rules, list)
+    assert rules[0]["Assign"] == {"a": read}
+
+
+def test_a_loop_in_a_loop_takes_in_the_value_drawn_before_it():
+    """The inner loop's first round reads n once and assigns it again, so the
+    outer loop's rule draws it where it leads into the inner loop's body."""
+    body = (
+        'xs: list = input["xs"]\nn = 0\nfor x in xs:\n    n = random.random()\n'
+        "    for y in xs:\n        n = n + 1\n        wait(1)\nreturn n"
+    )
+    (compiled,) = compile_source("import random\n" + source(body)).values()
+    assert compiled["States"]["for"]["Choices"][0]["Next"] == "wait"
+    drawn = iter([0.5, 0.25])
+    with asl.replaced(random=lambda *arguments: next(drawn)):
+        assert asl.run(compiled, {"xs": [0, 0]}) == 2.25
+
+
 def test_a_choice_that_leads_back_to_itself_is_taken_in_once():
     body = 'n = 0\nif input["z"]:\n    return 0\nwhile n < 3:\n    n = n + 1\nreturn n'
     compiled = definition(body)["States"]

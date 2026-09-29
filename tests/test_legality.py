@@ -11,7 +11,9 @@ from sfnx.legality import (
     Reject,
     captures,
     context_invariant,
+    dependencies_known,
     evaluated_as_before,
+    evaluated_once,
     failure_escapes,
     failure_seen_before,
     fields_of,
@@ -19,7 +21,6 @@ from sfnx.legality import (
     read_at_most_once,
     refused,
     resolve_reads,
-    stable,
 )
 
 INPUT = "$states.context.Execution.Input"
@@ -118,24 +119,57 @@ def test_each_reason_is_a_proof_or_a_blanket():
 
 
 @pytest.mark.parametrize(
-    "values, reason",
+    "codes, reason",
     [
-        (["$a + 1"], None),
-        (["$a", "$random()"], Reject.CHANGES_EVALUATION_COUNT),
-        (["$now()"], Reject.CHANGES_EVALUATION_INSTANCE),
-        (["$eval('1') + $random()"], Reject.DEPENDENCIES_UNKNOWN),
-        # An Expr that is not settled reads what is not written out; its code
-        # alone does not say so.
-        ([expression("$a", opaque=True)], Reject.DEPENDENCIES_UNKNOWN),
-        (["$a"], None),
+        (["$a + 1", "$random()", "$now()"], None),
+        (["$a", "$eval('1')"], Reject.DEPENDENCIES_UNKNOWN),
     ],
 )
-def test_what_gives_what_it_gave_when_evaluated_again(values, reason):
-    assert stable(values) is reason
+def test_what_reads_what_is_written_out(codes, reason):
+    assert dependencies_known(codes) is reason
 
 
 RANDOM = expression("$random()", defined=True, total=True)
 NOW = expression("$now()", defined=True, total=True)
+
+
+@pytest.mark.parametrize(
+    "value, codes, kept, reason",
+    [
+        # What does not change on evaluation goes anywhere.
+        (MAY_FAIL, ["[$x, $x]"], {"x"}, None),
+        # A random value read once where its assignment goes.
+        (RANDOM, ["$x + 1"], set(), None),
+        # Nothing reads it.
+        (RANDOM, ["$y"], {"x"}, None),
+        # The assignment that stays evaluates it once more.
+        (RANDOM, ["$x + 1"], {"x"}, Reject.CHANGES_EVALUATION_COUNT),
+        (RANDOM, ["$x", "$x"], set(), Reject.CHANGES_EVALUATION_COUNT),
+        (
+            RANDOM,
+            ["$map($r, function($i) { $x })"],
+            set(),
+            Reject.CHANGES_EVALUATION_COUNT,
+        ),
+        # The time is not moved, however often it is read: whether its reads
+        # stay between the same calls and waits is not shown.
+        (NOW, ["$x"], set(), Reject.CHANGES_EVALUATION_INSTANCE),
+        (expression("$eval('1')"), ["$x"], set(), Reject.DEPENDENCIES_UNKNOWN),
+        # An Expr that is not settled is judged by its code, which shows the
+        # functions it calls under any name.
+        (expression("$a + 1", opaque=True), ["[$x, $x]"], {"x"}, None),
+        (
+            expression("($r := $random; $r())", opaque=True),
+            ["$x"],
+            {"x"},
+            Reject.CHANGES_EVALUATION_COUNT,
+        ),
+    ],
+)
+def test_what_a_value_read_where_it_is_assigned_may_be_read_in(
+    value, codes, kept, reason
+):
+    assert evaluated_once({"x": value}, codes, kept) is reason
 
 
 @pytest.mark.parametrize(
