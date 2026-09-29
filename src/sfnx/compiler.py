@@ -58,7 +58,7 @@ from sfnx.jsontypes import (
 from sfnx.legality import (
     EVALUATION_ERRORS,
     Differs,
-    Field,
+    Read,
     Reject,
     assigned_value,
     captures,
@@ -4663,12 +4663,14 @@ def fold_start(
     others = [name for name in leading(states).get(following, []) if name != start]
     if others or refused(captures(state, values), where):
         return
-    fields = fields_of(state)
+    # The Pass is right before the state, so the state's fields before its
+    # call or wait have none between them and the Pass.
+    reads = [Read(f.code, f.before_effect, f.repeated) for f in fields_of(state)]
     for name, value in values.items():
         # Each holder that takes it evaluates it on its way out, the Choice's
         # where the Choice is, and the others' after the call or the wait.
-        taking = [Field(f"${name}", kind == "Choice") for _ in kept[name]]
-        if refused(evaluated_as_before(value, name, fields + taking), where):
+        taking = [Read(f"${name}", kind == "Choice") for _ in kept[name]]
+        if refused(evaluated_as_before(value, name, reads + taking), where):
             return
     for name, value in values.items():
         substitute(state, name, value)
@@ -5121,11 +5123,11 @@ def return_in_place_of_passes(definition: dict[str, object]) -> None:
             values = resolve_reads(assigns(state), None, where)
             # The Output is evaluated where the Pass would be, with no call
             # or wait between them.
-            fields = [Field(c, before=True) for c in expressions_in(output)]
+            reads = [Read(c, same_interval=True) for c in expressions_in(output)]
             if (
                 values is None
                 or any(
-                    refused(evaluated_as_before(v, n, fields), where)
+                    refused(evaluated_as_before(v, n, reads), where)
                     for n, v in values.items()
                 )
                 or refused(

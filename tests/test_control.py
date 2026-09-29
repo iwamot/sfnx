@@ -16,6 +16,7 @@ from sfnx.compiler import (
     from_asl,
     grouped,
     read_as_values,
+    read_into_transition,
     thread_choices,
 )
 from sfnx.diagnostics import CompileError
@@ -930,6 +931,23 @@ def test_a_choice_reads_a_random_value_once_on_each_way(rule, own, read):
     rules = emitted(found[0])
     assert isinstance(rules, list)
     assert rules[0]["Assign"] == {"a": read}
+
+
+@pytest.mark.parametrize(
+    "assign, taken",
+    [
+        # The rule takes n again from one read: the transition's draw goes.
+        ({"n": "{% $n + 1 %}"}, {"n": "{% ($random()) + 1 %}"}),
+        # The transition keeps n, which would be drawn once more.
+        ({"m": "{% $n + 1 %}"}, None),
+    ],
+)
+def test_a_transition_reads_a_random_value_once(assign, taken):
+    current = from_asl({"n": "{% $random() %}"})
+    lifted = from_asl(assign)
+    assert isinstance(current, dict) and isinstance(lifted, dict)
+    found = read_into_transition(lifted, current)
+    assert (None if found is None else emitted(found)) == taken
 
 
 def test_a_loop_in_a_loop_takes_in_the_value_drawn_before_it():

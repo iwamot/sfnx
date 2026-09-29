@@ -8,6 +8,7 @@ from sfnx.legality import (
     PROOF,
     Differs,
     Field,
+    Read,
     Reject,
     captures,
     context_invariant,
@@ -182,44 +183,46 @@ def test_what_a_value_read_where_it_is_assigned_may_be_read_in(
 
 
 @pytest.mark.parametrize(
-    "value, fields, reason",
+    "value, reads, reason",
     [
         # What does not change on evaluation goes anywhere.
-        (MAY_FAIL, [Field("[$x, $x]", False)], None),
+        (MAY_FAIL, [Read("[$x, $x]", False)], None),
         # A random value read at most once.
-        (RANDOM, [Field("$x + 1", True)], None),
-        (RANDOM, [Field("$y", True)], None),
+        (RANDOM, [Read("$x + 1", True)], None),
+        (RANDOM, [Read("$y", True)], None),
         (
             RANDOM,
-            [Field("$x", True), Field("$x", False)],
+            [Read("$x", True), Read("$x", False)],
             Reject.CHANGES_EVALUATION_COUNT,
         ),
-        (RANDOM, [Field("[$x, $x]", True)], Reject.CHANGES_EVALUATION_COUNT),
+        (RANDOM, [Read("[$x, $x]", True)], Reject.CHANGES_EVALUATION_COUNT),
         (
             RANDOM,
-            [Field("$map($r, function($i) { $x })", True)],
+            [Read("$map($r, function($i) { $x })", True)],
             Reject.CHANGES_EVALUATION_COUNT,
         ),
-        (RANDOM, [Field("$x", False)], None),
-        (RANDOM, [Field("$x", True, repeated=True)], Reject.CHANGES_EVALUATION_COUNT),
-        # The time read in one field, before the call or the wait, however
-        # often that one evaluation reads it.
-        (NOW, [Field("[$x, $x]", True)], None),
+        (RANDOM, [Read("$x", False)], None),
+        (RANDOM, [Read("$x", True, repeated=True)], Reject.CHANGES_EVALUATION_COUNT),
+        # The time read in one code, with no call or wait between it and the
+        # assignment, however often that one evaluation reads it.
+        (NOW, [Read("[$x, $x]", True)], None),
         (
             NOW,
-            [Field("$x", True), Field("$x", True)],
+            [Read("$x", True), Read("$x", True)],
             Reject.CHANGES_EVALUATION_INSTANCE,
         ),
-        (NOW, [Field("$x", False)], Reject.CROSSES_EFFECT),
-        (expression("$eval('1')"), [Field("$x", True)], Reject.DEPENDENCIES_UNKNOWN),
+        (NOW, [Read("$x", False)], Reject.CROSSES_EFFECT),
+        (expression("$eval('1')"), [Read("$x", True)], Reject.DEPENDENCIES_UNKNOWN),
     ],
 )
-def test_what_a_value_that_changes_may_be_read_in(value, fields, reason):
-    assert evaluated_as_before(value, "x", fields) is reason
+def test_what_a_value_that_changes_may_be_read_in(value, reads, reason):
+    assert evaluated_as_before(value, "x", reads) is reason
 
 
 def where(state: dict) -> list[Field]:
-    return [Field(f.code.strip(), f.before, f.repeated) for f in fields_of(state)]
+    return [
+        Field(f.code.strip(), f.before_effect, f.repeated) for f in fields_of(state)
+    ]
 
 
 def test_where_a_state_evaluates_its_fields():
