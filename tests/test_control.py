@@ -10,6 +10,7 @@ from sfnx.compiler import (
     Rounds,
     both,
     compile_source,
+    decide_start,
     definitions,
     drop_dead_assignments,
     emitted,
@@ -1002,6 +1003,36 @@ def test_a_loop_in_a_loop_takes_in_the_value_drawn_before_it():
         assert asl.run(compiled, {"xs": [0, 0]}) == 2.25
 
 
+def test_a_start_the_values_written_before_it_decide_is_a_pass():
+    """o0 is None where the definition starts, so the Choice the start
+    values went into tests nothing: it is the Pass of the rule it takes,
+    under its name, and the else's loop goes."""
+    body = (
+        'n0: int = input["n0"]\no0: int | None = None\nif o0 is None:\n'
+        "    o0 = 4 + n0\nelse:\n    for x in [1, 2]:\n        o0 = 1\nreturn o0"
+    )
+    compiled = definition(body)
+    states = compiled["States"]
+    assert compiled["StartAt"] == "if"
+    assert states["if"]["Type"] == "Pass"
+    assert not any(s["Type"] == "Choice" for s in states.values())
+    assert asl.run(compiled, {"n0": 3}) == 7
+
+
+def test_a_decided_start_that_leads_to_a_choice_takes_its_tests_in():
+    """The Choice of the loop after it tests the start's way in, so the
+    start stays a Choice that tests both."""
+    body = (
+        'n: int = input["n"]\nd: dict[str, int] = input["d"]\no: int | None = None\n'
+        "if o is None:\n    o = 4 + n\nelse:\n    o = 2\n    wait(1)\n"
+        "for k, v in d.items():\n    wait(0)\nreturn o"
+    )
+    compiled = definition(body)
+    assert compiled["States"][compiled["StartAt"]]["Type"] == "Choice"
+    assert asl.run(compiled, {"n": 1, "d": {"a": 1}}) == 5
+    assert asl.run(compiled, {"n": 1, "d": {}}) == 5
+
+
 def test_a_choice_that_leads_back_to_itself_is_taken_in_once():
     body = 'n = 0\nif input["z"]:\n    return 0\nwhile n < 3:\n    n = n + 1\nreturn n'
     compiled = definition(body)["States"]
@@ -1784,3 +1815,46 @@ def test_a_definition_that_calls_eval_keeps_every_assignment():
         "r": {"Type": "Succeed", "Output": "{% $eval('$x') %}"},
     }
     assert dropped(states)["States"]["w"]["Assign"] == {"x": 1}
+
+
+def test_a_start_decided_by_a_test_written_out_leads_where_it_goes():
+    """1 > 2 is false as written: nothing is assigned, so the definition
+    starts at the Wait the Default leads to."""
+    compiled = definition("if 1 > 2:\n    wait(1)\nwait(2)\nreturn 1")
+    assert compiled["States"] == {
+        "wait": {"Type": "Wait", "Seconds": 2, "Output": 1, "End": True}
+    }
+    assert asl.run(compiled, {}) == 1
+
+
+BACK = {"p": {"Type": "Pass", "Assign": {"x": 1}, "Next": "s"}}
+
+
+@pytest.mark.parametrize(
+    "rules, others",
+    [
+        # A way leads back to the start, as a loop's does.
+        ([{"Condition": True, "Next": "p"}], BACK),
+        # A test before the one it takes reads a variable.
+        (
+            [
+                {"Condition": "{% $x > 1 %}", "Next": "d"},
+                {"Condition": True, "Next": "d"},
+            ],
+            {},
+        ),
+    ],
+)
+def test_a_start_not_decided_whole_stays(rules, others):
+    written = {
+        "StartAt": "s",
+        "States": {
+            "s": {"Type": "Choice", "Choices": rules, "Default": "d"},
+            **others,
+            "d": {"Type": "Succeed"},
+        },
+    }
+    definition = from_asl(written)
+    assert isinstance(definition, dict)
+    assert not decide_start(definition)
+    assert emitted(definition) == written
