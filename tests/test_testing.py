@@ -1543,3 +1543,77 @@ def test_the_credentials_of_a_task_are_accepted():
         }
     )
     assert testing.run(task, {}, lambda call: "ok").output == "ok"
+
+
+def waits_of(definition: dict, execution_input: object = None) -> tuple:
+    """The Waits a run tells of, and its execution."""
+    told: list[testing.Wait] = []
+    execution = testing.run(definition, execution_input, on_wait=told.append)
+    return told, execution
+
+
+@pytest.mark.parametrize(
+    "fields, seconds, timestamp",
+    [
+        ({"Seconds": 0}, 0, None),
+        ({"Seconds": "{% 1 + 1 %}"}, 2, None),
+        ({"Timestamp": "2026-01-01T00:00:00Z"}, None, "2026-01-01T00:00:00Z"),
+    ],
+)
+def test_a_wait_tells_what_it_waited_for(fields, seconds, timestamp):
+    told, execution = waits_of(machine(ends({"Type": "Wait", **fields})))
+    assert told == [testing.Wait("s", seconds, timestamp)]
+    assert execution.error is None
+
+
+def test_a_wait_that_cannot_read_what_it_waits_for_tells_nothing():
+    told, execution = waits_of(machine(ends({"Type": "Wait", "Seconds": -1})))
+    assert told == []
+    assert execution.error == "States.QueryEvaluationError"
+
+
+def test_a_wait_tells_before_its_output_is_evaluated():
+    """The Timestamp reads the time before the wait, and the Output after
+    it, where on_wait moved the clock on."""
+    clock = {"now": "2026-01-01T00:00:00Z"}
+    told: list[testing.Wait] = []
+
+    def tell(wait: testing.Wait) -> None:
+        told.append(wait)
+        clock["now"] = "2026-01-01T00:00:01Z"
+
+    wait = {"Type": "Wait", "Timestamp": "{% $now() %}", "Output": "{% $now() %}"}
+    execution = testing.run(
+        machine(ends(wait)),
+        {},
+        functions={"now": lambda picture=None: clock["now"]},
+        on_wait=tell,
+    )
+    assert told == [testing.Wait("s", None, "2026-01-01T00:00:00Z")]
+    assert execution.output == "2026-01-01T00:00:01Z"
+
+
+def test_a_wait_is_told_of_though_its_output_then_fails():
+    wait = {"Type": "Wait", "Seconds": 0, "Output": "{% $states.input.missing %}"}
+    told, execution = waits_of(machine(ends(wait)), {})
+    assert told == [testing.Wait("s", 0, None)]
+    assert execution.error == "States.QueryEvaluationError"
+
+
+def test_a_wait_in_a_branch_or_an_iteration_tells_too():
+    def waiting(name: str) -> dict:
+        return {"StartAt": name, "States": {name: ends({"Type": "Wait", "Seconds": 0})}}
+
+    parallel = ends({"Type": "Parallel", "Branches": [waiting("w1"), waiting("w2")]})
+    mapped = ends({"Type": "Map", "Items": [1, 2, 3], "ItemProcessor": waiting("w")})
+    assert [w.state for w in waits_of(machine(parallel))[0]] == ["w1", "w2"]
+    assert [w.state for w in waits_of(machine(mapped))[0]] == ["w", "w", "w"]
+
+
+def test_what_on_wait_raises_reaches_the_test():
+    def refuse(wait: testing.Wait) -> None:
+        raise LookupError(wait.state)
+
+    wait = machine(ends({"Type": "Wait", "Seconds": 0}))
+    with pytest.raises(LookupError, match="s"):
+        testing.run(wait, None, on_wait=refuse)

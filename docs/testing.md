@@ -64,15 +64,16 @@ Compiling in the test keeps it in step with the source. A definition from elsewh
 ## The API
 
 ```python
-run(definition, execution_input, tasks=None, *, functions=None) -> Execution
+run(definition, execution_input, tasks=None, *, functions=None, on_wait=None) -> Execution
 ```
 
 - **`definition`**: the definition as a dict. `${Name}` placeholders stay as written, and the tasks function sees them in `Resource` and `Arguments`.
 - **`execution_input`**: the input of the execution, as `StartExecution` would take it once parsed.
 - **`tasks`**: a function called with a `Call` for each Task, and for each Map that reads its items through an `ItemReader`. It returns the result of the Task (for the `ItemReader`, the items read), or raises `Failure(error, cause)` to fail it, which the definition's Retry and Catch then handle. Any other exception it raises ends the run and reaches the test as it is. A definition that calls something while `tasks` is `None` raises `ValueError`.
 - **`functions`**: JSONata functions replaced by name, without the `$`, for results that change on every run: `functions={"uuid": lambda: "u1", "now": lambda picture=None: "2026-01-01T00:00:00.000Z"}`. The replacements hold for that run only.
+- **`on_wait`**: a function called with a `Wait` for each Wait state, in branches and iterations too, once it has read what it waits for and before its `Assign` and `Output`. Nothing waits: the run goes on at once. A Wait that cannot read its `Seconds` or `Timestamp` fails without a call. Any exception the function raises ends the run and reaches the test as it is. With `functions`, it can move a clock on at each wait, as `wait(0)` too, so a test sees which reads of the time come after it.
 
-A `Call` has `state` (the name of the state), `resource` (its `Resource` as written) and `arguments` (its `Arguments` evaluated, or `None` without any). Tell calls apart by `resource` and `arguments` rather than by `state`: sfnx derives state names from the source, so editing the source, or a minor release, can rename them ([compatibility.md](compatibility.md)).
+A `Call` has `state` (the name of the state), `resource` (its `Resource` as written) and `arguments` (its `Arguments` evaluated, or `None` without any). A `Wait` has `state`, and `seconds` (a whole number) or `timestamp` (the text), as evaluated, the other `None`. Tell calls apart by `resource` and `arguments` rather than by `state`: sfnx derives state names from the source, so editing the source, or a minor release, can rename them ([compatibility.md](compatibility.md)).
 
 An `Execution` has:
 
