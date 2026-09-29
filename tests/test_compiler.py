@@ -1,5 +1,7 @@
 import logging
+import re
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -1055,3 +1057,20 @@ def test_a_value_a_comprehension_reads_further_in_its_place_still_fails(body):
         asl.run(definition, {}, tasks)
     assert failed.value.error == "States.QueryEvaluationError"
     assert asl.run(definition, {"d": {"items": [1, 2]}}, tasks) == [2, 4]
+
+
+def test_the_examples_of_which_states_a_function_makes():
+    """The examples docs/language.md gives of merged states make the states
+    it says they make."""
+    guide = (Path(__file__).parent.parent / "docs" / "language.md").read_text()
+    section = guide.split("## Which states a function makes")[1].split("\n## ")[0]
+    blocks = re.findall(r"```python\n(.*?)```", section, re.DOTALL)
+    header = "from sfnx import aws, state_machine\n\n\nclass Declined(Exception):\n    pass\n\n\n"
+    types = {}
+    for name, definition in compile_source(header + "\n\n".join(blocks)).items():
+        types[name] = [state["Type"] for state in definition["States"].values()]
+    assert types == {
+        "quote": ["Pass", "Succeed"],
+        "charge": ["Task"],
+        "book": ["Task", "Task", "Task"],
+    }
