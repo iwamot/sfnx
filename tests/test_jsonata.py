@@ -33,7 +33,10 @@ def definition(body: str) -> dict:
             'return jsonata("$formatNumber($x, \'#,##0\')", x=input["n"] + 1)',
             f"($x := ({INPUT}.n + 1); $formatNumber($x, '#,##0'))",
         ),
-        ('return jsonata("1 + 1") * 3', "(1 + 1) * 3"),
+        (
+            'return jsonata("$states.input.a + 1") * 3',
+            "($states.input.a + 1) * 3",
+        ),
         (
             (
                 'a: float = input["a"]\nb: float = input["b"]\n'
@@ -93,9 +96,11 @@ def test_the_expression_reads_a_variable_by_the_name_the_definition_gives_it():
 def test_a_function_the_expression_calls_is_not_a_variable():
     # count is written $count_val, so $count is the JSONata function and the
     # two assignments share one state.
-    compiled = definition('count = 2\nb = jsonata("$count([1, 2])")\nreturn [count, b]')
+    compiled = definition(
+        'count = 2\nb = jsonata("$count([1, 2, $x])", x=input["x"])\nreturn [count, b]'
+    )
     assert list(compiled["States"]) == ["count", "return"]
-    assert asl.run(compiled, {}) == [2, 2]
+    assert asl.run(compiled, {"x": 3}) == [2, 3]
 
 
 def test_a_name_outside_the_machine_holds_the_expression():

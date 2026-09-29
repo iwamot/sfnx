@@ -202,12 +202,10 @@ def test_unpacking():
     }
     assert compiled["return"]["Output"] == ["{% $a %}", "{% $b %}"]
     assert run('a, b = 1, input["b"]\nb, a = a, b\nreturn [a, b]', {"b": 2}) == [2, 1]
-    # The unpacking goes in the state that assigns pair, reading it as the
-    # list written there.
-    # pair, written in the source, is read in place and nothing reads it.
-    assert states("pair = [1, 2]\na, b = pair\nreturn [a, b]")["pair"]["Assign"] == {
-        "a": "{% [1, 2][0] %}",
-        "b": "{% [1, 2][1] %}",
+    # pair, written in the source, is read in place and nothing reads it, and
+    # what the unpacking reads of it is written out in turn.
+    assert states("pair = [1, 2]\na, b = pair\nreturn [a, b]") == {
+        "return": {"Type": "Succeed", "Output": [1, 2]}
     }
     assert run("pair = [1, 2]\na, b = pair\nreturn a", {}) == 1
 

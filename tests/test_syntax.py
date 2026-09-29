@@ -4,6 +4,7 @@ from sfnx.syntax import (
     always_read,
     atomic,
     changes,
+    constant,
     facts,
     lone_variable,
     looser_than_and,
@@ -266,3 +267,43 @@ def test_code_that_reads_binds_or_spells_a_name_mentions_it(code, found):
 )
 def test_what_code_reads_every_time_it_is_evaluated(code, read):
     assert always_read(code) == read
+
+
+@pytest.mark.parametrize(
+    "code, value",
+    [
+        ("(2 - 2) * -1", 0),
+        ("$count([1, 2])", 2),
+        ("{'a': [1, 2]}.a[1]", 2),
+        ("false ? 1 : 2", 2),
+        ("1.5 * 2", 3),
+        ("2 > 1", True),
+        ("$append([1], [2])", [1, 2]),
+    ],
+)
+def test_code_that_reads_nothing_is_its_value(code, value):
+    assert constant(code) == (True, value)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "$x + 1",
+        "$states.input",
+        "a",
+        "$random()",
+        # JSONata and jsonata-python may write or order these apart.
+        "$string(1)",
+        "'a' & 'b'",
+        "'a' < 'b'",
+        "1 / 3",
+        "9007199254740993 - 1",
+        # The deployment writes another text in the place of a placeholder.
+        "'${Name}' = 'a'",
+        # Undefined, and a failure, are left to happen where they are.
+        "{'a': 1}.b",
+        "1 / 0",
+    ],
+)
+def test_code_that_may_differ_or_reads_something_has_no_value_here(code):
+    assert constant(code) == (False, None)

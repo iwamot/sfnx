@@ -515,7 +515,12 @@ def test_docstring_and_pass_emit_nothing():
         ("return input[0]", "{% $states.context.Execution.Input[0] %}"),
         ("return input[-1]", "{% $states.context.Execution.Input[-1] %}"),
         ('return input["a"][0]["b"]', "{% $states.context.Execution.Input.a[0].b %}"),
-        ('return {"a": 1}["a"]', "{% {'a': 1}.a %}"),
+        (
+            'return {"a": input["x"]}["a"]',
+            "{% {'a': $states.context.Execution.Input.x}.a %}",
+        ),
+        # Of values written out, the value itself.
+        ('return {"a": 1}["a"]', 1),
         ("return '{% x %}'", "{% '{% x %}' %}"),
         ("return '{% x'", "{% '{% x' %}"),
         ("return 'x %}'", "{% 'x %}' %}"),
