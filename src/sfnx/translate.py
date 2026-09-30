@@ -471,6 +471,7 @@ CONSUMERS = frozenset({"sum", "max", "min", "sorted", "list"})
 # Step Functions both spell one, which is a Unicode identifier and not ASCII
 # alone.
 VARIABLE = re.compile(r"\$([^\W\d]\w*)")
+SIMPLE_PATH = re.compile(r"\$[^\W\d]\w*(?:\.[^\W\d]\w*)*")
 
 
 class Translator:
@@ -1659,9 +1660,7 @@ class Translator:
     ) -> Expr:
         boolean = of(BOOLEAN)
         if isinstance(operator, (ast.Eq, ast.NotEq)):
-            return binary(
-                left, COMPARISONS[type(operator)], right, COMPARE, boolean, True
-            )
+            return self.equality(operator, left_node, left, right_node, right)
         if isinstance(operator, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
             kinds = set()
             for operand, value in ((left_node, left), (right_node, right)):
@@ -1716,6 +1715,67 @@ class Translator:
         if isinstance(operator, ast.IsNot):
             return present
         return call("not", [present], boolean, boolean=True)
+
+    def equality(
+        self,
+        operator: ast.cmpop,
+        left_node: ast.expr,
+        left: Expr,
+        right_node: ast.expr,
+        right: Expr,
+    ) -> Expr:
+        """a == b and a != b. JSONata's = and != are false where an operand is
+        missing, where Python raises KeyError, so an operand that may be
+        missing is tested first and fails the expression with $error when it
+        is, read once."""
+        boolean = of(BOOLEAN)
+        symbol = COMPARISONS[type(operator)]
+        missing = [not left.defined, not right.defined]
+        if not any(missing):
+            return binary(left, symbol, right, COMPARE, boolean, True)
+        # A missing operand is read twice, by $exists and by the comparison: a
+        # path is written out twice, and anything longer is bound and read
+        # once, as a value that changes on evaluation always is. Python
+        # evaluates the left operand first, so the left one is tested, or
+        # bound where evaluating it may fail or change, before the right one
+        # is tested or evaluated.
+        operands = [left, right]
+        bound = [
+            value.volatile or (may_miss and SIMPLE_PATH.fullmatch(value.code) is None)
+            for value, may_miss in zip(operands, missing, strict=True)
+        ]
+        if (missing[1] or bound[1]) and not (left.total and not left.volatile):
+            bound[0] = True
+        with self.once([left] if bound[0] else [], operands, always=True) as (
+            left_bindings,
+            left_variables,
+        ):
+            left = left_variables[0] if left_variables else left
+            with self.once([right] if bound[1] else [], [left, right], always=True) as (
+                right_bindings,
+                right_variables,
+            ):
+                right = right_variables[0] if right_variables else right
+                test = binary(left, symbol, right, COMPARE, boolean, True)
+                if missing[1]:
+                    test = self.present(right_node, right, test)
+                test = block(right_bindings, test)
+            if missing[0]:
+                test = self.present(left_node, left, test)
+        return block(left_bindings, test)
+
+    def present(self, node: ast.expr, value: Expr, test: Expr) -> Expr:
+        """test where value exists; where it is missing, a failure, as Python
+        raises KeyError reading the key."""
+        boolean = of(BOOLEAN)
+        failure = expression(
+            f"$error({string(ast.unparse(node) + ' reads a missing key')})",
+            boolean=True,
+            defined=True,
+        )
+        return conditional(
+            call("exists", [value], boolean, boolean=True), test, failure, boolean
+        )
 
     def membership(
         self, left_node: ast.expr, left: Expr, right_node: ast.expr, right: Expr

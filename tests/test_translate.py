@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from sfnx import testing
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import array, call, expression, literal, spellings
@@ -104,10 +105,28 @@ def output(body: str, parameter: str = "input") -> object:
             'return 1 if input["a"] or not input["b"] else 2',
             f"{truthy(f'{INPUT}.a')} or $not({truthy(f'{INPUT}.b')}) ? 1 : 2",
         ),
-        ('return input["a"] == None', f"{INPUT}.a = null"),
-        ('return input["a"] != "x"', f"{INPUT}.a != 'x'"),
+        (
+            'return input["a"] == None',
+            (
+                f"$exists({INPUT}.a) ? {INPUT}.a = null"
+                " : $error(\"input['a'] reads a missing key\")"
+            ),
+        ),
+        (
+            'return input["a"] != "x"',
+            (
+                f"$exists({INPUT}.a) ? {INPUT}.a != 'x'"
+                " : $error(\"input['a'] reads a missing key\")"
+            ),
+        ),
         ('return 0 < input["a"] <= 10', f"0 < {INPUT}.a and {INPUT}.a <= 10"),
-        ('return (input["a"] < 1) == True', f"({INPUT}.a < 1) = true"),
+        (
+            'return (input["a"] < 1) == True',
+            (
+                f"($v := ({INPUT}.a < 1); $exists($v) ? $v = true"
+                " : $error(\"input['a'] < 1 reads a missing key\"))"
+            ),
+        ),
         ('return input["a"] in [1, 2]', f"{INPUT}.a in [1, 2]"),
         ('return "coupon" in input', f"$exists({INPUT}.coupon)"),
         ('return "coupon" not in input', f"$not($exists({INPUT}.coupon))"),
@@ -139,11 +158,17 @@ def output(body: str, parameter: str = "input") -> object:
         ),
         (
             'return input["a"] > 1 or input["b"] < 2 and input["c"] == 3',
-            f"{INPUT}.a > 1 or {INPUT}.b < 2 and {INPUT}.c = 3",
+            (
+                f"{INPUT}.a > 1 or {INPUT}.b < 2 and ($exists({INPUT}.c) ? {INPUT}.c = 3"
+                " : $error(\"input['c'] reads a missing key\"))"
+            ),
         ),
         (
             'return (input["a"] > 1 or input["b"] < 2) and input["c"] == 3',
-            f"({INPUT}.a > 1 or {INPUT}.b < 2) and {INPUT}.c = 3",
+            (
+                f"({INPUT}.a > 1 or {INPUT}.b < 2) and ($exists({INPUT}.c) ? {INPUT}.c = 3"
+                " : $error(\"input['c'] reads a missing key\"))"
+            ),
         ),
         ('return not input["a"]', f"$not({truthy(f'{INPUT}.a')})"),
         (
@@ -415,6 +440,76 @@ def test_is_true_and_is_false_evaluate_as_python(execution_input):
     a = execution_input.get("a")
     expected = [a is True, a is False, a is not True, a is not False]
     assert asl.run(definition(body), execution_input) == expected
+
+
+@pytest.mark.parametrize(
+    "execution_input", [{"k": "OK"}, {"k": "NG"}, {"k": None}, {"k": 1}, {}]
+)
+def test_equality_with_a_missing_key_fails_as_python_does(execution_input):
+    """JSONata's = and != are false where an operand is missing, where Python
+    raises KeyError, so a missing key fails the comparison, and a present one
+    compares as Python does."""
+    body = (
+        'if input["k"] != "OK":\n'
+        '    return ["not ok", input["k"] == "OK"]\n'
+        'return ["ok", input["k"] == "OK"]'
+    )
+    namespace: dict[str, object] = {}
+    exec(source(body), namespace)
+    pay = namespace["pay"]
+    assert callable(pay)
+    if "k" in execution_input:
+        assert asl.run(definition(body), execution_input) == pay(execution_input)
+        return
+    with pytest.raises(KeyError):
+        pay(execution_input)
+    with pytest.raises(asl.Failure) as raised:
+        asl.run(definition(body), execution_input)
+    assert raised.value.error == "States.QueryEvaluationError"
+    assert raised.value.cause == "input['k'] reads a missing key"
+
+
+@pytest.mark.parametrize(
+    "body, execution_input, cause",
+    [
+        # The left operand is evaluated first, and fails first.
+        (
+            'x: int = input["x"]\nreturn x + 1 == input["k"]',
+            {"x": "a"},
+            None,
+        ),
+        (
+            'x: int = input["x"]\nreturn x + 1 == int(input["k"])',
+            {"x": "a"},
+            None,
+        ),
+        # A missing right operand fails too, and of two missing operands the
+        # left one is reported, as Python reads it first.
+        ('return "OK" == input["k"]', {}, "input['k'] reads a missing key"),
+        ('return input["a"] != input["b"]', {}, "input['a'] reads a missing key"),
+        ('return input["a"] != input["b"]', {"a": 1}, "input['b'] reads a missing key"),
+        # The right operand is evaluated only once the left one is there.
+        ('return input["k"] == random.random()', {}, "input['k'] reads a missing key"),
+    ],
+)
+def test_equality_evaluates_its_operands_in_order(body, execution_input, cause):
+    """Python evaluates the left operand before the right one, so where the
+    left one fails or is missing, the right one is not evaluated: a missing
+    right key is not reported first, and random() is not called."""
+    calls: list[float] = []
+    compiled = compile_source("import random\n" + source(body))
+    (machine,) = compiled.values()
+    execution = testing.run(
+        machine,
+        execution_input,
+        functions={"random": lambda: calls.append(0.5) or 0.5},
+    )
+    assert execution.error == "States.QueryEvaluationError"
+    if cause is None:
+        assert "missing" not in str(execution.cause)
+    else:
+        assert execution.cause == cause
+    assert calls == []
 
 
 def test_unpacking_a_value_that_is_not_a_dict_fails_where_it_unpacks():
@@ -771,7 +866,12 @@ def imported(body: str) -> dict:
         ),
         (
             'return datetime.fromtimestamp(input["t"]) != datetime.fromisoformat(input["at"])',
-            f"{INPUT}.t * 1000 != $toMillis({INPUT}.at)",
+            (
+                f"($v := ({INPUT}.t * 1000); $exists($v)"
+                f" ? ($v_2 := $toMillis({INPUT}.at); $exists($v_2) ? $v != $v_2"
+                " : $error(\"datetime.fromisoformat(input['at']) reads a missing key\"))"
+                " : $error(\"datetime.fromtimestamp(input['t']) reads a missing key\"))"
+            ),
         ),
         # strftime writes the datetime with the picture string that writes
         # what its format writes.
