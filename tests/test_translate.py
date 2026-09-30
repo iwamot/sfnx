@@ -11,7 +11,7 @@ from sfnx import testing
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import array, call, expression, literal, spellings
-from tests import asl, truthiness, truthy, unpacked
+from tests import asl, truthy, unpacked
 
 INPUT = "$states.context.Execution.Input"
 
@@ -95,15 +95,31 @@ def output(body: str, parameter: str = "input") -> object:
         ('return 2 * -input["a"]', f"2 * -{INPUT}.a"),
         (
             'items: list = input["items"]\nreturn 1 if items and input["a"] else 2',
-            f"$count($items) > 0 and {truthy(f'{INPUT}.a')} ? 1 : 2",
+            (
+                "$count($items) > 0 and ($v := "
+                f"($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? 1 : 2"
+            ),
         ),
         (
             'return 1 if not input["a"] else 2',
-            f"$not({truthy(f'{INPUT}.a')}) ? 1 : 2",
+            (
+                f"$not(($v := ($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v))) ? 1 : 2"
+            ),
         ),
         (
             'return 1 if input["a"] or not input["b"] else 2',
-            f"{truthy(f'{INPUT}.a')} or $not({truthy(f'{INPUT}.b')}) ? 1 : 2",
+            (
+                f"($v := ($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) or $not(($v "
+                f":= ($exists({INPUT}.b) ? "
+                f"{INPUT}.b : $error(\"input['b'] reads a missing "
+                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v))) ? 1 : 2"
+            ),
         ),
         (
             'return input["a"] == None',
@@ -127,60 +143,148 @@ def output(body: str, parameter: str = "input") -> object:
                 " : $error(\"input['a'] < 1 reads a missing key\"))"
             ),
         ),
-        ('return input["a"] in [1, 2]', f"{INPUT}.a in [1, 2]"),
+        (
+            'return input["a"] in [1, 2]',
+            (
+                f"($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                'key")) in [1, 2]'
+            ),
+        ),
         ('return "coupon" in input', f"$exists({INPUT}.coupon)"),
         ('return "coupon" not in input', f"$not($exists({INPUT}.coupon))"),
         (
             'return input["a"] is None',
-            f"$not($exists({INPUT}.a) and {INPUT}.a != null)",
+            (
+                f"($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                'key")) = null'
+            ),
         ),
-        ('return input["a"] is not None', f"$exists({INPUT}.a) and {INPUT}.a != null"),
-        ('return input["a"] is True', f"{INPUT}.a = true"),
-        ('return input["a"] is not False', f"$not({INPUT}.a = false)"),
+        (
+            'return input["a"] is not None',
+            (
+                f"($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                'key")) != null'
+            ),
+        ),
+        (
+            'return input["a"] is True',
+            (
+                f"($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                'key")) = true'
+            ),
+        ),
+        (
+            'return input["a"] is not False',
+            (
+                f"$not(($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                'key")) = false)'
+            ),
+        ),
         (
             'return input["a"] or "none"',
-            f"($v := {INPUT}.a; ({truthiness()}) ? $v : 'none')",
+            (
+                f"($v := ($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); ($type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? $v : "
+                "'none')"
+            ),
         ),
         (
             'return input["a"] and input["b"]',
-            f"($v := {INPUT}.a; ({truthiness()}) ? {INPUT}.b : $v)",
+            (
+                f"($v := ($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); ($type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? "
+                f"{INPUT}.b : $v)"
+            ),
         ),
         (
             'return input["a"] or input["b"] or 0',
             (
-                f"($v_2 := {INPUT}.a; ({truthiness('$v_2')}) ? $v_2 : "
-                f"($v := {INPUT}.b; ({truthiness()}) ? $v : 0))"
+                f"($v_2 := ($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); ($type($v_2) = 'array' ? $count($v_2) > 0 : $boolean($v_2)) ? "
+                f"$v_2 : ($v := ($exists({INPUT}.b) ? "
+                f"{INPUT}.b : $error(\"input['b'] reads a missing "
+                "key\")); ($type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? $v : 0))"
             ),
         ),
         (
             'return input["a"] > 1 and input["b"] < 2',
-            f"{INPUT}.a > 1 and {INPUT}.b < 2",
+            (
+                f"($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                f'key")) > 1 and ($exists({INPUT}.b) ? '
+                f"{INPUT}.b : $error(\"input['b'] reads a missing "
+                'key")) < 2'
+            ),
         ),
         (
             'return input["a"] > 1 or input["b"] < 2 and input["c"] == 3',
             (
-                f"{INPUT}.a > 1 or {INPUT}.b < 2 and ($exists({INPUT}.c) ? {INPUT}.c = 3"
-                " : $error(\"input['c'] reads a missing key\"))"
+                f"($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                f'key")) > 1 or ($exists({INPUT}.b) ? '
+                f"{INPUT}.b : $error(\"input['b'] reads a missing "
+                f'key")) < 2 and ($exists({INPUT}.c) ? '
+                f"{INPUT}.c = 3 : $error(\"input['c'] reads a "
+                'missing key"))'
             ),
         ),
         (
             'return (input["a"] > 1 or input["b"] < 2) and input["c"] == 3',
             (
-                f"({INPUT}.a > 1 or {INPUT}.b < 2) and ($exists({INPUT}.c) ? {INPUT}.c = 3"
-                " : $error(\"input['c'] reads a missing key\"))"
+                f"(($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                f'key")) > 1 or ($exists({INPUT}.b) ? '
+                f"{INPUT}.b : $error(\"input['b'] reads a missing "
+                f'key")) < 2) and ($exists({INPUT}.c) ? '
+                f"{INPUT}.c = 3 : $error(\"input['c'] reads a "
+                'missing key"))'
             ),
         ),
         ('return not input["a"]', f"$not({truthy(f'{INPUT}.a')})"),
         (
             'return not (input["a"] or input["b"])',
-            f"$not({truthy(f'{INPUT}.a')} or {truthy(f'{INPUT}.b')})",
+            (
+                f"$not(($v := ($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) or ($v := "
+                f"($exists({INPUT}.b) ? "
+                f"{INPUT}.b : $error(\"input['b'] reads a missing "
+                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)))"
+            ),
         ),
         ('items: list = input["items"]\nreturn not items', "$count($items) = 0"),
-        ('return 1 if input["a"] else 2', f"{truthy(f'{INPUT}.a')} ? 1 : 2"),
-        ('return 1 if input["a"] > 0 else 2', f"{INPUT}.a > 0 ? 1 : 2"),
+        (
+            'return 1 if input["a"] else 2',
+            (
+                f"($v := ($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? 1 : 2"
+            ),
+        ),
+        (
+            'return 1 if input["a"] > 0 else 2',
+            (
+                f"($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                'key")) > 0 ? 1 : 2'
+            ),
+        ),
         (
             'return (1 if input["a"] else 2) + 1',
-            f"({truthy(f'{INPUT}.a')} ? 1 : 2) + 1",
+            (
+                f"(($v := ($exists({INPUT}.a) ? "
+                f"{INPUT}.a : $error(\"input['a'] reads a missing "
+                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? 1 : 2) + "
+                "1"
+            ),
         ),
         ('return bool(input["a"])', truthy(f"{INPUT}.a")),
         ('items: list = input["items"]\nreturn bool(items)', "$count($items) > 0"),
@@ -204,15 +308,30 @@ def output(body: str, parameter: str = "input") -> object:
         ('items: list = input["items"]\nreturn len(items)', "$count($items)"),
         ('name: str = input["name"]\nreturn len(name)', "$length($name)"),
         ('tags: dict = input["tags"]\nreturn len(tags)', "$count($keys($tags))"),
-        ('return isinstance(input["v"], str)', f"$type({INPUT}.v) = 'string'"),
+        (
+            'return isinstance(input["v"], str)',
+            (
+                f"$type($exists({INPUT}.v) ? "
+                f"{INPUT}.v : $error(\"input['v'] reads a missing "
+                "key\")) = 'string'"
+            ),
+        ),
         (
             'return isinstance(input["v"], (float, int, bool))',
-            f"$type({INPUT}.v) in ['number', 'boolean']",
+            (
+                f"$type($exists({INPUT}.v) ? "
+                f"{INPUT}.v : $error(\"input['v'] reads a missing "
+                "key\")) in ['number', 'boolean']"
+            ),
         ),
         ('tags: dict = input["tags"]\nreturn "a" in tags', "$exists($tags.a)"),
         (
             'tags: dict = input["tags"]\nreturn input["k"] in tags',
-            f"$exists($lookup($tags, {INPUT}.k))",
+            (
+                f"$exists($lookup($tags, $exists({INPUT}.k) ? "
+                f"{INPUT}.k : $error(\"input['k'] reads a missing "
+                'key")))'
+            ),
         ),
         ('text: str = input["text"]\nreturn "ab" in text', "$contains($text, 'ab')"),
         ('items: list = input["items"]\nreturn 1 not in items', "$not(1 in $items)"),
@@ -510,6 +629,125 @@ def test_equality_evaluates_its_operands_in_order(body, execution_input, cause):
     else:
         assert execution.cause == cause
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "body, inputs",
+    [
+        ('return input["k"] in ["a", "b"]', [{"k": "a"}, {"k": "z"}]),
+        ('return input["k"] not in ["a", "b"]', [{"k": "a"}, {"k": "z"}]),
+        ('return "a" in input["k"]', [{"k": {"a": 1}}, {"k": {}}]),
+        ('return input["k"] or "d"', [{"k": ""}, {"k": "x"}]),
+        ('return input["k"] and "d"', [{"k": ""}, {"k": "x"}]),
+        ('return not input["k"] or "d"', [{"k": 0}, {"k": 1}]),
+        ('return input["k"] > 1 or input["j"] < 2', [{"k": 2}, {"k": 0, "j": 1}]),
+        ('return input["k"] > 1 and input["j"] < 2', [{"k": 0}, {"k": 2, "j": 1}]),
+        ('return input["k"] is None', [{"k": None}, {"k": 0}]),
+        ('return input["k"] is not None', [{"k": None}, {"k": 0}]),
+        ('return input["k"] is True', [{"k": True}, {"k": 1}]),
+        ('return input["k"] is not False', [{"k": False}, {"k": 0}]),
+        ('return isinstance(input["k"], str)', [{"k": "a"}, {"k": 1}]),
+        ('return 1 if input["k"] else 2', [{"k": 0}, {"k": [0]}]),
+        ('return 1 if not input["k"] else 2', [{"k": 0}, {"k": 1}]),
+        ('return 1 if input["k"] > 0 else 2', [{"k": 0}, {"k": 1}]),
+        ('xs: list = input["xs"]\nreturn [x for x in xs if x["k"]]', []),
+        ('xs: list = input["xs"]\nreturn any(x["k"] for x in xs)', []),
+        ('xs: list = input["xs"]\nreturn all(x["k"] for x in xs)', []),
+    ],
+)
+def test_a_missing_key_fails_where_a_test_would_take_it_for_false(body, inputs):
+    """in, is, isinstance, and, or, not and the test of a conditional
+    expression or a comprehension take a missing value for false, where
+    Python raises KeyError reading the key, so a missing key they read fails,
+    naming it; a present one gives what Python gives."""
+    namespace: dict[str, object] = {}
+    exec(source(body), namespace)
+    pay = namespace["pay"]
+    assert callable(pay)
+    missing = {"xs": [{"j": 1}]} if "xs" in body else {}
+    with pytest.raises(KeyError):
+        pay(missing)
+    with pytest.raises(asl.Failure) as raised:
+        asl.run(definition(body), missing)
+    assert raised.value.error == "States.QueryEvaluationError"
+    assert raised.value.cause.endswith("['k'] reads a missing key")
+    for execution_input in inputs:
+        assert asl.run(definition(body), execution_input) == pay(execution_input)
+
+
+@pytest.mark.parametrize(
+    "body, execution_input",
+    [
+        # What Python does not read cannot fail.
+        ('return "x" or input["k"]', {}),
+        ('return "" and input["k"]', {}),
+        ('return input.get("k") is not None and input["k"] > 1', {}),
+        ('return 1 if input.get("k") is None else input["k"]', {}),
+        # any() and all() read no more items once the result is decided.
+        (
+            'xs: list = input["xs"]\nreturn any(x["k"] for x in xs)',
+            {"xs": [{"k": 1}, {}]},
+        ),
+        (
+            'xs: list = input["xs"]\nreturn all(x["k"] for x in xs)',
+            {"xs": [{"k": 0}, {}]},
+        ),
+        # A key read with get() may be missing.
+        ('return input.get("k") is None', {}),
+        ('return input.get("k") in ["a", None]', {}),
+        ('return isinstance(input.get("k"), str)', {}),
+        ('return input.get("k") or "d"', {}),
+    ],
+)
+def test_what_is_not_read_or_is_read_with_get_does_not_fail(body, execution_input):
+    """and, or and a conditional expression evaluate no more than Python
+    does, and a key read with get() gives None where it is missing, so
+    neither fails."""
+    namespace: dict[str, object] = {}
+    exec(source(body), namespace)
+    pay = namespace["pay"]
+    assert callable(pay)
+    assert asl.run(definition(body), execution_input) == pay(execution_input)
+
+
+def test_in_reads_its_operands_in_order():
+    """$lookup and $contains evaluate the container first, where Python
+    evaluates the left operand first: of two missing keys the left one is
+    reported, and a left operand that changes on evaluation is evaluated
+    once, before the container."""
+    compiled = compile_source(
+        "import random\n"
+        "from typing import TypedDict\n\n"
+        "from sfnx import state_machine\n\n\n"
+        "class Input(TypedDict):\n"
+        "    k: str\n"
+        "    d: dict[str, int]\n"
+        "    s: str\n\n\n"
+        "@state_machine\n"
+        "def in_dict(input: Input):\n"
+        '    return input["k"] in input["d"]\n\n\n'
+        "@state_machine\n"
+        "def in_string(input: Input):\n"
+        '    return input["k"] in input["s"]\n\n\n'
+        "@state_machine\n"
+        "def changing(input: Input):\n"
+        '    return str(random.random()) in input["d"]\n'
+    )
+    for name in ("in_dict", "in_string"):
+        missing = testing.run(compiled[name], {})
+        assert missing.cause == "input['k'] reads a missing key"
+        container = compiled[name]["States"]["return"]["Output"]
+        assert testing.run(compiled[name], {"k": "a"}).cause == (
+            f"input['{'d' if name == 'in_dict' else 's'}'] reads a missing key"
+        ), container
+    calls: list[float] = []
+    execution = testing.run(
+        compiled["changing"],
+        {},
+        functions={"random": lambda: calls.append(0.5) or 0.5},
+    )
+    assert execution.cause == "input['d'] reads a missing key"
+    assert calls == [0.5]
 
 
 def test_unpacking_a_value_that_is_not_a_dict_fails_where_it_unpacks():

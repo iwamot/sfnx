@@ -87,8 +87,9 @@ def in_python(body: str, execution_input: object) -> object:
         (
             'rs: list[dict] = input["rs"]\nreturn any(r["failed"] for r in rs)',
             (
-                "$reduce($rs, function($a, $r) { $a ? true : ($v := $r.failed; "
-                "$type($v) = 'array' ? $count($v) > 0 : $boolean($v)) }, false)"
+                "$reduce($rs, function($a, $r) { $a ? true : ($v := ($exists($r.failed) ? "
+                "$r.failed : $error(\"r['failed'] reads a missing key\")); $type($v) = "
+                "'array' ? $count($v) > 0 : $boolean($v)) }, false)"
             ),
         ),
         (
