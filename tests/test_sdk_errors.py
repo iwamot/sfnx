@@ -1,5 +1,6 @@
 import re
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -80,6 +81,23 @@ def test_imports(imports, error):
     assert caught(error, imports) == ["DynamoDb.DynamoDbException"]
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ClientExecutionTimeoutException",
+        "ServiceException",
+        "AWSLambdaException",
+        "SdkClientException",
+        "TooManyRequestsException",
+        "Unknown",
+    ],
+)
+def test_the_errors_of_an_optimized_lambda_invoke(name):
+    """The names the Step Functions documentation gives a lambda:invoke
+    Task, which are Lambda.<Error>; botocore's model has only some of them."""
+    assert caught(f"aws.optimized.lambda_.errors.{name}") == [f"Lambda.{name}"]
+
+
 def test_retry():
     body = (
         f"{PUBLISH[:-1]}, retry=[{{'ErrorEquals': "
@@ -117,6 +135,14 @@ def test_retry():
             "sqs has no error QueueDoesNotExist; did you mean QueueDoesNotExistException?",
         ),
         ("aws.sdk.sqs.errors.Zzz", "sqs has no error Zzz"),
+        (
+            "aws.optimized.lambda_.errors.ServiceExeption",
+            "not ServiceExeption; did you mean ServiceException",
+        ),
+        (
+            "aws.optimized.sns.errors.ThrottledException",
+            "an optimized integration's error is a class named as the integration",
+        ),
     ],
 )
 def test_diagnostics(error, message):
@@ -168,3 +194,30 @@ def test_at_run_time_a_name_is_the_same_class_each_time():
 def test_at_run_time_private_names_are_not_errors():
     assert not hasattr(aws.sdk, "_services")
     assert not hasattr(aws.sdk.dynamodb.errors, "_service_name")
+
+
+def test_the_lambda_retry_the_reference_shows():
+    """The retrier docs/language.md writes for lambda:invoke compiles to the
+    error names the Step Functions documentation retries."""
+    guide = (Path(__file__).parent.parent / "docs" / "language.md").read_text()
+    block = next(
+        found
+        for found in re.findall(r"```python\n(.*?)```", guide, re.DOTALL)
+        if "aws.optimized.lambda_.errors" in found
+    )
+    body = (
+        block
+        + "\n\n@state_machine\ndef pay(input):\n"
+        + '    aws.optimized.lambda_.invoke(FunctionName="f", retry=RETRIES)\n'
+        + "    return 0\n"
+    )
+    (compiled,) = compile_source(
+        "from sfnx import aws, state_machine\n\n" + body
+    ).values()
+    (task,) = [s for s in compiled["States"].values() if s["Type"] == "Task"]
+    assert task["Retry"][0]["ErrorEquals"] == [
+        "Lambda.ClientExecutionTimeoutException",
+        "Lambda.ServiceException",
+        "Lambda.AWSLambdaException",
+        "Lambda.SdkClientException",
+    ]

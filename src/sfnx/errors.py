@@ -2,6 +2,7 @@
 
 import ast
 import builtins
+import difflib
 from collections.abc import Callable
 
 from sfnx.diagnostics import CompileError
@@ -68,9 +69,11 @@ def error_name(node: ast.expr, context: Module) -> str:
 
 
 def sdk(path: list[str], node: ast.expr) -> str:
-    """The error name of aws.sdk.<service>.errors.<Exception>. The service is
-    named as the resource ARN names it, with a _ after a Python keyword:
-    lambda_ is lambda."""
+    """The error name of aws.sdk.<service>.errors.<Exception>, or of
+    aws.optimized.lambda_.errors.<Error>. The service is named as the resource
+    ARN names it, with a _ after a Python keyword: lambda_ is lambda."""
+    if len(path) == 4 and path[0] == "optimized" and path[2] == "errors":
+        return optimized_error(path[1], path[3], node)
     if len(path) != 4 or path[0] != "sdk" or path[2] != "errors":
         raise CompileError(
             "an SDK integration's error is aws.sdk.<service>.errors.<Exception>, "
@@ -81,6 +84,47 @@ def sdk(path: list[str], node: ast.expr) -> str:
         return sdk_error(path[1], path[3])
     except ResourceError as exc:
         raise CompileError(str(exc), node) from None
+
+
+# The errors a lambda:invoke Task reports, as the Step Functions
+# documentation names them ("Handle transient Lambda service exceptions" in
+# its best practices): the four transient service exceptions it retries, the
+# one of exceeding the invocations, and the one runtimes historically
+# reported an unhandled error of the function as.
+# A timeout of the function in a newer runtime is Sandbox.Timedout, which
+# does not start with Lambda.
+LAMBDA_ERRORS = frozenset(
+    {
+        "ClientExecutionTimeoutException",
+        "ServiceException",
+        "AWSLambdaException",
+        "SdkClientException",
+        "TooManyRequestsException",
+        "Unknown",
+    }
+)
+
+
+def optimized_error(service: str, name: str, node: ast.expr) -> str:
+    """Lambda.<Error> for aws.optimized.lambda_.errors.<Error>, of the names
+    the Step Functions documentation gives a lambda:invoke Task: the other
+    optimized integrations' errors are spelled with nested classes."""
+    if service != "lambda_":
+        raise CompileError(
+            "an optimized integration's error is a class named as the "
+            "integration reports it, nested for a dotted name; "
+            "aws.optimized.lambda_.errors.<Error> names those of lambda:invoke",
+            node,
+        )
+    if name not in LAMBDA_ERRORS:
+        close = difflib.get_close_matches(name, sorted(LAMBDA_ERRORS), n=3)
+        hint = f"; did you mean {' or '.join(close)}?" if close else ""
+        raise CompileError(
+            f"aws.optimized.lambda_.errors names {', '.join(sorted(LAMBDA_ERRORS))}"
+            f", not {name}{hint} (Sandbox.Timedout and others are nested classes)",
+            node,
+        )
+    return f"Lambda.{name}"
 
 
 def attributes(node: ast.expr) -> list[str]:
