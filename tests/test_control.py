@@ -1440,6 +1440,27 @@ def test_a_name_assigned_again(first, second, merged, result):
             asl.run(compiled, {"a": {}})
 
 
+def test_a_first_value_whose_default_may_be_undefined_still_fails():
+    """d.get() whose default is a path gives undefined where both keys are
+    missing, which a test such as isinstance() would pass through: the
+    reassignment must fail there as Python fails on the missing key, not
+    give 0. Where c is present and b is missing, Python fails evaluating the
+    default first, a case apart from this one."""
+    body = (
+        'wait(1)\nx = input.get("c", input["a"]["b"])\n'
+        "x = 0 if not isinstance(x, (int, float)) else x\nwait(1)\nreturn x"
+    )
+    (compiled,) = compile_source(
+        "from sfnx import state_machine, wait\n\n\n@state_machine\ndef pay(input):\n"
+        + textwrap.indent(body, "    ")
+    ).values()
+    assert asl.run(compiled, {"a": {"b": 2}}) == 2
+    assert asl.run(compiled, {"c": 7, "a": {"b": 2}}) == 7
+    with pytest.raises(asl.Failure) as failure:
+        asl.run(compiled, {"a": {}})
+    assert failure.value.error == "States.QueryEvaluationError"
+
+
 def test_an_if_whose_branch_calls_a_function_directly_keeps_its_choice():
     body = (
         "def fee(amount):\n    return amount * 2\n\n"
