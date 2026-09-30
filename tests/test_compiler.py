@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from sfnx import testing
 from sfnx.compiler import (
     changed_states,
     compile_source,
@@ -1119,3 +1120,38 @@ def test_the_examples_of_which_states_a_function_makes():
         "charge": ["Task"],
         "book": ["Task", "Task", "Task"],
     }
+
+
+def test_the_example_of_a_function_called_in_several_places():
+    """docs/language.md's two ways to release held items: called per except
+    clause, the release loop is written twice; called once around the steps,
+    it is written once, and also releases when the receipt call fails."""
+    guide = (Path(__file__).parent.parent / "docs" / "language.md").read_text()
+    section = guide.split("## Functions called directly")[1].split("\n## ")[0]
+    block = re.findall(r"```python\n(.*?)```", section, re.DOTALL)[-1]
+    definitions = compile_source(block)
+    releases = {
+        name: sum(
+            ":deleteItem" in str(state.get("Resource"))
+            for state in d["States"].values()
+        )
+        for name, d in definitions.items()
+    }
+    assert releases == {"per_clause": 2, "once": 1}
+
+    def tasks(call: testing.Call) -> object:
+        if call.resource.endswith(":deleteItem"):
+            return {}
+        if call.arguments["FunctionName"] == "receipt":
+            raise testing.Failure("Lambda.ServiceException", "down")
+        return {"Payload": {"status": "OK"}}
+
+    execution_input = {"skus": ["a", "b"]}
+    for name, released in [("per_clause", []), ("once", ["a", "b"])]:
+        execution = testing.run(definitions[name], execution_input, tasks)
+        assert execution.error == "Lambda.ServiceException"
+        assert [
+            call.arguments["Key"]["sku"]["S"]
+            for call in execution.calls
+            if call.resource.endswith(":deleteItem")
+        ] == released
