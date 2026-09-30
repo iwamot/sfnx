@@ -408,6 +408,24 @@ def test_an_assignment_the_except_clause_reads_after_is_not_caught():
     assert failure.value.error == "States.QueryEvaluationError"
 
 
+def test_a_string_in_after_the_try_is_not_caught():
+    """`in` of a string is $contains, which fails on a value that is not a
+    string, as the declaration may wrongly claim. The statement is after the
+    try, so its failure ends the execution, as in Python, rather than going
+    to the except clause, which returns a value of its own to tell the two
+    apart."""
+    body = (
+        's: str = input["s"]\n'
+        f'try:\n    r = {CHARGE}\nexcept Exception:\n    return "caught"\n'
+        'x = "a" in s\nreturn x'
+    )
+    tasks = {"r": lambda arguments: {}}
+    assert run(body, {"s": "abc"}, tasks) is True
+    with pytest.raises(asl.Failure) as failure:
+        run(body, {"s": 5}, tasks)
+    assert failure.value.error == "States.QueryEvaluationError"
+
+
 def test_evaluation_of_rethrow_and_loops():
     body = f'total = 0\nfor i in range(3):\n    try:\n        r = task("{LAMBDA}", {{"FunctionName": "f"}})\n        total = total + 1\n    except Declined:\n        continue\n    except Exception:\n        raise\nreturn total'
     assert run(body, {}, {"r": lambda arguments: {}}) == 3
