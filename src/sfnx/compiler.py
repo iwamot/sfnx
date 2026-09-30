@@ -746,6 +746,9 @@ class Scope:
     def augment(self, node: ast.AugAssign) -> None:
         """x += v as x = x + v. A list is extended in place in Python, which
         other names for it see; a JSON value is a copy, so it is written out."""
+        if isinstance(node.target, ast.Subscript):
+            whole = ast.BinOp(node.target, node.op, node.value)
+            raise self.changed_in_place(node.target, whole)
         if not isinstance(node.target, ast.Name):
             raise CompileError(
                 "assign one variable per statement: x = ...", node.target
@@ -1126,6 +1129,40 @@ class Scope:
                 node,
             )
 
+    def changed_in_place(self, target: ast.Subscript, value: ast.expr) -> CompileError:
+        """d["k"] = v changes the dict in place, which a JSON value cannot: the
+        dict is written again whole, d = {**d, "k": v}, through every key
+        written as a string, d["a"]["b"] = v as d = {**d, "a": {**d["a"], "b":
+        v}}. Another name for the dict keeps the old one, where in Python it
+        sees the change, so the message says so."""
+        whole: ast.expr = value
+        held: ast.expr = target
+        while (
+            isinstance(held, ast.Subscript)
+            and isinstance(held.slice, ast.Constant)
+            and isinstance(held.slice.value, str)
+        ):
+            whole = ast.Dict([None, held.slice], [held.value, whole])
+            held = held.value
+        if whole is value or not isinstance(held, ast.Name):
+            return CompileError(
+                "a list or dict is not changed in place; assign the new value "
+                "to a name",
+                target,
+            )
+        if held.id in self.parameters:
+            return CompileError(
+                f"{held.id} is the execution input; write the changed copy to "
+                f"another name: data = {ast.unparse(whole)}",
+                target,
+            )
+        self.claim(held.id, target)
+        return CompileError(
+            "a dict is changed in place in Python, which other names for it see; "
+            f"a JSON value is a copy, so write {held.id} = {ast.unparse(whole)}",
+            target,
+        )
+
     def define(self, node: ast.FunctionDef) -> None:
         if node.name in self.bindings:
             raise CompileError(
@@ -1158,6 +1195,8 @@ class Scope:
         if isinstance(target, ast.Tuple):
             self.unpack(target, value_node)
             return
+        if isinstance(target, ast.Subscript):
+            raise self.changed_in_place(target, value_node)
         if not isinstance(target, ast.Name):
             raise CompileError("assign one variable per statement: x = ...", target)
         name = target.id

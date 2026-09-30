@@ -1,3 +1,4 @@
+import copy
 import logging
 import re
 import textwrap
@@ -568,11 +569,55 @@ def test_asl_matches_python(body, execution_input):
 
 
 @pytest.mark.parametrize(
+    "changed, execution_input",
+    [
+        ('d["k"] = 1', {"d": {"a": 0}}),
+        ('d["a"]["b"] = input["n"]', {"d": {"a": {"c": 1}}, "n": 2}),
+        ('d["a"] += 1', {"d": {"a": 1}}),
+        ('d["a"]: int = 2', {"d": {"a": 1}}),
+    ],
+)
+def test_the_line_a_dict_changed_in_place_gets_returns_what_python_does(
+    changed, execution_input
+):
+    """The diagnostic for d["k"] = v writes the line that builds the dict
+    again, and that line returns what the change in place returns."""
+    source = machine(f'd = input["d"]\n{changed}\nreturn d')
+    with pytest.raises(CompileError) as raised:
+        compile_one(source)
+    advised = raised.value.message.split(", so write ")[1]
+    definition = compile_one(machine(f'd = input["d"]\n{advised}\nreturn d'))
+    # Python changes the input it is given in place.
+    expected = python(source, copy.deepcopy(execution_input))
+    assert asl.run(definition, execution_input) == expected
+
+
+def test_another_name_for_a_dict_written_again_keeps_the_old_one():
+    """What the diagnostic says: in Python another name for the dict sees the
+    change in place, and after the line it advises that name keeps the old
+    dict."""
+    changed = machine('d = input["d"]\nother = d\nd["k"] = 1\nreturn other')
+    with pytest.raises(CompileError) as raised:
+        compile_one(changed)
+    assert "which other names for it see" in raised.value.message
+    advised = raised.value.message.split(", so write ")[1]
+    written = machine(f'd = input["d"]\nother = d\n{advised}\nreturn other')
+    assert python(changed, {"d": {"a": 0}}) == {"a": 0, "k": 1}
+    assert asl.run(compile_one(written), {"d": {"a": 0}}) == {"a": 0}
+
+
+@pytest.mark.parametrize(
     "source, message, location",
     [
         (machine("return missing"), "missing is not assigned here", "6:12"),
         (machine("return 1\nx = 2"), "never reached", "7:5"),
-        (machine("x[0] = 1"), "one variable per statement", "6:5"),
+        (machine("x[0] = 1"), "a list or dict is not changed in place", "6:5"),
+        (
+            machine('input["k"] = 1'),
+            "write the changed copy to another name: data = {**input, 'k': 1}",
+            "6:5",
+        ),
+        (machine('x = {}\nx[input["k"]] = 1'), "not changed in place", "7:5"),
         (machine("x = y = 1"), "one variable per statement", "6:9"),
         (machine("return b'x'"), "only JSON values", "6:12"),
         (machine("return 1e999"), "JSON numbers are finite", "6:12"),
