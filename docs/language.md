@@ -383,8 +383,53 @@ def pay(input):
 - A parameter reads the argument written for it. A value is read as the same expression wherever the body reads it, and an ARN or a `retry=` passed on is taken as if written there. An argument that changes on evaluation, such as `str(uuid.uuid4())`, is kept first by a variable named after the parameter. A default is written in the source, and an argument cannot call `task()`, `parallel()`, a map or a function whose body makes states.
 - A name the body assigns is the function's own. It keeps its name in the definition unless the calling function uses it too, in which case it is numbered (`ids_2`). A function of the module reads the module's names, so calling one that reads a name the caller assigns is rejected.
 - Each `return` gives the statement the value the call would, and the paths join after the call; a function that ends without one gives `None`. A `try` around the call puts its Catch on the states the body makes.
+- A function called in several places has its states written once per call. A step that undoes earlier ones, called in each `except` clause, is written once per clause; called once, in an `except` around all the steps, it is written once, and a bare `raise` fails with the error that stopped them. The two forms undo on different failures: the outer `try` also catches what fails between the steps, such as a call no `except` names, which the first form lets through without undoing. Choose by the failures that should undo the steps (see the example after this list).
 - A function that calls itself, directly or through another, a function defined inside one called directly, decorators, and parameters other than plain ones with or without defaults are rejected.
 - A function whose body, past a docstring, is one `return` of a value is an expression, and is also called inside one: `task(LAMBDA, {"FunctionName": "f", "Payload": traced(input)})` writes the value `traced` returns into the Task's `Arguments`, where it is evaluated, so what it reads of the context is the Task's. Each parameter reads the value written for it, and one that changes on evaluation is bound first in a block, so the body reads the one value Python passes. Such a call can be an argument of a function called directly. A function of the module or the machine hides a built-in of its name, as it does in Python.
+
+Two ways to release held items when a payment fails, where the `receipt` function returns a `status`. The first writes the release loop twice, once per call, and releases only when the charge fails with `TaskFailed` and when the status is not `OK`. The second writes it once, and releases on any failure inside the `try`, a failed `receipt` call included:
+
+```python
+from sfnx import TaskFailed, aws, state_machine
+
+
+class Declined(Exception):
+    pass
+
+
+def release(skus):
+    for sku in skus:
+        aws.sdk.dynamodb.delete_item(TableName="holds", Key={"sku": {"S": sku}})
+
+
+@state_machine
+def per_clause(input):
+    held: list[str] = input["skus"]
+    try:
+        aws.optimized.lambda_.invoke(FunctionName="charge", Payload=input)
+    except TaskFailed:
+        release(held)
+        raise
+    receipt = aws.optimized.lambda_.invoke(FunctionName="receipt", Payload=input)
+    if receipt["Payload"]["status"] != "OK":
+        release(held)
+        raise Declined()
+    return receipt["Payload"]
+
+
+@state_machine
+def once(input):
+    held: list[str] = input["skus"]
+    try:
+        aws.optimized.lambda_.invoke(FunctionName="charge", Payload=input)
+        receipt = aws.optimized.lambda_.invoke(FunctionName="receipt", Payload=input)
+        if receipt["Payload"]["status"] != "OK":
+            raise Declined()
+    except Exception:
+        release(held)
+        raise
+    return receipt["Payload"]
+```
 
 ## Errors
 
