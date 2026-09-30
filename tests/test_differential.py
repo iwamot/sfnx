@@ -912,9 +912,10 @@ def test_the_passes_keep_what_the_definition_does(data):
     """The passes give the definition the output or the error it had, call
     the same Tasks with the same arguments in the same order, and call each
     function that gives another value on each call no more often: one whose
-    value nothing reads is not called. The passes here neither drop nor
-    merge a Task; one that did would need the calls compared otherwise. The
-    inputs have every key, so no value the passes leave unevaluated would
+    value nothing reads is not called. The calls are compared per execution:
+    sharing the same Task state between alternative paths keeps them, while a
+    pass that dropped a call, or made one serve two on the same execution,
+    would need them compared otherwise. The inputs have every key, so no value the passes leave unevaluated would
     have failed, as the table of differences lists. Where such a function
     gives the next value of a sequence, a definition that calls it as often
     reads the same values in the same order."""
