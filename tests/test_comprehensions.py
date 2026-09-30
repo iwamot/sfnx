@@ -49,7 +49,10 @@ def run(body: str, execution_input: object) -> object:
         ),
         (
             'prices: dict = input["prices"]\nreturn [k for k in prices if prices[k] > 1]',
-            "[$filter($keys($prices), function($k) { $lookup($prices, $k) > 1 })]",
+            (
+                "[$filter($keys($prices), function($k) { ($v := $lookup($prices, $k); "
+                "$exists($v) ? $v : $error('prices[k] reads a missing key')) > 1 })]"
+            ),
         ),
         (
             'xs: list[str | None] = input["xs"]\nreturn [x + "!" for x in xs if x is not None]',

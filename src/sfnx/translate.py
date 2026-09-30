@@ -515,6 +515,9 @@ class Translator:
         # parameters of comprehensions and the variables of blocks, innermost
         # last. They are read as themselves, so nothing else may take them.
         self.inner: list[str] = []
+        # A comparison whose result a test takes for false where it is
+        # missing requires its operands instead (see compare()).
+        self.requiring = False
         # Whether the arguments of a .waitForTaskToken task are being
         # translated, and whether they read the task token.
         self.token_readable = False
@@ -1007,7 +1010,9 @@ class Translator:
             with self.parameters({variable: item}):
                 tests, narrowed = self.conditions(generator.ifs)
                 with self.narrowed(narrowed):
-                    element = self.truth(self.expr(argument.elt))
+                    element = self.truth(
+                        self.required(argument.elt, self.expr(argument.elt))
+                    )
             self.check_hiding({variable: generator.target}, [element, *tests])
             spelled = self.spelling(variable)
         else:
@@ -1254,19 +1259,49 @@ class Translator:
             return self.truth(value)
         return value
 
-    def condition(self, node: ast.expr) -> Expr:
+    def condition(self, node: ast.expr, statement: bool = False) -> Expr:
         """A JSON boolean for if, while and the tests inside expressions.
-        Comparisons and their and / or / not are used as they are."""
+        Comparisons and their and / or / not are used as they are. A value
+        that may be missing fails the test of a conditional expression or a
+        comprehension, which would take it for false; an if or a while fails
+        on it already, as a Choice's Condition fails on a missing result."""
         if isinstance(node, ast.BoolOp):
             return self.junction(node, self.operands(node, self.logical))
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-            return self.unary(node)
-        return self.truth(self.expr(node))
+            return self.unary(node, required=not statement)
+        if isinstance(node, ast.Compare) and not statement:
+            return self.truth(self.requiring_compare(node))
+        value = self.expr(node)
+        return self.truth(value if statement else self.required(node, value))
+
+    def requiring_compare(self, node: ast.Compare) -> Expr:
+        """A comparison a test would take for false where an operand is
+        missing, as and, or and a conditional expression do: its ordering
+        operators require their operands, so the missing key is named."""
+        self.requiring = True
+        try:
+            return self.compare(node)
+        finally:
+            self.requiring = False
+
+    def boolean_operand(self, node: ast.expr) -> Expr:
+        """An operand of and / or as a value: a comparison requires its
+        operands, as the test of the value would take a missing one for
+        false."""
+        if isinstance(node, ast.Compare):
+            return self.requiring_compare(node)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return self.unary(node, required=True)
+        return self.expr(node)
 
     def logical(self, node: ast.expr) -> Expr:
         """An operand of and, or and not, which JSONata casts with $boolean."""
         if isinstance(node, ast.BoolOp):
             return self.condition(node)
+        if isinstance(node, ast.Compare):
+            return self.requiring_compare(node)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return self.unary(node, required=True)
         return self.expr(node)
 
     def constant(self, node: ast.Constant) -> Expr:
@@ -1354,9 +1389,13 @@ class Translator:
             )
         return value
 
-    def unary(self, node: ast.UnaryOp) -> Expr:
+    def unary(self, node: ast.UnaryOp, required: bool = False) -> Expr:
+        """required: not is read where a test would take a missing result
+        for false, so a missing operand fails instead."""
         if isinstance(node.op, ast.Not):
             operand = self.logical(node.operand)
+            if required:
+                operand = self.required(node.operand, operand)
             if operand.type and operand.type.kind == ARRAY:
                 count = call("count", [operand], of(NUMBER))
                 return binary(count, "=", literal(0), COMPARE, of(BOOLEAN), True)
@@ -1543,11 +1582,18 @@ class Translator:
         return when, unless
 
     def boolean(self, node: ast.BoolOp) -> Expr:
-        values = self.operands(node, self.expr)
+        values = self.operands(node, self.boolean_operand)
         if all(v.boolean for v in values):
             return self.junction(node, values)
         # As a value, `a or b` is a when a is truthy and b otherwise, which
         # writes a twice.
+        values = [
+            *(
+                self.required(operand, value)
+                for operand, value in zip(node.values[:-1], values[:-1], strict=True)
+            ),
+            values[-1],
+        ]
         result = values[-1]
         for value in reversed(values[:-1]):
             given = value.type
@@ -1574,14 +1620,27 @@ class Translator:
         operator, precedence = (
             ("or", OR) if isinstance(node.op, ast.Or) else ("and", AND)
         )
-        result = self.cast(values[0])
-        for value in values[1:]:
+        # JSONata's and and or evaluate no more once the first side decides,
+        # so an operand is required only where it is evaluated.
+        required = [
+            self.required(operand, value)
+            for operand, value in zip(node.values, values, strict=True)
+        ]
+        result = self.cast(required[0])
+        for value in required[1:]:
             result = binary(
                 result, operator, self.cast(value), precedence, of(BOOLEAN), True
             )
         return result
 
     def compare(self, node: ast.Compare) -> Expr:
+        requiring, self.requiring = self.requiring, False
+        try:
+            return self.compared(node, requiring)
+        finally:
+            self.requiring = requiring
+
+    def compared(self, node: ast.Compare, requiring: bool) -> Expr:
         compared = self.datetimes_compared(node)
         left = compared(node.left)
         rights = []
@@ -1592,6 +1651,15 @@ class Translator:
                     rights.append(compared(right_node))
             else:
                 rights.append(compared(right_node))
+        if requiring and any(
+            isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)) for op in node.ops
+        ):
+            operands = [node.left, *node.comparators]
+            left = self.required(operands[0], left)
+            rights = [
+                self.required(operand, value)
+                for operand, value in zip(operands[1:], rights, strict=True)
+            ]
         return self.chain(node, 0, left, rights)
 
     def datetimes_compared(self, node: ast.Compare) -> Callable[[ast.expr], Expr]:
@@ -1684,10 +1752,19 @@ class Translator:
             symbol = COMPARISONS[type(operator)]
             return binary(left, symbol, right, COMPARE, boolean, True)
         if isinstance(operator, (ast.In, ast.NotIn)):
-            test = self.membership(left_node, left, right_node, right)
+            test = self.membership(
+                left_node,
+                self.required(left_node, left),
+                right_node,
+                self.required(right_node, right),
+            )
             if isinstance(operator, ast.NotIn):
                 return call("not", [test], boolean, boolean=True)
             return test
+        # is takes a missing value for None or for not True, where Python
+        # raises KeyError reading the key.
+        required = not left.defined
+        left = self.required(left_node, left)
         if isinstance(right_node, ast.Constant) and isinstance(right_node.value, bool):
             # = compares a boolean only with a boolean, as is does: 0 = false is
             # false. A missing value makes = false, so is not negates it rather
@@ -1701,6 +1778,10 @@ class Translator:
                 "is compares with None, True or False only; compare values with ==",
                 right_node,
             )
+        if required:
+            # A value required just now is there, so is None tests null.
+            symbol = "!=" if isinstance(operator, ast.IsNot) else "="
+            return binary(left, symbol, literal(None), COMPARE, boolean, True)
         # left is written twice: it exists, and is not null.
         with self.once([left]) as (bindings, (tested,)):
             present = binary(
@@ -1762,7 +1843,31 @@ class Translator:
                 test = block(right_bindings, test)
             if missing[0]:
                 test = self.present(left_node, left, test)
-        return block(left_bindings, test)
+        # Each operand that may be missing is tested before it is compared,
+        # so the comparison is never missing, and may fail.
+        return replace(block(left_bindings, test), defined=True, total=False)
+
+    def required(self, node: ast.expr, value: Expr) -> Expr:
+        """value where it is there. JSONata's tests, in, $exists, $type and
+        $boolean take a missing value for false where Python raises KeyError
+        reading the key, so where one of them would read a value that may be
+        missing, a missing one fails with $error. A path is written out
+        twice, and anything longer, or a value that changes on evaluation, is
+        bound and read once."""
+        if value.defined:
+            return value
+        failure = expression(
+            f"$error({string(ast.unparse(node) + ' reads a missing key')})",
+            defined=True,
+        )
+        bind = value.volatile or SIMPLE_PATH.fullmatch(value.code) is None
+        with self.once([value] if bind else [], always=True) as (bindings, bound):
+            present = bound[0] if bound else value
+            exists = call("exists", [present], of(BOOLEAN), boolean=True)
+            chosen = conditional(exists, present, failure, value.type)
+        return replace(
+            block(bindings, chosen), boolean=value.boolean, defined=True, total=False
+        )
 
     def present(self, node: ast.expr, value: Expr, test: Expr) -> Expr:
         """test where value exists; where it is missing, a failure, as Python
@@ -1792,6 +1897,12 @@ class Translator:
             kind = self.known(right_node, right, "list", "in depends on the container")
         if kind == ARRAY:
             return binary(left, "in", right, COMPARE, boolean, True)
+        if not right.total and not (left.total and not left.volatile):
+            # $lookup and $contains evaluate the container first, where
+            # Python evaluates the left operand first.
+            with self.once([left], [right], always=True) as (bindings, (bound,)):
+                test = self.membership(left_node, bound, right_node, right)
+            return block(bindings, test)
         if kind == OBJECT:
             if isinstance(left_node, ast.Constant) and isinstance(left_node.value, str):
                 return call("exists", [field(right, left_node.value)], boolean, True)
@@ -3486,7 +3597,7 @@ class Translator:
     def isinstance(self, node: ast.Call) -> Expr:
         if len(node.args) != 2:
             raise CompileError("isinstance takes a value and a class", node)
-        value = self.expr(node.args[0])
+        value = self.required(node.args[0], self.expr(node.args[0]))
         classes = node.args[1]
         items = classes.elts if isinstance(classes, ast.Tuple) else [classes]
         names: list[str] = []
