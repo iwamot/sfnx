@@ -557,7 +557,11 @@ def test_declarations_join_after_branches():
             "xs = [1]\nxs += [2]",
             "xs += extends the list in place, which other names for it see in Python; write xs = xs + [2]",
         ),
-        ('d = {"a": 1}\nd["a"] += 1', "assign one variable per statement"),
+        (
+            'd = {"a": 1}\nd["a"] += 1',
+            "a JSON value is a copy, so write d = {**d, 'a': d['a'] + 1}",
+        ),
+        ("input.a += 1", "assign one variable per statement"),
         ("t += 1", "t is not assigned here"),
         (
             "match input:\n    case 1:\n        pass",
