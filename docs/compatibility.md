@@ -1,18 +1,18 @@
 # Compatibility
 
-From 1.0, the version number of a release says what it can change for a project that compiles its workflows with sfnx. Before 1.0, a release may change anything below, and the release notes say so.
+The version number of a release says what it can change for a project that compiles its workflows with sfnx.
 
-## What 1.x keeps
+## What a major version keeps
 
-Within 1.x, no release:
+Within a major version, no release:
 
-- rejects a source an earlier 1.x release compiled, except as the table below allows;
+- rejects a source an earlier release of the same major version compiled, except as the table below allows;
 - changes what a definition computes, except as the table below allows. For every value, the result is the one [docs/language.md](language.md) gives: Python's, or the row that covers it in [Where results differ from Python](language.md#where-results-differ-from-python), the table of differences;
 - removes or renames a name a workflow module imports from `sfnx`, or an argument one takes, or changes what [docs/api.md](api.md) says of `CompileError`, `compile_file` and `compile_source`;
 - removes or renames a name of `sfnx.testing.__all__`, an argument of `run`, or a field of `Call`, `Execution` or `Wait`, or changes what [docs/testing.md](testing.md) says of them, apart from its list of where a local run differs;
 - removes a command or an option of the CLI, changes what an exit code means, or changes what the Stable column of [Output](../README.md#output) says.
 
-A change to any of these is a 2.0.
+A change to any of these takes the next major version.
 
 ## What a release can change
 
@@ -30,7 +30,7 @@ A change to any of these is a 2.0.
 | The compiler stops with an internal error (exit 3), or rejects what docs/language.md says it accepts | patch |
 | The expressions in a definition, the layout of its JSON, or the text of a message change, with the same results and the same states | any |
 
-A difference the table does not list is a bug: docs/language.md says an accepted spelling follows Python for the values that reach it, apart from the rows of the table. Fixing one changes what existing definitions compute, so it waits for a minor release and the release notes name it. A row of the table is part of the language, and changing one that gives a value is a 2.0.
+A difference the table does not list is a bug: docs/language.md says an accepted spelling follows Python for the values that reach it, apart from the rows of the table. Fixing one changes what existing definitions compute, so it waits for a minor release and the release notes name it. A row of the table is part of the language, and changing one that gives a value takes the next major version.
 
 State names are listed because a project may depend on them: execution histories and the mocks and tests that name a state read them, and a Standard execution is billed for each state it enters, so splitting or merging states changes the bill. This is about the same source compiling differently; editing a source still renames the states it touches, as [Output](../README.md#output) describes.
 
