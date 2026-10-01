@@ -9,7 +9,7 @@ import operator
 import re
 import symtable
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from importlib.util import decode_source
 from pathlib import Path
@@ -738,6 +738,10 @@ class Scope:
                 and isinstance(node.value.func, ast.Name)
             ):
                 self.translator.check_import(node.value.func)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+                advice = changing_call(node.value, self.parameters)
+                if advice is not None:
+                    raise CompileError(advice, node)
             name = type(node).__name__
             raise CompileError(
                 STATEMENTS.get(name, f"{name} statements are not supported"), node
@@ -3144,6 +3148,105 @@ STATEMENTS = {
     "Expr": "a value on a line of its own does nothing in a state machine; assign "
     "it or remove the line",
 }
+
+# The methods that change a list or a dict in place, by the values that have
+# them.
+LIST_CHANGES = frozenset({"append", "extend", "insert", "remove", "sort", "reverse"})
+DICT_CHANGES = frozenset({"update", "setdefault", "popitem"})
+BOTH_CHANGES = frozenset({"pop", "clear"})
+
+
+def changing_call(call: ast.Call, parameters: Iterable[str]) -> str | None:
+    """What to write for a call on a line of its own that changes a list or a
+    dict in place, or for print(); None for any other call. The rewrite names
+    the receiver only where it is a name, and for the execution input, which
+    cannot be assigned, a name of its own: the new value is then read there."""
+    if isinstance(call.func, ast.Name) and call.func.id == "print":
+        return "print() has nothing to write to in a state machine; remove the line"
+    if not isinstance(call.func, ast.Attribute):
+        return None
+    method = call.func.attr
+    if method in LIST_CHANGES:
+        kind = "a list"
+    elif method in DICT_CHANGES:
+        kind = "a dict"
+    elif method in BOTH_CHANGES:
+        kind = "a list or a dict"
+    else:
+        return None
+    receiver = call.func.value
+    held = ast.unparse(receiver)
+    shown = f"{held}.{method}() is not supported; {kind} is a value here, so"
+    value = new_value(method, held, call)
+    if isinstance(receiver, ast.Name) and receiver.id not in parameters:
+        if value is None:
+            return f"{shown} build the new value and assign it to {held}"
+        return f"{shown} write {held} = {value}"
+    name = "items" if kind == "a list" else "data"
+    if value is None:
+        return (
+            f"{shown} build the new value, assign it to another name, such as "
+            f"{name}, and read that name from then on"
+        )
+    return f"{shown} write {name} = {value} and read {name} from then on"
+
+
+def new_value(method: str, held: str, call: ast.Call) -> str | None:
+    """The value a change in place leaves, written as a new one, where one
+    spelling writes it."""
+    args = [ast.unparse(a) for a in call.args]
+    if any(isinstance(a, ast.Starred) for a in call.args):
+        return None
+    keywords = [k for k in call.keywords if k.arg is not None]
+    if len(keywords) != len(call.keywords):
+        return None
+    if method == "append" and len(args) == 1 and not keywords:
+        return f"{held} + [{args[0]}]"
+    if method == "extend" and len(args) == 1 and not keywords:
+        return f"{held} + {args[0]}"
+    if (
+        method == "insert"
+        and len(args) == 2
+        and not keywords
+        and isinstance(call.args[0], (ast.Constant, ast.Name))
+    ):
+        # The position is written twice, so only one that reads the same
+        # each time.
+        i, x = args
+        return f"{held}[:{i}] + [{x}] + {held}[{i}:]"
+    if (
+        method == "sort"
+        and not args
+        and all(
+            (k.arg == "key" and isinstance(k.value, ast.Lambda))
+            or (
+                k.arg == "reverse"
+                and isinstance(k.value, ast.Constant)
+                and isinstance(k.value.value, bool)
+            )
+            for k in keywords
+        )
+    ):
+        # sorted() takes a lambda for key= and True or False for reverse=.
+        return f"sorted({', '.join([held, *map(ast.unparse, keywords)])})"
+    if method == "reverse" and not args and not keywords:
+        return f"list(reversed({held}))"
+    if method == "update" and not args and keywords:
+        entries = ", ".join(f"{k.arg!r}: {ast.unparse(k.value)}" for k in keywords)
+        return f"{{**{held}, {entries}}}"
+    if method == "update" and len(args) == 1 and not keywords:
+        given = call.args[0]
+        if (
+            isinstance(given, ast.Dict)
+            and given.keys
+            and all(
+                isinstance(k, ast.Constant) and isinstance(k.value, str)
+                for k in given.keys
+            )
+        ):
+            return f"{{**{held}, {args[0][1:-1]}}}"
+    return None
+
 
 LABEL_FORBIDDEN = set(' ?*<>{}[]:;,\\|^~$#%&`"')
 
