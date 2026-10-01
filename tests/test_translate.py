@@ -429,7 +429,7 @@ def test_inferred_types_flow_through_variables():
             f"$count($lookup($x, {INPUT}.k))",
         ),
         ("list[str] | list[float]", "return x[0] + 1", None),
-        ("None", "return x is None", "$not($exists($x) and $x != null)"),
+        ("None", "return x is None", "$x = null"),
         ("int", "return x + input['y']", f"$x + {INPUT}.y"),
     ],
 )
@@ -2059,11 +2059,11 @@ def changing_definition(body: str) -> dict:
         ("return random.random() and a", "($v := $random(); $boolean($v) ? $a : $v)"),
         (
             "return str(uuid.uuid4()) is not None",
-            "($v := $uuid(); $exists($v) and $v != null)",
+            "$uuid() != null",
         ),
         (
             "return str(uuid.uuid4()) is None",
-            "$not(($v := $uuid(); $exists($v) and $v != null))",
+            "$uuid() = null",
         ),
         (
             'd: dict = input["d"]\nreturn d.get(str(uuid.uuid4()), a)',

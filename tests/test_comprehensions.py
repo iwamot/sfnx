@@ -56,7 +56,7 @@ def run(body: str, execution_input: object) -> object:
         ),
         (
             'xs: list[str | None] = input["xs"]\nreturn [x + "!" for x in xs if x is not None]',
-            "[$map($filter($xs, function($x) { $exists($x) and $x != null }), function($x) { $x & '!' })]",
+            "[$map($filter($xs, function($x) { $x != null }), function($x) { $x & '!' })]",
         ),
         (
             'x = 5\nxs: list = input["xs"]\nreturn [[x, y] for y in xs]',
