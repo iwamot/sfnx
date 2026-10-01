@@ -397,8 +397,10 @@ class Scope:
     def spelling(self, name: str) -> str:
         return spelling(name, self.module.spellings)
 
-    def variable(self, name: str, type: Type | None) -> Expr:
-        return variable(name, self.module.spellings, type)
+    def variable(self, name: str, type: Type | None, boolean: bool = False) -> Expr:
+        """A variable as read, which holds a boolean for sure where every
+        value assigned it that reaches the read is one."""
+        return replace(variable(name, self.module.spellings, type), boolean=boolean)
 
     def add(
         self,
@@ -1222,7 +1224,7 @@ class Scope:
             # one.
             if declared is not None:
                 self.declared[name] = declared
-            self.bindings[name] = self.variable(name, known)
+            self.bindings[name] = self.variable(name, known, bound.boolean)
             return
         if call is not None:
             # The state's own Assign takes its result. A Catch leaves with the
@@ -1283,7 +1285,7 @@ class Scope:
             self.caught[name] = self.read_as(value_node, substituted)
         self.defer(name, value, target, self.here(), folded)
         self.hold_remark()
-        self.bindings[name] = self.variable(name, known)
+        self.bindings[name] = self.variable(name, known, value.boolean)
         self.partial.discard(name)
 
     def unpack(self, target: ast.Tuple, value_node: ast.expr) -> None:
@@ -2482,7 +2484,8 @@ class Scope:
             declared = first.type
             for path in reaching[1:]:
                 declared = union(declared, path.bindings[name].type)
-            bindings[name] = replace(first, type=declared)
+            boolean = all(path.bindings[name].boolean for path in reaching)
+            bindings[name] = replace(first, type=declared, boolean=boolean)
         declared_types: dict[str, Type] = {}
         for name in sorted(set().union(*(set(p.declared) for p in reaching))):
             kinds = [p.declared[name] for p in reaching if name in p.declared]
@@ -2591,6 +2594,10 @@ class Scope:
         attempts = 0
         while True:
             saved = self.checkpoint()
+            # A way back to the head may bring another value than a boolean,
+            # so what the body assigns is not one for sure there.
+            for name in assigned_names(body) & self.bindings.keys():
+                self.bindings[name] = replace(self.bindings[name], boolean=False)
             for name, declared in widened.items():
                 # A range variable is bound inside the attempt, always a number.
                 if name in self.bindings:
