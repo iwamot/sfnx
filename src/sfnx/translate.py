@@ -474,6 +474,19 @@ VARIABLE = re.compile(r"\$([^\W\d]\w*)")
 SIMPLE_PATH = re.compile(r"\$[^\W\d]\w*(?:\.[^\W\d]\w*)*")
 
 
+def missing(node: ast.expr) -> str:
+    """The message of a value that is missing where it is read: a key read
+    on the way to it, or what a jsonata() expression, which reads no key of
+    its own, gives none of."""
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "jsonata"
+    ):
+        return f"{ast.unparse(node)} gives no value"
+    return f"{ast.unparse(node)} reads a missing key"
+
+
 class Translator:
     """Translate expressions against the variables bound where they appear.
 
@@ -1842,7 +1855,7 @@ class Translator:
         if value.defined:
             return value
         failure = expression(
-            f"$error({string(ast.unparse(node) + ' reads a missing key')})",
+            f"$error({string(missing(node))})",
             defined=True,
         )
         bind = value.volatile or SIMPLE_PATH.fullmatch(value.code) is None
@@ -1859,7 +1872,7 @@ class Translator:
         raises KeyError reading the key."""
         boolean = of(BOOLEAN)
         failure = expression(
-            f"$error({string(ast.unparse(node) + ' reads a missing key')})",
+            f"$error({string(missing(node))})",
             boolean=True,
             defined=True,
         )
