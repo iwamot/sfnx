@@ -235,6 +235,29 @@ def test_a_return_after_a_wait_reads_what_the_wait_assigns():
     }
 
 
+@pytest.mark.parametrize(
+    "test, cause",
+    [
+        (
+            """input["a"] == 1 and jsonata("$lookup($d, 'k')", d=input["d"])""",
+            """jsonata("$lookup($d, 'k')", d=input['d']) gives no value""",
+        ),
+        ('input["a"] == 1 and input["d"]["k"]', "input['d']['k'] reads a missing key"),
+    ],
+)
+def test_a_missing_value_a_test_reads_fails_naming_it(test, cause):
+    """jsonata() reads no key of its own, so where it gives nothing the
+    message says so, and a key read says which key is missing."""
+    body = f"if {test}:\n    return 1\nreturn 2"
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    with pytest.raises(asl.Failure) as failure:
+        asl.run(compiled, {"a": 1, "d": {}})
+    assert (failure.value.error, failure.value.cause) == (
+        "States.QueryEvaluationError",
+        cause,
+    )
+
+
 def test_a_return_whose_jsonata_cannot_be_read_is_left_as_it_is():
     """Text the parser cannot read, such as JSONata newer than it knows, may
     bind or spell any name, so nothing is written into it."""
