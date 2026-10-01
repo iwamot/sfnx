@@ -22,6 +22,7 @@ NAMES = [
     "hello_world",
     "coding_agent",
     "import_rows",
+    "nightly_etl",
 ]
 
 
@@ -501,3 +502,77 @@ def test_import_rows_notifies_and_fails_past_five_percent():
         calls["publish"]["Message"] == "2026-10-01.csv: more than 5% of the rows failed"
     )
     assert "counts" not in calls
+
+
+DAY = {"day": "2026-09-30"}
+QUERY = {"QueryExecution": {"QueryExecutionId": "q1"}}
+COUNTED = {
+    "ResultSet": {
+        "Rows": [
+            {"Data": [{"VarCharValue": "_col0"}]},
+            {"Data": [{"VarCharValue": "42"}]},
+        ]
+    }
+}
+
+
+def job_runs(*outcomes: str) -> Callable[[object], object]:
+    """One Glue job run per call: "ok" succeeds, anything else fails with it
+    as the cause."""
+    remaining = iter(outcomes)
+
+    def run(arguments: object) -> object:
+        outcome = next(remaining)
+        if outcome != "ok":
+            raise asl.Failure("States.TaskFailed", outcome)
+        return {"JobRunState": "SUCCEEDED"}
+
+    return run
+
+
+def etl(*outcomes: str) -> Tasks:
+    return Tasks(
+        startJobRun=job_runs(*outcomes),
+        invoke=constant({"StatusCode": 200}),
+        query=constant(QUERY),
+        rows=constant(COUNTED),
+    )
+
+
+def test_nightly_etl_counts_the_rows_of_the_day():
+    tasks = etl("ok")
+    assert asl.run(definition("nightly_etl"), DAY, tasks) == {
+        "day": "2026-09-30",
+        "rows": 42,
+    }
+    calls = dict(tasks.calls)
+    assert calls["startJobRun"] == {
+        "JobName": "nightly-etl",
+        "Arguments": {"--day": "2026-09-30"},
+    }
+    assert calls["query"]["ExecutionParameters"] == ["'2026-09-30'"]
+    assert calls["rows"] == {"QueryExecutionId": "q1"}
+    assert "invoke" not in calls
+
+
+def test_nightly_etl_retries_a_failed_job_run_without_posting():
+    tasks = etl("out of memory", "ok")
+    assert asl.run(definition("nightly_etl"), DAY, tasks)["rows"] == 42
+    assert [name for name, _ in tasks.calls[:2]] == ["startJobRun"] * 2
+    assert "invoke" not in dict(tasks.calls)
+
+
+def test_nightly_etl_posts_to_slack_and_fails_when_the_job_fails_for_good():
+    tasks = etl("out of memory", "out of memory", "disk full")
+    with pytest.raises(asl.Failure) as failure:
+        asl.run(definition("nightly_etl"), DAY, tasks)
+    assert (failure.value.error, failure.value.cause) == (
+        "States.TaskFailed",
+        "disk full",
+    )
+    assert [name for name, _ in tasks.calls] == ["startJobRun"] * 3 + ["invoke"]
+    posted = dict(tasks.calls)["invoke"]
+    assert posted["RequestBody"] == {
+        "channel": "#etl",
+        "text": "nightly-etl failed for 2026-09-30: disk full",
+    }

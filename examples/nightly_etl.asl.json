@@ -1,0 +1,94 @@
+{
+  "Comment": "Run the nightly Glue job, then count the rows it wrote with Athena; if the job fails for good, try to post to Slack, then fail.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "day",
+  "States": {
+    "day": {
+      "Type": "Pass",
+      "Assign": {
+        "day": "{% $states.context.Execution.Input.day %}"
+      },
+      "Next": "startJobRun"
+    },
+    "startJobRun": {
+      "Type": "Task",
+      "Comment": ".sync waits for the job run to finish and fails the Task if it fails.",
+      "Resource": "arn:aws:states:::glue:startJobRun.sync",
+      "Arguments": {
+        "JobName": "nightly-etl",
+        "Arguments": {
+          "--day": "{% $day %}"
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.TaskFailed"
+          ],
+          "MaxAttempts": 2,
+          "IntervalSeconds": 60
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Assign": {
+            "e": "{% $states.errorOutput %}"
+          },
+          "Next": "invoke"
+        }
+      ],
+      "Next": "query"
+    },
+    "invoke": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::http:invoke",
+      "Arguments": {
+        "ApiEndpoint": "https://slack.com/api/chat.postMessage",
+        "Method": "POST",
+        "Authentication": {
+          "ConnectionArn": "arn:aws:events:us-east-1:123456789012:connection/slack/0a1b2c3d"
+        },
+        "RequestBody": {
+          "channel": "#etl",
+          "text": "{% 'nightly-etl failed for ' & $day & ': ' & $e.Cause %}"
+        }
+      },
+      "Next": "raise"
+    },
+    "raise": {
+      "Type": "Fail",
+      "Error": "{% $e.Error %}",
+      "Cause": "{% $e.Cause %}"
+    },
+    "query": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:startQueryExecution.sync",
+      "Arguments": {
+        "QueryString": "SELECT count(*) FROM sales WHERE day = ?",
+        "ExecutionParameters": [
+          "{% \"'\" & $day & \"'\" %}"
+        ],
+        "WorkGroup": "primary"
+      },
+      "Assign": {
+        "query": "{% $states.result %}"
+      },
+      "Next": "rows"
+    },
+    "rows": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::athena:getQueryResults",
+      "Arguments": {
+        "QueryExecutionId": "{% $query.QueryExecution.QueryExecutionId %}"
+      },
+      "Output": {
+        "day": "{% $day %}",
+        "rows": "{% ($v := $number($states.result.ResultSet.Rows[1].Data[0].VarCharValue); $v < 0 ? $ceil($v) : $floor($v)) %}"
+      },
+      "End": true
+    }
+  }
+}
