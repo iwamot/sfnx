@@ -180,7 +180,7 @@ Reading it against the source:
 - The DynamoDB call is the Task `updateItem`: `retry=` is its `Retry`, the `except` its `Catch`, which leads to the Fail `raise`, and its `Assign` moves the counter on.
 - The `return` is the `Output` of the last Task, `receipt`, which ends the machine ([Which states a function makes](https://github.com/iwamot/sfnx/blob/main/docs/language.md#which-states-a-function-makes)).
 
-[examples/](https://github.com/iwamot/sfnx/blob/main/examples/README.md) has more patterns, each with the definition it compiles to: polling a job, waiting for a person's approval, fanning out over items, and an expression written out in JSONata.
+[examples/](https://github.com/iwamot/sfnx/blob/main/examples/README.md) has more patterns, each with the definition it compiles to: polling a job, waiting for a person's approval, fanning out over items, importing a CSV file with a distributed map, and an expression written out in JSONata.
 
 ## Why
 
