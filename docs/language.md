@@ -170,7 +170,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c`. An operand of `==` or `!=` that may be missing is tested first (see [a missing key](#a-missing-key)): `$exists(x) ? x = 'OK' : $error("input['k'] reads a missing key")` |
 | `x is None`, `x is not None` | `$x = null`, `$x != null`; a key read with `d["k"]` fails where it is missing and is compared with `null` once it is there |
 | `x is True`, `x is not False` ... | `$x = true`, `$not($x = false)`: `=` compares a boolean only with a boolean, as `is` does (`0 = false` is false), and a missing `x`, as `d.get("k")` never gives, is not `False` |
-| `if x:`, `bool(x)` | the truth of a value: `$count($x) > 0` for a list, `$boolean($x)` where it cannot be one, and `$type($x) = 'array' ? $count($x) > 0 : $boolean($x)` where the type is unknown, since `$boolean` reads `[0]` as false where Python reads it as true |
+| `if x:`, `bool(x)` | the truth of a value: the value itself where it is a boolean for sure, as a comparison is, and a variable every value assigned it that reaches the test is, `$count($x) > 0` for a list, `$boolean($x)` where it cannot be one, and `$type($x) = 'array' ? $count($x) > 0 : $boolean($x)` where the type is unknown, since `$boolean` reads `[0]` as false where Python reads it as true |
 | `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b`, each operand read for its truth |
 | `a or b` as a value | the truth of `a`, then `a` or `b`: `$boolean($a) ? $a : $b` for a value that cannot be a list |
 | `not x` | `$count($x) = 0` for a list, and `$not($x)` otherwise, with `x` read for its truth |

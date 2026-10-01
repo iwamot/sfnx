@@ -1100,6 +1100,47 @@ def test_a_start_folded_into_a_choice_binds_a_long_value_it_reads_again():
     assert asl.run(compiled, {"packet": {}}) == ""
 
 
+# A variable assigned a comparison holds a boolean for sure, so its test
+# reads it as it is, where every value that reaches the test is one: not
+# after a branch that assigns another value, nor at the head of a loop whose
+# body assigns it again.
+@pytest.mark.parametrize(
+    "body, wrapped",
+    [
+        ('ok = input["a"] > 1\nif ok:\n    return 1\nreturn 2', False),
+        (
+            (
+                'if input["c"] > 0:\n    ok = input["a"] > 1\nelse:\n    ok = input["b"] < 2\n'
+                "if ok:\n    return 1\nreturn 2"
+            ),
+            False,
+        ),
+        (
+            (
+                'if input["c"] > 0:\n    ok = input["a"] > 1\nelse:\n    ok = input["b"]\n'
+                "if ok:\n    return 1\nreturn 2"
+            ),
+            True,
+        ),
+        (
+            (
+                'ok = input["a"] > 1\nwhile True:\n    if ok:\n        return 1\n'
+                '    ok = input["b"]\n    wait(1)'
+            ),
+            True,
+        ),
+    ],
+)
+def test_a_variable_that_holds_a_boolean_is_tested_as_it_is(body, wrapped):
+    conditions = [
+        rule["Condition"]
+        for state in definition(body)["States"].values()
+        for rule in state.get("Choices", [])
+    ]
+    tested = conditions[-1]
+    assert ("$boolean(" in tested) is wrapped
+
+
 def test_a_start_the_values_written_before_it_decide_is_a_pass():
     """o0 is None where the definition starts, so the Choice the start
     values went into tests nothing: it is the Pass of the rule it takes,
