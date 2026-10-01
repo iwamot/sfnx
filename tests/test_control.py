@@ -235,27 +235,90 @@ def test_a_return_after_a_wait_reads_what_the_wait_assigns():
     }
 
 
-@pytest.mark.parametrize(
-    "test, cause",
-    [
-        (
-            """input["a"] == 1 and jsonata("$lookup($d, 'k')", d=input["d"])""",
-            """jsonata("$lookup($d, 'k')", d=input['d']) gives no value""",
-        ),
-        ('input["a"] == 1 and input["d"]["k"]', "input['d']['k'] reads a missing key"),
-    ],
-)
-def test_a_missing_value_a_test_reads_fails_naming_it(test, cause):
-    """jsonata() reads no key of its own, so where it gives nothing the
-    message says so, and a key read says which key is missing."""
-    body = f"if {test}:\n    return 1\nreturn 2"
-    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+def test_a_missing_key_a_test_reads_fails_naming_it():
+    body = 'if input["a"] == 1 and input["d"]["k"]:\n    return 1\nreturn 2'
     with pytest.raises(asl.Failure) as failure:
-        asl.run(compiled, {"a": 1, "d": {}})
+        asl.run(definition(body), {"a": 1, "d": {}})
     assert (failure.value.error, failure.value.cause) == (
         "States.QueryEvaluationError",
-        cause,
+        "input['d']['k'] reads a missing key",
     )
+
+
+DIGITS = 'jsonata("$contains($s, /^[0-9]+$/)", s=input["s"])'
+MATCHES = 'jsonata("/^[0-9]+$/($s)", s=input["s"])'
+
+
+# A test reads a jsonata() expression as written, as a hand-writer writes a
+# JSONata test into a Condition: and / or cast it, and a whole test or not
+# takes the boolean the writer's expression gives.
+@pytest.mark.parametrize(
+    "test, condition",
+    [
+        (
+            DIGITS,
+            "($s := $states.context.Execution.Input.s; $contains($s, /^[0-9]+$/))",
+        ),
+        (
+            f"not {DIGITS}",
+            "$not(($s := $states.context.Execution.Input.s; $contains($s, /^[0-9]+$/)))",
+        ),
+        (
+            f'input["a"] == 1 and {MATCHES}',
+            " and ($s := $states.context.Execution.Input.s; /^[0-9]+$/($s))",
+        ),
+    ],
+)
+def test_a_test_reads_a_jsonata_expression_as_written(test, condition):
+    body = f"if {test}:\n    return 1\nreturn 2"
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    (choice,) = [s for s in compiled["States"].values() if s["Type"] == "Choice"]
+    # The expression is the whole test, or the last operand of and, as is.
+    assert choice["Choices"][0]["Condition"].endswith(condition + " %}")
+    yes, no = (2, 1) if test.startswith("not") else (1, 2)
+    assert asl.run(compiled, {"a": 1, "s": "123"}) == yes
+    # A regular expression that does not match gives nothing, which and takes
+    # for false.
+    assert asl.run(compiled, {"a": 1, "s": "abc"}) == no
+
+
+def test_a_jsonata_test_inside_another_if_joins_its_choice():
+    """`if a:` with `if jsonata(...):` inside it is one Choice, as a
+    hand-writer lists both tests in one, the jsonata() expression as
+    written."""
+    body = (
+        'a: bool = input["a"]\nif a:\n'
+        f"    if {DIGITS}:\n        return 1\n    return 2\nreturn 3"
+    )
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    choices = [s for s in compiled["States"].values() if s["Type"] == "Choice"]
+    assert len(choices) == 1
+    assert choices[0]["Choices"][0]["Condition"].endswith(
+        " and ($s := $states.context.Execution.Input.s; $contains($s, /^[0-9]+$/)) %}"
+    )
+    assert asl.run(compiled, {"a": True, "s": "123"}) == 1
+    assert asl.run(compiled, {"a": True, "s": "abc"}) == 2
+    assert asl.run(compiled, {"a": False, "s": "123"}) == 3
+
+
+IS_MAC = "\"/^[0-9a-fA-F]{12}$/i($replace($s, /-|:|\\\\s/, ''))\""
+
+
+def test_a_regular_expression_in_and_chooses_the_way_its_match_decides():
+    """The test radius-auth chooses MAC authentication with: a user name
+    and password alike that is no MAC address goes on to the next test."""
+    body = (
+        'user_name: str = input["u"]\nuser_password: str = input["p"]\n'
+        "if user_password and user_name == user_password and "
+        f"jsonata({IS_MAC}, s=user_name):\n"
+        '    return "mac"\nif user_password:\n    return "pap"\nreturn "chap"'
+    )
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    assert (
+        asl.run(compiled, {"u": "aa-bb-cc-dd-ee-ff", "p": "aa-bb-cc-dd-ee-ff"}) == "mac"
+    )
+    assert asl.run(compiled, {"u": "alice", "p": "alice"}) == "pap"
+    assert asl.run(compiled, {"u": "alice", "p": ""}) == "chap"
 
 
 def test_a_return_whose_jsonata_cannot_be_read_is_left_as_it_is():
