@@ -314,7 +314,7 @@ With `--source-locations`, the last line of each state's `Comment` starts with `
 
 The message text, including `; <what to write instead>`, is prose and may change between releases. So may state names when the source changes above them in the same scope (serial numbers such as `amount_2`).
 
-Before 1.0, the definition compiled from the same source, and what the language accepts, may change between releases; the release notes say so. [docs/compatibility.md](https://github.com/iwamot/sfnx/blob/main/docs/compatibility.md) says what each release can change from 1.0.
+[docs/compatibility.md](https://github.com/iwamot/sfnx/blob/main/docs/compatibility.md) says what a release can change of the definition compiled from the same source and of what the language accepts, by its version number.
 
 ## Development
 
