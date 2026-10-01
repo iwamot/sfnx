@@ -55,7 +55,7 @@ Each property below lists what supports it, what those checks cannot show, and w
 - **Rests on**:
   - The corpus cases of the `catch`, `retry` and `choice` categories (every run, and on request in Step Functions): what a catcher reads, that a failing `Assign` assigns nothing, that a retry of a Map evaluates its `Items` again, and which `Assign` a Choice applies.
   - The measurements of `State.RetryCount` and `State.EnteredTime` (recorded).
-- **Limits**: `sfnx.testing` gives `State.EnteredTime`, `Task.Token` and the other placeholders of the Context Object the same value on every run, so a local test cannot tell reads of them apart; what depends on them rests on the recorded measurements.
+- **Limits**: `sfnx.testing` gives `State.EnteredTime`, `Task.Token` and the other placeholders of the Context Object one value throughout a run, every state entered at the start time, so a local test cannot tell reads of them apart; what depends on them rests on the recorded measurements.
 - **Specified in**: [States](design.md#states).
 
 ### Parallel and Map

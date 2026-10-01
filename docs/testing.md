@@ -64,7 +64,7 @@ Compiling in the test keeps it in step with the source. A definition from elsewh
 ## The API
 
 ```python
-run(definition, execution_input, tasks=None, *, functions=None, on_wait=None) -> Execution
+run(definition, execution_input, tasks=None, *, functions=None, on_wait=None, start_time="2026-01-01T00:00:00.000Z") -> Execution
 ```
 
 - **`definition`**: the definition as a dict. `${Name}` placeholders stay as written, and the tasks function sees them in `Resource` and `Arguments`.
@@ -72,6 +72,7 @@ run(definition, execution_input, tasks=None, *, functions=None, on_wait=None) ->
 - **`tasks`**: a function called with a `Call` for each Task, and for each Map that reads its items through an `ItemReader`. It returns the result of the Task (for the `ItemReader`, the items read), or raises `Failure(error, cause)` to fail it, which the definition's Retry and Catch then handle. Any other exception it raises ends the run and reaches the test as it is. A definition that calls something while `tasks` is `None` raises `ValueError`.
 - **`functions`**: JSONata functions replaced by name, without the `$`, for results that change on every run: `functions={"uuid": lambda: "u1", "now": lambda picture=None: "2026-01-01T00:00:00.000Z"}`. The replacements hold for that run only.
 - **`on_wait`**: a function called with a `Wait` for each Wait state, in branches and iterations too, once it has read what it waits for and before its `Assign` and `Output`. Nothing waits: the run goes on at once. A Wait that cannot read its `Seconds` or `Timestamp` fails without a call. Any exception the function raises ends the run and reaches the test as it is. With `functions`, it can move a clock on at each wait, as `wait(0)` too, so a test sees which reads of the time come after it.
+- **`start_time`**: the time the execution starts, as Step Functions writes it, such as `"2026-03-31T15:30:00.000Z"`. It is the Context Object's `Execution.StartTime`, and the `State.EnteredTime` of every state, as time does not pass. It is taken as it is, unchecked: an expression that reads a value that is not such a time as a time may fail, with no promise of which error. It does not move `$now()` or `$millis()`, which read the clock of the machine running the test unless `functions` replaces them, so a test that reads both replaces them too, with times that agree.
 
 A `Call` has `state` (the name of the state), `resource` (its `Resource` as written) and `arguments` (its `Arguments` evaluated, or `None` without any). A `Wait` has `state`, and `seconds` (a whole number) or `timestamp` (the text), as evaluated, the other `None`. Tell calls apart by `resource` and `arguments` rather than by `state`: sfnx derives state names from the source, so editing the source, or a minor release, can rename them ([compatibility.md](compatibility.md)).
 
@@ -97,11 +98,23 @@ Every state type, with the fields it has in JSONata mode:
 
 `Comment`, `MaxConcurrency`, `Credentials`, the timing fields of a retrier, and the timeouts of a Task are read and have nothing to do in a local run. A field outside these raises `Unsupported`, the fields of JSONPath mode (`Parameters`, `ResultPath`, `InputPath`, ...) among them.
 
-The Context Object reads as in Step Functions, with fixed placeholder values: `Execution.Id`, `Execution.Name`, `Execution.StartTime`, `State.EnteredTime` and `Task.Token` are the same on every run, and `Execution.Input` is the input given.
+The Context Object has the fields it has in Step Functions, with `Execution.Input` the input given and placeholder values that do not change within a run and, but for `start_time`, are the same on every run (see [where a local run differs](#where-a-local-run-differs)):
+
+| Field | Value |
+|---|---|
+| `Execution.Id` | `arn:aws:states:us-east-1:123456789012:execution:machine:execution` |
+| `Execution.Name` | `execution` |
+| `Execution.RoleArn` | `arn:aws:iam::123456789012:role/machine` |
+| `Execution.StartTime`, `State.EnteredTime` | `start_time`, by default `2026-01-01T00:00:00.000Z` |
+| `Execution.RedriveCount` | `0` |
+| `StateMachine.Id` | `arn:aws:states:us-east-1:123456789012:stateMachine:machine` |
+| `StateMachine.Name` | `machine` |
+| `Task.Token` | `token`, in a `.waitForTaskToken`, `.sync` or `.sync:2` Task only |
 
 ## Where a local run differs
 
 - **Time does not pass.** A Wait returns at once, a Retry does not wait between attempts, and `TimeoutSeconds` and `HeartbeatSeconds` never fire on their own; a tasks function raises `Failure("States.Timeout")` to take that path.
+- **Some Context Object fields are not Step Functions'.** A child execution of a distributed Map reads the parent's `Execution.Id`, `Execution.Name` and `StateMachine.Id`, where in Step Functions it has its own, and `Execution.RedriveCount` is `0`, where an Express execution has none (measured).
 - **One thing at a time.** The branches of a Parallel and the iterations of a Map run one after another, in order, whatever `MaxConcurrency` says, so `calls` has that order.
 - **Items come from the tasks function.** An `ItemReader` is a call, and its `ReaderConfig` (such as `MaxItems`) is not applied to what the function returns. An `ItemBatcher` cuts batches by `MaxItemsPerBatch` only; `MaxInputBytesPerBatch` is not measured. A `ResultWriter` writes nothing, and the Map's result is a placeholder `MapRunArn` with the key of the manifest Step Functions would write.
 - **The JSONata is jsonata-python's.** The functions Step Functions adds (`$parse`, `$uuid`, `$hash`, `$partition`, ...) are there, and so are the behaviors [design.md](design.md#jsonata-in-step-functions) records as measured where jsonata-python differs, such as `$decodeUrlComponent` reading `+` as a space, `$string` writing JSON text with the numbers and escapes Step Functions writes, and `$formatNumber` rounding half to even for the pictures sfnx writes (other pictures round as jsonata-python does). Some measured differences remain: `$substring` counts a negative start in code points where Step Functions counts UTF-16 units; `\s` in a regular expression matches spaces outside ASCII here but only ASCII whitespace in Step Functions; `$sort` may reorder items its function calls equal, which Step Functions keeps in order; `$parse` accepts `NaN` and rejects single quotes, where Step Functions does the opposite; `$random(seed)` gives the same number for the same seed, but not the number Step Functions gives; `$filter` that keeps one item that is an array gives it here as a one-item array, where Step Functions gives the array itself, so `$map` and `$reduce` there iterate its items unless a `[]` follows, as sfnx writes it; `$string` writes the least double as `5e-324` here and as `4.9e-324` in Step Functions. Others may remain.
@@ -112,4 +125,4 @@ A test that passes locally shows the control flow of the definition against the 
 
 ## What is public
 
-`run`, `Call`, `Execution`, `Failure`, `Unsupported`, `InvalidDefinition` and `Tasks` (the type of a tasks function) are the API, and `sfnx.testing.__all__` lists them; [compatibility.md](compatibility.md) says what a release can change of them. The module's other names are its own and change without notice.
+`run`, `Call`, `Execution`, `Wait`, `Failure`, `Unsupported`, `InvalidDefinition` and `Tasks` (the type of a tasks function) are the API, and `sfnx.testing.__all__` lists them; [compatibility.md](compatibility.md) says what a release can change of them. The module's other names are its own and change without notice.

@@ -328,6 +328,80 @@ def test_the_context_object():
         assert asl.run(machine(task), {}, {"s": lambda read: read}) is token
 
 
+def test_the_public_names_docs_testing_lists():
+    assert sorted(testing.__all__) == sorted(
+        [
+            "run",
+            "Call",
+            "Execution",
+            "Wait",
+            "Failure",
+            "Unsupported",
+            "InvalidDefinition",
+            "Tasks",
+        ]
+    )
+
+
+def test_the_placeholder_values_docs_testing_lists():
+    task = {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+        "Arguments": "{% $states.context %}",
+        "End": True,
+    }
+    execution = testing.run(machine(task), {"a": 1}, lambda call: call.arguments)
+    assert execution.output == {
+        "Execution": {
+            "Id": "arn:aws:states:us-east-1:123456789012:execution:machine:execution",
+            "Input": {"a": 1},
+            "Name": "execution",
+            "RoleArn": "arn:aws:iam::123456789012:role/machine",
+            "StartTime": "2026-01-01T00:00:00.000Z",
+            "RedriveCount": 0,
+        },
+        "StateMachine": {
+            "Id": "arn:aws:states:us-east-1:123456789012:stateMachine:machine",
+            "Name": "machine",
+        },
+        "State": {
+            "EnteredTime": "2026-01-01T00:00:00.000Z",
+            "Name": "s",
+            "RetryCount": 0,
+        },
+        "Task": {"Token": "token"},
+    }
+
+
+def test_start_time_is_when_the_execution_starts_and_every_state_is_entered():
+    times = (
+        "{% [$states.context.Execution.StartTime, $states.context.State.EnteredTime] %}"
+    )
+    branch = {
+        "StartAt": "b",
+        "States": {"b": {"Type": "Pass", "Output": times, "End": True}},
+    }
+    definition = {
+        "QueryLanguage": "JSONata",
+        "StartAt": "first",
+        "States": {
+            "first": {"Type": "Pass", "Assign": {"first": times}, "Next": "wait"},
+            "wait": {"Type": "Wait", "Seconds": 10, "Next": "both"},
+            "both": {
+                "Type": "Parallel",
+                "Branches": [branch],
+                "Output": "{% {'first': $first, 'branch': $states.result, 'now': $now()} %}",
+                "End": True,
+            },
+        },
+    }
+    start = "2026-03-31T15:30:00.000Z"
+    now = "2026-03-31T15:30:10.000Z"
+    functions = {"now": lambda picture=None: now}
+    read = testing.run(definition, {}, start_time=start, functions=functions).output
+    assert read == {"first": [start, start], "branch": [[start, start]], "now": now}
+
+
 @pytest.mark.parametrize(
     "failed, total, count, percentage, expected",
     [

@@ -140,13 +140,15 @@ def run(
     *,
     functions: Mapping[str, Callable[..., object]] | None = None,
     on_wait: Waits | None = None,
+    start_time: str = "2026-01-01T00:00:00.000Z",
 ) -> Execution:
     """Run a definition with the execution input given. tasks is called with
     each Task and each ItemReader, and returns the result or raises Failure.
     functions replaces JSONata functions by name, such as now or uuid, for a
     result that would otherwise change on every run. on_wait is called with
     each Wait once it has read what it waits for, before its Assign and
-    Output."""
+    Output. start_time is the Context Object's Execution.StartTime and the
+    State.EnteredTime of every state; it does not move now or millis."""
     check(definition)
     record = Record(tasks, on_wait)
     token = REPLACED.set(dict(functions or {}))
@@ -155,7 +157,7 @@ def run(
             definition,
             {},
             execution_input,
-            execution_context(execution_input),
+            execution_context(execution_input, start_time),
             record,
         )
     except Failure as failure:
@@ -986,7 +988,7 @@ def matches(errors: list[str], error: str) -> bool:
     }
 
 
-def execution_context(execution_input: object) -> dict[str, object]:
+def execution_context(execution_input: object, start_time: str) -> dict[str, object]:
     """The Context Object of an execution, with placeholder values. RedriveTime
     exists only in a redriven execution."""
     return {
@@ -995,7 +997,7 @@ def execution_context(execution_input: object) -> dict[str, object]:
             "Input": execution_input,
             "Name": "execution",
             "RoleArn": "arn:aws:iam::123456789012:role/machine",
-            "StartTime": "2026-01-01T00:00:00Z",
+            "StartTime": start_time,
             "RedriveCount": 0,
         },
         "StateMachine": {
@@ -1013,8 +1015,11 @@ def entered(
 ) -> dict[str, object]:
     """The Context Object in a state. State.RetryCount exists only in the
     states that retry (measured in a Task and a Map), and Task.Token only in a
-    .waitForTaskToken, .sync or .sync:2 Task (measured)."""
-    about: dict[str, object] = {"EnteredTime": "2026-01-01T00:00:00Z", "Name": name}
+    .waitForTaskToken, .sync or .sync:2 Task (measured). As time does not
+    pass, every state is entered when the execution starts."""
+    execution = context["Execution"]
+    assert isinstance(execution, dict)
+    about: dict[str, object] = {"EnteredTime": execution["StartTime"], "Name": name}
     if state["Type"] in {"Task", "Parallel", "Map"}:
         about["RetryCount"] = retries
     entered = {**context, "State": about}
@@ -1391,5 +1396,6 @@ __all__ = [
     "InvalidDefinition",
     "Tasks",
     "Unsupported",
+    "Wait",
     "run",
 ]

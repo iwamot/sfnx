@@ -9,7 +9,7 @@ Within 1.x, no release:
 - rejects a source an earlier 1.x release compiled, except as the table below allows;
 - changes what a definition computes, except as the table below allows. For every value, the result is the one [docs/language.md](language.md) gives: Python's, or the row that covers it in [Where results differ from Python](language.md#where-results-differ-from-python), the table of differences;
 - removes or renames a name a workflow module imports from `sfnx`, or an argument one takes, or changes what [docs/api.md](api.md) says of `CompileError`, `compile_file` and `compile_source`;
-- removes or renames a name of `sfnx.testing.__all__`, an argument of `run`, or a field of `Call` or `Execution`, or changes what [docs/testing.md](testing.md) says of them, apart from its list of where a local run differs;
+- removes or renames a name of `sfnx.testing.__all__`, an argument of `run`, or a field of `Call`, `Execution` or `Wait`, or changes what [docs/testing.md](testing.md) says of them, apart from its list of where a local run differs;
 - removes a command or an option of the CLI, changes what an exit code means, or changes what the Stable column of [Output](../README.md#output) says.
 
 A change to any of these is a 2.0.
