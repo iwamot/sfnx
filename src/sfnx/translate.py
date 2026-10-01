@@ -1285,7 +1285,21 @@ class Translator:
         if isinstance(node, ast.Compare) and not statement:
             return self.truth(self.requiring_compare(node))
         value = self.expr(node)
+        if self.written_test(node):
+            return value
         return self.truth(value if statement else self.required(node, value))
+
+    def written_test(self, node: ast.expr) -> bool:
+        """Whether a test reads a jsonata() call, whose expression is the test
+        as written, as a hand-writer writes a JSONata test into a Condition:
+        nothing is added to read a missing value or Python's truth, and an
+        expression that gives no boolean fails in Step Functions, which the
+        writer fixes. The value itself stays what it is, so the passes do
+        not take it for a boolean where they merge tests."""
+        return (
+            isinstance(node, ast.Call)
+            and qualified(node.func, self.names) == "sfnx.jsonata"
+        )
 
     def requiring_compare(self, node: ast.Compare) -> Expr:
         """A comparison a test would take for false where an operand is
@@ -1407,6 +1421,8 @@ class Translator:
         for false, so a missing operand fails instead."""
         if isinstance(node.op, ast.Not):
             operand = self.logical(node.operand)
+            if self.written_test(node.operand):
+                return call("not", [operand], of(BOOLEAN), boolean=True)
             if required:
                 operand = self.required(node.operand, operand)
             if operand.type and operand.type.kind == ARRAY:
@@ -1635,15 +1651,15 @@ class Translator:
         )
         # JSONata's and and or evaluate no more once the first side decides,
         # so an operand is required only where it is evaluated.
-        required = [
-            self.required(operand, value)
+        cast = [
+            value
+            if self.written_test(operand)
+            else self.cast(self.required(operand, value))
             for operand, value in zip(node.values, values, strict=True)
         ]
-        result = self.cast(required[0])
-        for value in required[1:]:
-            result = binary(
-                result, operator, self.cast(value), precedence, of(BOOLEAN), True
-            )
+        result = cast[0]
+        for value in cast[1:]:
+            result = binary(result, operator, value, precedence, of(BOOLEAN), True)
         return result
 
     def compare(self, node: ast.Compare) -> Expr:
