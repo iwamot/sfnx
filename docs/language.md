@@ -187,7 +187,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `list(d)`, `d.keys()` | `[$keys($d)]` |
 | `d.values()` | `[$each($d, function($v) { $v })]`, or `$append([], $each(...)[])` when the values may be lists |
 | `list(s)` | `$split($s, '')` |
-| `d.get("k")`, `d.get(k, default)` | `$exists($d.k) ? $d.k : null`, `$exists($lookup($d, $k)) ? $lookup($d, $k) : $default` |
+| `d.get("k")`, `d.get(k, default)` | `$exists($d.k) ? $d.k : null`, `($v := $lookup($d, $k); $exists($v) ? $v : $default)`: a value longer than a path is bound first, as it is read twice |
 | `abs(x)`, `round(x)`, `round(x, 2)` | `$abs($x)`, `$round($x)`, `$round($x, 2)` |
 | `math.floor(x)`, `math.ceil(x)`, `math.sqrt(x)` | `$floor($x)`, `$ceil($x)`, `$sqrt($x)` |
 | `sum(xs)`, `max(xs)`, `min(a, b)` | `$sum($xs)`, `$max($xs)`, `$min([$a, $b])` |

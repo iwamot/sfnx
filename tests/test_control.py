@@ -1076,6 +1076,30 @@ def test_a_loop_in_a_loop_takes_in_the_value_drawn_before_it():
         assert asl.run(compiled, {"xs": [0, 0]}) == 2.25
 
 
+def test_a_start_folded_into_a_choice_binds_a_long_value_it_reads_again():
+    """The test of user_name reads it three times: folded into the Choice, it
+    is bound once rather than written out at each read, and the dict the two
+    get() read is written once in each."""
+    body = (
+        'attributes = input["packet"].get("attributes", {})\n'
+        'user_name = attributes.get("User-Name", "")\n'
+        'user_password = attributes.get("User-Password", "")\n'
+        "if user_name and not user_password:\n"
+        '    return "no password"\n'
+        "return user_name"
+    )
+    compiled = definition(body)
+    (start,) = [s for s in compiled["States"].values() if s["Type"] == "Choice"]
+    condition = start["Choices"][0]["Condition"]
+    assert condition.startswith("{% ($user_name := ")
+    assert condition.count(".attributes") == 4
+    packet = {"attributes": {"User-Name": "u"}}
+    assert asl.run(compiled, {"packet": packet}) == "no password"
+    packet = {"attributes": {"User-Name": "u", "User-Password": "p"}}
+    assert asl.run(compiled, {"packet": packet}) == "u"
+    assert asl.run(compiled, {"packet": {}}) == ""
+
+
 def test_a_start_the_values_written_before_it_decide_is_a_pass():
     """o0 is None where the definition starts, so the Choice the start
     values went into tests nothing: it is the Pass of the rule it takes,

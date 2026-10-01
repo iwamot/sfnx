@@ -2363,7 +2363,12 @@ def test_list_and_string_function_diagnostics(body, message):
         ('return d.get("a", 0)', "$exists($d.a) ? $d.a : 0"),
         (
             'k: str = input["k"]\nreturn d.get(k, "none")',
-            "$exists($lookup($d, $k)) ? $lookup($d, $k) : 'none'",
+            "($v := $lookup($d, $k); $exists($v) ? $v : 'none')",
+        ),
+        # A value longer than a path is bound once, as a hand-writer binds it.
+        (
+            'return d.get("a", {}).get("b", "")',
+            "($v := ($exists($d.a) ? $d.a : {}).b; $exists($v) ? $v : '')",
         ),
         (
             'return input.get("coupon")',
