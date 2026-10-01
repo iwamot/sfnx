@@ -530,3 +530,71 @@ def test_a_parameter_of_a_distributed_map_assigned_again_is_never_undefined(
     processor = compiled["return"]["ItemProcessor"]["States"]
     assert [s["Type"] for s in processor.values()] == ["Succeed"]
     assert run(body, {}) == output
+
+
+FAILS = object()
+ARGS_T = (
+    "def f(x, t):\n    return t is None\n\n"
+    'return distributed_map(f, input["xs"], args={"t": input.get("t")})'
+)
+
+
+# is None tests null alone, so each value it reads is one that is never
+# undefined or one required first: a key that is missing, null and a value
+# each give what Python gives.
+@pytest.mark.parametrize(
+    "body, execution_input, expected",
+    [
+        ('x = input.get("k")\nreturn [x is None, x is not None]', {}, [True, False]),
+        (
+            'x = input.get("k")\nreturn [x is None, x is not None]',
+            {"k": None},
+            [True, False],
+        ),
+        (
+            'x = input.get("k")\nreturn [x is None, x is not None]',
+            {"k": 1},
+            [False, True],
+        ),
+        ('return input["k"] is None', {}, FAILS),
+        ('return input["k"] is None', {"k": None}, True),
+        ('return input["k"] is not None', {"k": 1}, True),
+        ('return input.get("k", input["m"]) is None', {}, FAILS),
+        ('return input.get("k", input["m"]) is None', {"m": None}, True),
+        ('return input.get("k", input["m"]) is None', {"k": 1, "m": None}, False),
+        ('xs: list = input["xs"]\nreturn [x is None for x in xs]', {"xs": []}, []),
+        (
+            'xs: list = input["xs"]\nreturn [x is None for x in xs]',
+            {"xs": [None, 1]},
+            [True, False],
+        ),
+        (
+            'def f(x):\n    return x is None\n\nreturn inline_map(f, input["xs"])',
+            {"xs": [None, 1]},
+            [True, False],
+        ),
+        (
+            'def f(x):\n    return x.get("k") is None\n\nreturn inline_map(f, input["xs"])',
+            {"xs": [{}, {"k": None}, {"k": 1}]},
+            [True, True, False],
+        ),
+        (
+            ARGS_T,
+            {"xs": [1]},
+            [True],
+        ),
+        (
+            ARGS_T,
+            {"xs": [1], "t": 2},
+            [False],
+        ),
+    ],
+)
+def test_is_none_tells_a_missing_key_null_and_a_value_apart(
+    body, execution_input, expected
+):
+    if expected is FAILS:
+        with pytest.raises(asl.Failure):
+            run(body, execution_input)
+    else:
+        assert run(body, execution_input) == expected

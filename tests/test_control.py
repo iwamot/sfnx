@@ -462,15 +462,15 @@ def test_evaluation(body, execution_input, expected):
         ),
         (
             'v: str | None = input["v"]\nreturn v + "!" if v is not None else ""',
-            ["$exists($v) and $v != null ? $v & '!' : ''"],
+            ["$v != null ? $v & '!' : ''"],
         ),
         (
             'v: str | None = input["v"]\nreturn v is not None and len(v) > 0',
-            ["$exists($v) and $v != null and $length($v) > 0"],
+            ["$v != null and $length($v) > 0"],
         ),
         (
             'v: str | None = input["v"]\nreturn v is None or len(v) > 0',
-            ["$not($exists($v) and $v != null) or $length($v) > 0"],
+            ["$v = null or $length($v) > 0"],
         ),
         (
             'v: list[float] | None = input["v"]\nif v is not None:\n    return v[0] + 1\nreturn 0',

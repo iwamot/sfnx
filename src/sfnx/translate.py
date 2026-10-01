@@ -1763,7 +1763,6 @@ class Translator:
             return test
         # is takes a missing value for None or for not True, where Python
         # raises KeyError reading the key.
-        required = not left.defined
         left = self.required(left_node, left)
         if isinstance(right_node, ast.Constant) and isinstance(right_node.value, bool):
             # = compares a boolean only with a boolean, as is does: 0 = false is
@@ -1778,24 +1777,10 @@ class Translator:
                 "is compares with None, True or False only; compare values with ==",
                 right_node,
             )
-        if required:
-            # A value required just now is there, so is None tests null.
-            symbol = "!=" if isinstance(operator, ast.IsNot) else "="
-            return binary(left, symbol, literal(None), COMPARE, boolean, True)
-        # left is written twice: it exists, and is not null.
-        with self.once([left]) as (bindings, (tested,)):
-            present = binary(
-                call("exists", [tested], boolean, boolean=True),
-                "and",
-                binary(tested, "!=", literal(None), COMPARE, boolean, True),
-                AND,
-                boolean,
-                True,
-            )
-        present = block(bindings, present)
-        if isinstance(operator, ast.IsNot):
-            return present
-        return call("not", [present], boolean, boolean=True)
+        # A value required just now is there, and any other is never
+        # undefined, so is None tests null.
+        symbol = "!=" if isinstance(operator, ast.IsNot) else "="
+        return binary(left, symbol, literal(None), COMPARE, boolean, True)
 
     def equality(
         self,

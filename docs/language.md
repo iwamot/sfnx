@@ -168,7 +168,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `a // b`, `a ** b` | `$floor($a / $b)`, `$power($a, $b)` |
 | `a / b` where `b` is not written as a number | `$b = 0 ? $error('division by zero') : $a / $b`, as dividing by zero raises in Python (`//` and `%` are tested the same way) |
 | `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c`. An operand of `==` or `!=` that may be missing is tested first (see [a missing key](#a-missing-key)): `$exists(x) ? x = 'OK' : $error("input['k'] reads a missing key")` |
-| `x is None`, `x is not None` | `$not($exists($x) and $x != null)`, `$exists($x) and $x != null`; a key read with `d["k"]` fails where it is missing and is compared with `null` once it is there |
+| `x is None`, `x is not None` | `$x = null`, `$x != null`; a key read with `d["k"]` fails where it is missing and is compared with `null` once it is there |
 | `x is True`, `x is not False` ... | `$x = true`, `$not($x = false)`: `=` compares a boolean only with a boolean, as `is` does (`0 = false` is false), and a missing `x`, as `d.get("k")` never gives, is not `False` |
 | `if x:`, `bool(x)` | the truth of a value: `$count($x) > 0` for a list, `$boolean($x)` where it cannot be one, and `$type($x) = 'array' ? $count($x) > 0 : $boolean($x)` where the type is unknown, since `$boolean` reads `[0]` as false where Python reads it as true |
 | `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b`, each operand read for its truth |
