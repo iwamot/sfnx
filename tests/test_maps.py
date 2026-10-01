@@ -1,5 +1,6 @@
 import re
 import textwrap
+from typing import assert_type
 
 import pytest
 
@@ -299,6 +300,18 @@ def test_runtime_helpers_run_in_python():
     ]
     with pytest.raises(NotImplementedError, match="runs in Step Functions"):
         sfnx.distributed_map(lambda x: x, source={})
+
+
+def test_a_distributed_map_with_result_is_typed_as_the_writer_s_details():
+    """A type checker checks these; source= runs only in Step Functions."""
+
+    def machine() -> None:
+        written = sfnx.distributed_map(lambda x: x, source={}, result={})
+        assert_type(written, dict)
+        assert_type(sfnx.distributed_map(lambda x: x, source={}), list)
+
+    with pytest.raises(NotImplementedError):
+        machine()
 
 
 def test_distributed_map_passes_what_step_functions_passes_in_python():

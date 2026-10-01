@@ -112,6 +112,44 @@ def inline_map(
     return [function(item) for item in items]
 
 
+@overload
+def distributed_map(
+    function: Callable[..., object],
+    items: list | dict | None = None,
+    /,
+    *,
+    source: dict[str, object] | None = None,
+    args: dict[str, object] | None = None,
+    batch: dict[str, object] | None = None,
+    result: None = None,
+    max_concurrency: int | None = None,
+    tolerated_failure_count: int | None = None,
+    tolerated_failure_percentage: float | None = None,
+    label: str | None = None,
+    execution_type: str | None = None,
+    retry: Sequence[Mapping[str, object]] | None = None,
+) -> list: ...
+
+
+@overload
+def distributed_map(
+    function: Callable[..., object],
+    items: list | dict | None = None,
+    /,
+    *,
+    source: dict[str, object] | None = None,
+    args: dict[str, object] | None = None,
+    batch: dict[str, object] | None = None,
+    result: dict[str, object],
+    max_concurrency: int | None = None,
+    tolerated_failure_count: int | None = None,
+    tolerated_failure_percentage: float | None = None,
+    label: str | None = None,
+    execution_type: str | None = None,
+    retry: Sequence[Mapping[str, object]] | None = None,
+) -> dict: ...
+
+
 def distributed_map(
     function: Callable[..., object],
     items: list | dict | None = None,
@@ -127,12 +165,13 @@ def distributed_map(
     label: str | None = None,
     execution_type: str | None = None,
     retry: Sequence[Mapping[str, object]] | None = None,
-) -> list:
+) -> list | dict:
     """A Map state in Distributed mode: each item, or each batch, runs as a
-    child execution of function with args. At run time function is called in
-    turn with each item, each value of a dict, or with batch= each list of up
-    to MaxItemsPerBatch items; MaxInputBytesPerBatch, source= and result= only
-    work in Step Functions."""
+    child execution of function with args. With result=, the result is the
+    details of where the results were written. At run time function is called
+    in turn with each item, each value of a dict, or with batch= each list of
+    up to MaxItemsPerBatch items; MaxInputBytesPerBatch, source= and result=
+    only work in Step Functions."""
     if items is None:
         raise NotImplementedError("distributed_map(source=...) runs in Step Functions")
     arguments = args or {}
