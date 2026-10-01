@@ -3121,8 +3121,10 @@ class Translator:
             values = mapping.type.values if mapping.type else None
             value = call("lookup", [mapping, name], values)
         default = self.expr(arguments[1]) if len(arguments) == 2 else literal(None)
-        # The value is written twice: tested, then read.
-        with self.once([value], [default]) as (bindings, (value,)):
+        # The value is written twice: tested, then read; one longer than a
+        # path is bound first.
+        bind = SIMPLE_PATH.fullmatch(value.code) is None
+        with self.once([value], [default], always=bind) as (bindings, (value,)):
             present = call("exists", [value], of(BOOLEAN), boolean=True)
             chosen = conditional(
                 present, value, default, union(value.type, default.type)

@@ -3754,7 +3754,9 @@ def read_through(
         return leaf
     code = template[2:-2].strip()
     reads = {n: len(re.findall(rf"\${n}(?!\w)", code)) for n in values}
-    bound = [n for n, v in values.items() if reads[n] > 1 and v.precedence < ATOM]
+    bound = [
+        n for n, v in values.items() if reads[n] > 1 and bound_once(n, v, reads[n])
+    ]
     placed = {n: v for n, v in values.items() if n not in bound and reads[n]}
     if any(v.variables & set(bound) for v in placed.values()) or any(
         values[n].variables & (set(bound) - {n}) for n in bound
@@ -3776,6 +3778,20 @@ def read_through(
     return composed(
         leaf, code, [v for n, v in values.items() if reads[n]], around=around
     )
+
+
+def bound_once(name: str, value: Expr, reads: int) -> bool:
+    """Whether a value read reads times is bound to its name first rather
+    than written at each read: one the binding makes shorter, as a
+    hand-writer binds a long value and spells a path out again. A value
+    written in the source stays in place, where a later pass reads it as a
+    constant. One that changes on evaluation is not read more than once
+    here: the passes refuse that before."""
+    if written(value.template):
+        return False
+    placed = reads * len(operand(value, ATOM))
+    binding = len(f"(${name} := {value.code}; )") + reads * len(f"${name}")
+    return binding < placed
 
 
 def composed(
@@ -4877,8 +4893,9 @@ def fold_start(
         taking = [Read(f"${name}", kind == "Choice") for _ in kept[name]]
         if refused(evaluated_as_before(value, name, reads + taking), where):
             return
-    for name, value in values.items():
-        substitute(state, name, value)
+    for key, field_value in list(state.items()):
+        if key != "Comment":
+            state[key] = read_through(field_value, values)
     narrow(enclosing, states, following, start)
     # The substitution wrote the rules and the catchers anew.
     for i, holder in enumerate(holders_of(state)):
@@ -4933,34 +4950,6 @@ def holders_of(state: dict[str, object]) -> list[dict[str, object]]:
     others = state.get("Choices" if state["Type"] == "Choice" else "Catch", [])
     assert isinstance(others, list)
     return [state, *others]
-
-
-def substitute(node: dict[str, object], name: str, value: Expr) -> None:
-    """Each read of a variable in a state as a value's expression: an
-    expression that is only the variable is the value as written, and one
-    that reads it among others reads the value's code."""
-    pattern = re.compile(rf"\${re.escape(name)}(?!\w)")
-    code = operand(value, ATOM)
-
-    def replaced(leaf: object, around: Expr | None = None) -> object:
-        item = template_of(leaf)
-        around = leaf if isinstance(leaf, Expr) else around
-        if isinstance(item, dict):
-            return {
-                k: v if k == "Comment" else replaced(v, around) for k, v in item.items()
-            }
-        if isinstance(item, list):
-            return [replaced(v, around) for v in item]
-        if isinstance(item, str) and item.startswith("{%") and item.endswith("%}"):
-            if lone_variable(item[2:-2].strip()) == name:
-                return in_place_of(leaf, value)
-            written = pattern.sub(lambda _: code, item)
-            return composed(leaf, written[2:-2].strip(), [value], around=around)
-        return leaf
-
-    for key, field_value in list(node.items()):
-        if key != "Comment":
-            node[key] = replaced(field_value)
 
 
 def share_states(
