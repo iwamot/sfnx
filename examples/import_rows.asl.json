@@ -1,0 +1,108 @@
+{
+  "Comment": "Import every row of a CSV file in S3 as a child execution, tolerating up to 5% failed rows.",
+  "QueryLanguage": "JSONata",
+  "StartAt": "bucket",
+  "States": {
+    "bucket": {
+      "Type": "Pass",
+      "Assign": {
+        "bucket": "{% $states.context.Execution.Input.bucket %}",
+        "key": "{% $states.context.Execution.Input.key %}",
+        "topic": "arn:aws:sns:us-east-1:123456789012:imports"
+      },
+      "Next": "run"
+    },
+    "run": {
+      "Type": "Map",
+      "Label": "rows",
+      "ItemReader": {
+        "Resource": "arn:aws:states:::s3:getObject",
+        "ReaderConfig": {
+          "InputType": "CSV",
+          "CSVHeaderLocation": "FIRST_ROW"
+        },
+        "Arguments": {
+          "Bucket": "{% $bucket %}",
+          "Key": "{% $key %}"
+        }
+      },
+      "ItemSelector": {
+        "row": "{% $states.context.Map.Item.Value %}"
+      },
+      "MaxConcurrency": 100,
+      "ToleratedFailurePercentage": 5,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "EXPRESS"
+        },
+        "StartAt": "load.reply",
+        "States": {
+          "load.reply": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Arguments": {
+              "FunctionName": "import-row",
+              "Payload": "{% $states.context.Execution.Input.row %}"
+            },
+            "Output": "{% $states.result.Payload %}",
+            "End": true
+          }
+        }
+      },
+      "ResultWriter": {
+        "Resource": "arn:aws:states:::s3:putObject",
+        "Arguments": {
+          "Bucket": "{% $bucket %}",
+          "Prefix": "results"
+        },
+        "WriterConfig": {
+          "OutputType": "JSONL",
+          "Transformation": "COMPACT"
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ExceedToleratedFailureThreshold"
+          ],
+          "Assign": {
+            "caught": "{% $states.errorOutput %}"
+          },
+          "Next": "publish"
+        }
+      ],
+      "Assign": {
+        "run": "{% $states.result %}"
+      },
+      "Next": "counts"
+    },
+    "publish": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Arguments": {
+        "TopicArn": "{% $topic %}",
+        "Message": "{% $key & ': more than 5% of the rows failed' %}"
+      },
+      "Next": "raise"
+    },
+    "raise": {
+      "Type": "Fail",
+      "Error": "{% $caught.Error %}",
+      "Cause": "{% $caught.Cause %}"
+    },
+    "counts": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:sfn:describeMapRun",
+      "Arguments": {
+        "MapRunArn": "{% $run.MapRunArn %}"
+      },
+      "Output": {
+        "succeeded": "{% $states.result.ItemCounts.Succeeded %}",
+        "failed": "{% $states.result.ItemCounts.Failed %}",
+        "results": "{% $run.ResultWriterDetails.Key %}"
+      },
+      "End": true
+    }
+  }
+}

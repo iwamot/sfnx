@@ -21,6 +21,7 @@ NAMES = [
     "settle",
     "hello_world",
     "coding_agent",
+    "import_rows",
 ]
 
 
@@ -432,3 +433,71 @@ def test_coding_agent_leaves_a_blocked_term_open_without_the_agent():
     result = asl.run(definition("coding_agent"), TERM, tasks)
     assert (result["target_status"], result["failure_reason"]) == ("open", None)
     assert [name for name, _ in tasks.calls] == ["direct", "opened"]
+
+
+FILE = {"bucket": "imports", "key": "2026-10-01.csv"}
+
+
+def importing(rows: list[dict[str, str]], failing_ids: set[str]) -> Tasks:
+    """The rows of the file, a child execution per row that fails for the ids
+    given, and DescribeMapRun counting what the children did."""
+
+    def load(arguments: object) -> object:
+        assert isinstance(arguments, dict)
+        payload = arguments["Payload"]
+        assert isinstance(payload, dict)
+        if payload["id"] in failing_ids:
+            raise asl.Failure("Lambda.Unknown", f"row {payload['id']}")
+        return {"Payload": {"imported": payload["id"]}}
+
+    counts = {"Succeeded": len(rows) - len(failing_ids), "Failed": len(failing_ids)}
+    return Tasks(
+        run=constant(rows),
+        **{
+            "load.reply": load,
+            "publish": constant({"MessageId": "m1"}),
+            "counts": constant({"ItemCounts": counts}),
+        },
+    )
+
+
+def rows(n: int) -> list[dict[str, str]]:
+    return [{"id": str(i), "name": f"row {i}"} for i in range(n)]
+
+
+def test_import_rows_reads_the_file_and_counts_what_the_children_did():
+    tasks = importing(rows(3), set())
+    assert asl.run(definition("import_rows"), FILE, tasks) == {
+        "succeeded": 3,
+        "failed": 0,
+        "results": "results/run/manifest.json",
+    }
+    calls = dict(tasks.calls)
+    assert calls["run"] == {"Bucket": "imports", "Key": "2026-10-01.csv"}
+    assert [c["Payload"] for n, c in tasks.calls if n == "load.reply"] == rows(3)
+    assert calls["counts"] == {"MapRunArn": f"{asl.MAP_RUN}/rows:run"}
+    assert "publish" not in calls
+
+
+def test_import_rows_tolerates_one_failed_row_in_twenty():
+    tasks = importing(rows(20), {"7"})
+    result = asl.run(definition("import_rows"), FILE, tasks)
+    assert result == {
+        "succeeded": 19,
+        "failed": 1,
+        "results": "results/run/manifest.json",
+    }
+    assert "publish" not in dict(tasks.calls)
+
+
+def test_import_rows_notifies_and_fails_past_five_percent():
+    # One row in nineteen is more than 5%.
+    tasks = importing(rows(19), {"7"})
+    with pytest.raises(asl.Failure) as failure:
+        asl.run(definition("import_rows"), FILE, tasks)
+    assert failure.value.error == "States.ExceedToleratedFailureThreshold"
+    calls = dict(tasks.calls)
+    assert (
+        calls["publish"]["Message"] == "2026-10-01.csv: more than 5% of the rows failed"
+    )
+    assert "counts" not in calls
