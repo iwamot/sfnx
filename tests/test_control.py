@@ -568,7 +568,76 @@ def test_declarations_join_after_branches():
             "match is not supported; write if / elif / else",
         ),
         ("global x", "global is not supported; return the value"),
-        ('print("x")', "a value on a line of its own does nothing in a state machine"),
+        (
+            'print("x")',
+            "print() has nothing to write to in a state machine; remove the line",
+        ),
+        # A call on a line of its own that changes a list or a dict in place
+        # says what to write; one that does nothing in Python too does not.
+        (
+            "xs = [1]\nxs.append(2)",
+            "xs.append() is not supported; a list is a value here, so write xs = xs + [2]",
+        ),
+        ("xs = [1]\nxs.extend(ys)", "so write xs = xs + ys"),
+        ("xs = [1]\nxs.insert(i, 2)", "so write xs = xs[:i] + [2] + xs[i:]"),
+        ("xs = [1]\nxs.insert(0, 2)", "so write xs = xs[:0] + [2] + xs[0:]"),
+        # A position that may read otherwise the second time is not written twice.
+        ("xs = [1]\nxs.insert(f(), 2)", "so build the new value and assign it to xs"),
+        ("xs = [1]\nxs.sort(reverse=True)", "so write xs = sorted(xs, reverse=True)"),
+        (
+            "xs = [1]\nxs.sort(key=lambda x: x, reverse=False)",
+            "so write xs = sorted(xs, key=lambda x: x, reverse=False)",
+        ),
+        # sorted() takes only a lambda for key= and True or False for reverse=.
+        (
+            "xs = [1]\nxs.sort(reverse=flag)",
+            "so build the new value and assign it to xs",
+        ),
+        ("xs = [1]\nxs.sort(key=len)", "so build the new value and assign it to xs"),
+        ("xs = [1]\nxs.reverse()", "so write xs = list(reversed(xs))"),
+        (
+            "xs = [1]\nxs.remove(1)",
+            "xs.remove() is not supported; a list is a value here, so build the new value and assign it to xs",
+        ),
+        (
+            "xs = [1]\nxs.pop()",
+            "xs.pop() is not supported; a list or a dict is a value here, so build",
+        ),
+        (
+            'd = {"a": 1}\nd.update({"b": 2})',
+            "d.update() is not supported; a dict is a value here, so write d = {**d, 'b': 2}",
+        ),
+        ('d = {"a": 1}\nd.update(b=2)', "so write d = {**d, 'b': 2}"),
+        # update() takes pairs too, which ** does not.
+        ('d = {"a": 1}\nd.update(o)', "so build the new value and assign it to d"),
+        ('d = {"a": 1}\nd.update(**o)', "so build the new value and assign it to d"),
+        ('d = {"a": 1}\nd.update({k: 2})', "so build the new value and assign it to d"),
+        ('d = {"a": 1}\nd.setdefault("k", 1)', "a dict is a value here, so build"),
+        ("xs = [1]\nxs.append(*ys)", "so build the new value and assign it to xs"),
+        # The execution input, and a value that is not a name, are not assigned
+        # to: the new value takes a name of its own.
+        (
+            "input.append(1)",
+            "so write items = input + [1] and read items from then on",
+        ),
+        (
+            'input["xs"].append(1)',
+            "so write items = input['xs'] + [1] and read items from then on",
+        ),
+        (
+            'input["d"].update({"a": 1})',
+            "so write data = {**input['d'], 'a': 1} and read data from then on",
+        ),
+        (
+            'input["xs"].remove(1)',
+            "so build the new value, assign it to another name, such as items, and read that name from then on",
+        ),
+        (
+            's = "a"\ns.upper()',
+            "a value on a line of its own does nothing in a state machine",
+        ),
+        ("xs = [1]\nxs.count(1)", "a value on a line of its own does nothing"),
+        ("xs = [1]\nlen(xs)", "a value on a line of its own does nothing"),
         ("import json", "import at the top of the module"),
         ("x = 1\ndel x", "del is not supported"),
         ("class A:\n    pass", "define error classes at the top of the module"),
