@@ -14,7 +14,6 @@ LISTS = (
     [0],
     [1],
     [[]],
-    [[0]],
     [[], []],
     [None],
     [""],
@@ -26,7 +25,6 @@ LISTS = (
     [0, 0],
     [1, 1],
     [None, ""],
-    [[], [0]],
 )
 
 
@@ -75,21 +73,21 @@ def in_python(body: str, execution_input: object) -> object:
             'xs: list[bool] = input["xs"]\nreturn all(xs)',
             "$reduce($xs, function($a, $x) { $a ? $boolean($x) : false }, true)",
         ),
-        # An item of an unknown type is read as bool() reads it: a list is true
-        # when it holds anything, whatever the items are.
+        # An item of an unknown type is read by $boolean, and an item known to
+        # be a list is counted.
         (
             'xs: list = input["xs"]\nreturn any(xs)',
-            (
-                "$reduce($xs, function($a, $x) { $a ? true : ($type($x) = 'array' ? "
-                "$count($x) > 0 : $boolean($x)) }, false)"
-            ),
+            "$reduce($xs, function($a, $x) { $a ? true : $boolean($x) }, false)",
+        ),
+        (
+            'xs: list[list] = input["xs"]\nreturn any(xs)',
+            "$reduce($xs, function($a, $x) { $a ? true : $count($x) > 0 }, false)",
         ),
         (
             'rs: list[dict] = input["rs"]\nreturn any(r["failed"] for r in rs)',
             (
-                "$reduce($rs, function($a, $r) { $a ? true : ($v := ($exists($r.failed) ? "
-                "$r.failed : $error(\"r['failed'] reads a missing key\")); $type($v) = "
-                "'array' ? $count($v) > 0 : $boolean($v)) }, false)"
+                "$reduce($rs, function($a, $r) { $a ? true : $boolean($exists($r.failed) ? "
+                "$r.failed : $error(\"r['failed'] reads a missing key\")) }, false)"
             ),
         ),
         (
@@ -171,6 +169,18 @@ def test_a_generator_gives_what_python_gives(name, items):
 def test_a_condition_drops_items_as_python_drops_them(name, items):
     body = f'xs: list = input["xs"]\nreturn {name}(x for x in xs if x != 0)'
     assert run(body, {"xs": items}) == in_python(body, {"xs": items})
+
+
+def test_an_item_is_tested_as_its_type_says():
+    """An item of an unknown type is tested by $boolean, which reads a list of
+    falsy items as false, where Python reads it as true; an item known to be a
+    list is counted, as Python reads it."""
+    unknown = 'xs: list = input["xs"]\nreturn any(xs)'
+    lists = 'xs: list[list] = input["xs"]\nreturn any(xs)'
+    for items in ([[0]], [[], [0]]):
+        assert run(unknown, {"xs": items}) is False
+        assert run(lists, {"xs": items}) is True
+        assert in_python(lists, {"xs": items}) is True
 
 
 def test_the_keys_of_a_dict_are_what_is_read():

@@ -58,7 +58,7 @@
           ],
           "Assign": {
             "failure_reason": "{% $states.errorOutput.Error %}",
-            "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
+            "rationale": "{% $agent_candidate ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
           },
           "Next": "opened"
         }
@@ -72,14 +72,14 @@
       "Type": "Choice",
       "Choices": [
         {
-          "Condition": "{% ($v := $direct.blocked; $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) %}",
+          "Condition": "{% $boolean($direct.blocked) %}",
           "Assign": {
-            "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
+            "rationale": "{% $agent_candidate ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
           },
           "Next": "opened"
         },
         {
-          "Condition": "{% ($v := $direct.matched; $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) %}",
+          "Condition": "{% $boolean($direct.matched) %}",
           "Assign": {
             "status": "autocoded",
             "candidate": "{% $direct.candidate %}"
@@ -157,7 +157,7 @@
           ],
           "Assign": {
             "failure_reason": "{% $states.errorOutput.Error %}",
-            "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
+            "rationale": "{% $agent_candidate ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
           },
           "Next": "opened"
         }
@@ -188,7 +188,7 @@
         }
       ],
       "Assign": {
-        "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
+        "rationale": "{% $agent_candidate ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
       },
       "Default": "opened"
     },
@@ -236,7 +236,7 @@
           ],
           "Assign": {
             "failure_reason": "{% $states.errorOutput.Error %}",
-            "rationale": "{% ($type($agent_candidate) = 'array' ? $count($agent_candidate) > 0 : $boolean($agent_candidate)) ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
+            "rationale": "{% $agent_candidate ? $exists($agent_candidate.rationale) ? $agent_candidate.rationale : null : null %}"
           },
           "Next": "opened"
         }
