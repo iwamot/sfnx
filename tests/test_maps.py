@@ -93,17 +93,17 @@ def test_a_function_that_reads_its_parameters_later_binds_them_first():
     """The first state binds them, reading the item as its input."""
     body = f'def charge(order):\n    task("{LAMBDA}", {{"FunctionName": "hold", "Payload": order}})\n    task("{LAMBDA}", {{"FunctionName": "charge", "Payload": order}})\n\ninline_map(charge, input["orders"])'
     processor = states(body)["map"]["ItemProcessor"]
-    assert processor["StartAt"] == "charge.invoke"
-    first = processor["States"]["charge.invoke"]
+    assert processor["StartAt"] == "charge.invoke hold"
+    first = processor["States"]["charge.invoke hold"]
     assert first["Arguments"]["Payload"] == "{% $states.input.order %}"
     assert first["Assign"] == {"order": "{% $states.input.order %}"}
-    assert processor["States"]["charge.invoke_2"]["Arguments"]["Payload"] == (
+    assert processor["States"]["charge.invoke charge"]["Arguments"]["Payload"] == (
         "{% $order %}"
     )
     calls = []
     tasks = {
         name: lambda arguments: calls.append(arguments["Payload"]) or {}
-        for name in ("charge.invoke", "charge.invoke_2")
+        for name in ("charge.invoke hold", "charge.invoke charge")
     }
     run(body, {"orders": [7]}, tasks)
     assert calls == [7, 7]
@@ -218,7 +218,7 @@ def test_a_map_function_assigns_names_of_its_own():
     # The return is the Task's Output, where $states.input is still the item.
     (task,) = state["ItemProcessor"]["States"].values()
     assert task["Output"] == "{% $states.input.order_2 %}"
-    assert run(body, {"xs": [5, 6]}, {"f.invoke": lambda arguments: {}}) == [
+    assert run(body, {"xs": [5, 6]}, {"f.invoke f": lambda arguments: {}}) == [
         1,
         [5, 6],
     ]

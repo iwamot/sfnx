@@ -194,7 +194,7 @@ def test_a_return_after_them_is_the_output():
 
 def test_an_assignment_after_a_task_on_its_own_line_goes_in_its_assign():
     body = f'task("{LAMBDA}", {{"FunctionName": "f"}})\nn = 1\nwait(n)\nreturn n'
-    assert states(body)["invoke"]["Assign"] == {"n": 1}
+    assert states(body)["invoke f"]["Assign"] == {"n": 1}
 
 
 def test_the_variable_the_task_assigns_can_be_assigned_again():
@@ -330,7 +330,7 @@ def test_a_value_that_changes_the_arguments_read_twice_keeps_its_pass():
     assert compiled["States"]["x"] == {
         "Type": "Pass",
         "Assign": {"x": "{% $random() %}"},
-        "Next": "invoke",
+        "Next": "invoke f",
     }
 
 
@@ -528,7 +528,7 @@ def test_a_task_at_the_end_ends_the_machine():
     "call, name",
     [
         (f'task("{PUBLISH}", {{"Message": "hi"}})', "publish"),
-        (f'task("{LAMBDA}", {{"FunctionName": "f"}})', "invoke"),
+        (f'task("{LAMBDA}", {{"FunctionName": "f"}})', "invoke f"),
         (
             'task("arn:aws:states:::states:startExecution.sync:2", {"StateMachineArn": "a"})',
             "startExecution",
@@ -554,6 +554,129 @@ def test_a_task_on_its_own_line_is_named_after_its_action(call, name):
     assert list(compiled) == [name]
     assert (compiled[name]["Output"], compiled[name]["End"]) == (1, True)
     assert "Assign" not in compiled[name]
+
+
+# A Lambda invoke, a DynamoDB putItem and an SNS publish on a line of their
+# own are named after what they call too, where the definition holds it as
+# written: the function, the table or the topic, out of an ARN.
+@pytest.mark.parametrize(
+    "imports, module, call, name",
+    [
+        (
+            "from sfnx import aws, state_machine",
+            "",
+            'aws.optimized.dynamodb.put_item(TableName="orders", Item={})',
+            "putItem orders",
+        ),
+        (
+            "from sfnx import aws, state_machine",
+            "",
+            'aws.sdk.dynamodb.put_item(TableName="arn:aws:dynamodb:us-east-1:123456789012:table/orders", Item={})',
+            "putItem orders",
+        ),
+        (
+            "from sfnx import aws, state_machine",
+            'TOPIC = "arn:aws:sns:us-east-1:123456789012:alerts"\n',
+            'aws.optimized.sns.publish(TopicArn=TOPIC, Message="m")',
+            "publish alerts",
+        ),
+        (
+            "from sfnx import aws, state_machine",
+            "",
+            'aws.optimized.lambda_.invoke(FunctionName="arn:aws:lambda:us-east-1:123456789012:function:charge:live")',
+            "invoke charge",
+        ),
+        (
+            "from sfnx import aws, state_machine",
+            "",
+            'aws.optimized.lambda_.invoke(FunctionName="123456789012:function:charge")',
+            "invoke charge",
+        ),
+        # A value read at run time, or filled in at deployment, names nothing.
+        (
+            "from sfnx import aws, state_machine",
+            "",
+            'aws.optimized.lambda_.invoke(FunctionName=input["f"])',
+            "invoke",
+        ),
+        (
+            "from sfnx import aws, state_machine",
+            "",
+            'aws.optimized.lambda_.invoke(FunctionName="${ChargeFunctionArn}")',
+            "invoke",
+        ),
+        # A name past 80 characters is the action alone.
+        (
+            "from sfnx import aws, state_machine",
+            "",
+            f'aws.optimized.lambda_.invoke(FunctionName="{"f" * 80}")',
+            "invoke",
+        ),
+    ],
+)
+def test_a_task_on_its_own_line_is_named_after_what_it_calls(
+    imports, module, call, name
+):
+    (compiled,) = compile_source(
+        f"{imports}\n{module}\n\n@state_machine\ndef pay(input):\n    {call}\n"
+        "    return 1\n"
+    ).values()
+    assert list(compiled["States"]) == [name]
+
+
+@pytest.mark.parametrize(
+    "imports, body, length, names",
+    [
+        # "invoke " and 73 characters make 80; the serial would make 82.
+        (
+            "from sfnx import aws, state_machine",
+            "    if input['a']:\n        CALL\n        return 1\n    CALL\n    return 2\n",
+            73,
+            ["invoke " + "f" * 73, "invoke"],
+        ),
+        # In a branch, "f." takes two of the 80.
+        (
+            "from sfnx import aws, parallel, state_machine",
+            (
+                "    def f():\n        if input['a']:\n            CALL\n            return 1\n"
+                "        CALL\n        return 2\n\n    return parallel(f)\n"
+            ),
+            71,
+            ["f.invoke " + "f" * 71, "f.invoke"],
+        ),
+    ],
+)
+def test_a_serial_past_80_characters_leaves_the_action_alone(
+    imports, body, length, names
+):
+    target = "f" * length
+    call = f'aws.optimized.lambda_.invoke(FunctionName="{target}")'
+    (compiled,) = compile_source(
+        f"{imports}\n\n\n@state_machine\ndef pay(input):\n" + body.replace("CALL", call)
+    ).values()
+    found = []
+
+    def tasks(scope: dict) -> None:
+        for name, state in scope["States"].items():
+            if state["Type"] == "Task":
+                found.append(name)
+            for branch in state.get("Branches", []):
+                tasks(branch)
+
+    tasks(compiled)
+    assert found == names
+    assert all(len(name) <= 80 for name in found)
+
+
+def test_two_calls_of_the_same_target_take_serials():
+    call = 'aws.optimized.lambda_.invoke(FunctionName="return-expense")'
+    (compiled,) = compile_source(
+        "from sfnx import aws, state_machine\n\n\n@state_machine\n"
+        f'def pay(input):\n    if input["a"]:\n        {call}\n'
+        f"        return 1\n    {call}\n    return 2\n"
+    ).values()
+    names = [n for n, s in compiled["States"].items() if s["Type"] == "Task"]
+    assert names == ["invoke return-expense", "invoke return-expense_2"]
 
 
 def test_the_result_can_be_taken_apart_in_the_assignment():
@@ -1040,7 +1163,7 @@ def test_a_task_in_the_first_comparison_of_a_chain_always_runs():
 def test_a_task_before_a_return_without_a_value_ends_the_machine(end):
     body = f'task("{LAMBDA}", {{"FunctionName": "f"}})\n{end}'
     assert states(body) == {
-        "invoke": {
+        "invoke f": {
             "Type": "Task",
             "Resource": LAMBDA,
             "Arguments": {"FunctionName": "f"},
@@ -1068,9 +1191,10 @@ inline_map(each, input["items"])
     assert compiled["map"]["End"] is True
     branch = compiled["parallel"]["Branches"][0]["States"]
     processor = compiled["map"]["ItemProcessor"]["States"]
-    assert list(branch) == ["left.invoke"] and branch["left.invoke"]["End"] is True
-    assert list(processor)[-1] == "each.invoke"
-    assert processor["each.invoke"]["End"] is True
+    assert list(branch) == ["left.invoke left"]
+    assert branch["left.invoke left"]["End"] is True
+    assert list(processor)[-1] == "each.invoke each"
+    assert processor["each.invoke each"]["End"] is True
 
 
 def test_a_task_that_catches_ends_itself_and_its_catcher_at_the_succeed():
@@ -1083,20 +1207,22 @@ except Exception:
     pass
 """
     compiled = states(body)
-    assert compiled["invoke"]["Output"] is None and compiled["invoke"]["End"] is True
-    assert compiled["invoke"]["Catch"][0]["Next"] == "return"
+    assert (
+        compiled["invoke f"]["Output"] is None and compiled["invoke f"]["End"] is True
+    )
+    assert compiled["invoke f"]["Catch"][0]["Next"] == "return"
     assert compiled["return"] == {"Type": "Succeed", "Output": None}
 
 
 def test_a_task_an_if_runs_ends_on_the_return_after_the_if():
     body = f'if input["a"]:\n    task("{LAMBDA}", {{"FunctionName": "f"}})\n# done\nreturn {{"ok": True}}'
     compiled = definition(body)
-    task_state = compiled["States"]["invoke"]
+    task_state = compiled["States"]["invoke f"]
     assert task_state["Output"] == {"ok": True} and task_state["End"] is True
     assert task_state["Comment"] == "done"
     assert compiled["States"]["if"]["Default"] == "return"
     for a in (True, False):
-        tasks = {"invoke": lambda arguments: {}}
+        tasks = {"invoke f": lambda arguments: {}}
         assert asl.run(compiled, {"a": a}, tasks) == {"ok": True}
 
 
@@ -1104,7 +1230,10 @@ def test_a_return_that_reads_a_value_keeps_the_task_going_on_to_it():
     # Moved into the Task, a failing Output would be the Catch's to take.
     body = f'try:\n    task("{LAMBDA}", {{"FunctionName": "f"}})\nexcept Exception:\n    pass\nreturn input["r"]'
     compiled = states(body)
-    assert compiled["invoke"]["Next"] == "return" and "Output" not in compiled["invoke"]
+    assert (
+        compiled["invoke f"]["Next"] == "return"
+        and "Output" not in compiled["invoke f"]
+    )
 
 
 @pytest.mark.parametrize(

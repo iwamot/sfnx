@@ -36,6 +36,7 @@ from sfnx.expressions import (
     obj,
     spelling,
     string,
+    template_of,
     uses,
 )
 from sfnx.integrations import (
@@ -3306,7 +3307,11 @@ class Translator:
                 state[name] = options[option]
         if "role" in options:
             state["Credentials"] = {"RoleArn": options["role"]}
-        self.task = StateCall(node, called.name, state, retry_option(node))
+        name = called.name
+        target = called_target(resource, state.get("Arguments"))
+        if target is not None:
+            name = f"{name} {target}"
+        self.task = StateCall(node, name, state, retry_option(node))
         return expression("$states.result", type=called.result)
 
     def admit(self, node: ast.Call, function: str, kind: str) -> None:
@@ -4095,3 +4100,39 @@ def known_text(value: Expr) -> str | None:
     if type(number) is int and abs(number) < 2**53:
         return str(number)
     return None
+
+
+# The argument that names what an operation acts on, by service and action,
+# and how to read the name out of an ARN written there.
+TARGETS = {
+    ("lambda", "invoke"): "FunctionName",
+    ("dynamodb", "putItem"): "TableName",
+    ("sns", "publish"): "TopicArn",
+}
+
+
+def called_target(resource: str, arguments: object) -> str | None:
+    """What a Task on a line of its own calls, for its name: the function a
+    Lambda invoke runs, the table a DynamoDB putItem writes, the topic an SNS
+    publish sends to, where the argument is a string the definition holds as
+    written. A value read at run time, or a ${...} placeholder filled in at
+    deployment, names nothing a reader knows, so the action alone names the
+    state."""
+    operation = resource.removeprefix("arn:aws:states:::").removeprefix("aws-sdk:")
+    service, _, action = operation.partition(":")
+    action = action.split(".", 1)[0]
+    argument = TARGETS.get((service, action))
+    fields = template_of(arguments)
+    if argument is None or not isinstance(fields, dict):
+        return None
+    value = template_of(fields.get(argument))
+    if not isinstance(value, str) or value.startswith("{%") or "${" in value:
+        return None
+    if service == "lambda":
+        # A name, a partial ARN `123456789012:function:name` or a full one,
+        # with or without a version or an alias after it.
+        before, found, after = value.partition("function:")
+        return after.split(":", 1)[0] if found else before
+    if service == "dynamodb":
+        return value.rpartition("table/")[2]
+    return value.rpartition(":")[2]

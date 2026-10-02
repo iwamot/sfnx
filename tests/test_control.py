@@ -895,11 +895,15 @@ def test_paths_that_end_with_the_same_task_share_it():
     compiled = tasks_definition(body)
     states = compiled["States"]
     assert [n for n, s in states.items() if s["Type"] == "Task"] == [
-        "invoke",
-        "invoke_2",
-        "invoke_3",
+        "invoke skipped",
+        "invoke unlock",
+        "invoke done",
     ]
-    assert states["invoke"]["Next"] == states["invoke_3"]["Next"] == "invoke_2"
+    assert (
+        states["invoke skipped"]["Next"]
+        == states["invoke done"]["Next"]
+        == "invoke unlock"
+    )
     for a in (True, False):
         assert [args for args, _ in called(compiled, {"a": a})] == [
             {"FunctionName": "skipped" if a else "done"},
@@ -920,9 +924,9 @@ def test_states_the_same_once_what_follows_is_shared_are_shared_too():
     compiled = tasks_definition(body)
     states = compiled["States"]
     assert [n for n, s in states.items() if s["Type"] in {"Task", "Fail"}] == [
-        "invoke",
+        "invoke alert",
         "raise",
-        "invoke_2",
+        "invoke charge",
     ]
     assert called(compiled, {"a": True}) == [({"FunctionName": "alert"}, "Failed")]
 
@@ -938,7 +942,7 @@ def test_a_state_that_reads_its_name_keeps_its_own():
     )
     compiled = tasks_definition(body)
     names = [called(compiled, {"a": a})[1][0]["Payload"] for a in (True, False)]
-    assert names == ["invoke_2", "invoke_4"]
+    assert names == ["invoke unlock", "invoke unlock_2"]
 
 
 def test_an_if_right_after_an_if_that_ends_is_one_choice():
@@ -1416,8 +1420,8 @@ def test_a_flag_known_on_each_path_sends_the_path_on_directly():
     compiled = flagged(body)
     states = compiled["States"]
     assert [s["Type"] for s in states.values()].count("Choice") == 0
-    first = states["invoke"]
-    assert first["Next"] == "invoke_2"
+    first = states["invoke charge"]
+    assert first["Next"] == "invoke charge_2"
     assert states[first["Catch"][0]["Next"]]["Output"] == "declined"
 
     def charge(arguments):
@@ -1426,8 +1430,11 @@ def test_a_flag_known_on_each_path_sends_the_path_on_directly():
     def declined(arguments):
         raise asl.Failure("Declined", "")
 
-    assert asl.run(compiled, {}, {"invoke": charge, "invoke_2": charge}) == "done"
-    assert asl.run(compiled, {}, {"invoke": declined}) == "declined"
+    assert (
+        asl.run(compiled, {}, {"invoke charge": charge, "invoke charge_2": charge})
+        == "done"
+    )
+    assert asl.run(compiled, {}, {"invoke charge": declined}) == "declined"
 
 
 def test_a_rule_that_reads_the_execution_input_goes_in_the_catcher():
@@ -1438,7 +1445,7 @@ def test_a_rule_that_reads_the_execution_input_goes_in_the_catcher():
         'if stage == 1:\n    why = input["why"]\n    return [why, 1]\nreturn "done"'
     )
     states = flagged(body)["States"]
-    catcher = states["invoke"]["Catch"][0]
+    catcher = states["invoke charge"]["Catch"][0]
     assert catcher["Assign"] == {"why": f"{{% {INPUT}.why %}}"}
     assert states[catcher["Next"]]["Type"] == "Succeed"
 
@@ -1498,7 +1505,7 @@ def test_what_the_known_value_decides(value, test, kept, result):
     compiled = flagged(body)
     states = compiled["States"]
     assert any(s["Type"] == "Choice" for s in states.values()) == kept
-    assert asl.run(compiled, {}, {"invoke": lambda arguments: {}}) == result
+    assert asl.run(compiled, {}, {"invoke charge": lambda arguments: {}}) == result
 
 
 @pytest.mark.parametrize(
@@ -1520,7 +1527,10 @@ def test_a_task_takes_the_assignments_of_a_rule_its_catch_would_not_take(caught,
     compiled = flagged(body)
     states = compiled["States"]
     assert any(s["Type"] == "Choice" for s in states.values()) == kept
-    ok = {"invoke": lambda arguments: {}, "invoke_2": lambda arguments: {}}
+    ok = {
+        "invoke charge": lambda arguments: {},
+        "invoke charge_2": lambda arguments: {},
+    }
     assert asl.run(compiled, {"n": 1}, ok) == 2
 
 
@@ -1558,7 +1568,7 @@ def test_a_path_past_a_choice_takes_the_assignments_of_its_default(note, choices
     def declined(arguments):
         raise asl.Failure("Declined", "")
 
-    ok = {"invoke": lambda arguments: {}}
+    ok = {"invoke charge": lambda arguments: {}}
     written = "open" if note == "{status}" else "!"
     given = {"prefix": "p:"}
     assert asl.run(compiled, given, {"found": blocked, **ok}) == "p:" + written

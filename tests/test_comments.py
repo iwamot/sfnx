@@ -87,7 +87,7 @@ return total
         "if": None,
         # The return after the try reads a variable, which cannot fail, so it
         # is the Task's Output on the way the Task leads.
-        "invoke": "guarded\ndone",
+        "invoke risky": "guarded\ndone",
         "raise": "give up",
     }
     assert list(compiled["States"]["for"])[:2] == ["Type", "Comment"]

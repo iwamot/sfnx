@@ -121,7 +121,7 @@ def test_the_result_can_be_read_through_subscripts_and_unpacked():
 def test_a_function_that_ends_without_return_gives_none():
     module = '\n\ndef note(x):\n    task(LAMBDA, {"FunctionName": "f", "Payload": x})\n'
     body = "r = note(input)\nreturn [r]"
-    tasks = {"invoke": lambda arguments: {}}
+    tasks = {"invoke f": lambda arguments: {}}
     assert run(body, {}, tasks, module=module) == [None]
 
 
@@ -130,8 +130,8 @@ def test_a_value_the_call_does_not_use_is_not_evaluated():
     expression it would drop."""
     module = '\n\ndef lookup(x):\n    return x["missing"]\n'
     compiled = states('lookup(input)\ninvoke("f", 1)\nreturn 1', module)
-    assert list(compiled) == ["invoke"]
-    assert (compiled["invoke"]["Output"], compiled["invoke"]["End"]) == (1, True)
+    assert list(compiled) == ["invoke f"]
+    assert (compiled["invoke f"]["Output"], compiled["invoke f"]["End"]) == (1, True)
 
 
 def test_the_names_of_the_function_are_its_own():
@@ -235,7 +235,7 @@ def test_an_argument_reads_the_time_the_task_before_the_return_reads():
     )
     body = 'invoke("f", input)\nnow = str(datetime.now())\nreturn stamp(now)'
     compiled = states(body, module)
-    assert compiled["invoke"]["Output"] == {"at": "{% $now() %}"}
+    assert compiled["invoke f"]["Output"] == {"at": "{% $now() %}"}
 
 
 def test_a_parameter_takes_its_annotation():

@@ -185,7 +185,7 @@ def test_each_state_names_the_source_it_comes_from():
             [('return {"to": input["email"], "note": note}', None)],
         ),
         # The end of the function is where the Task ends the branch.
-        "audit.invoke": (
+        "audit.invoke audit": (
             [],
             [
                 ('task(LAMBDA, {"FunctionName": "audit"})', None),
@@ -202,7 +202,7 @@ def test_each_state_names_the_source_it_comes_from():
                 ("def fan(input):", "end of function"),
             ],
         ),
-        "ship.invoke": (
+        "ship.invoke ship": (
             [],
             [
                 ('task(LAMBDA, {"FunctionName": "ship", "Payload": order})', None),
