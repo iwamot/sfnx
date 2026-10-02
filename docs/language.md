@@ -154,7 +154,7 @@ def fulfill(input: Order):
 
 A Lambda `Payload` is typed the same way, `receipt: Receipt = task(...)["Payload"]`, and so is the whole result of a Task whose type is unknown, such as a `.waitForTaskToken` or activity result: `decision: Decision = task(...)`. The class derives from `TypedDict` directly (`typing` or `typing_extensions`) and declares every field on itself, one per line; it may name the classes written above it, in `list[Item]`, `dict[str, Item]` or a union. `NotRequired[T]` and `total=False` say a key may be left out, not that its value may be `None`: read such a key with `"coupon" in input` or `input.get("coupon")`, whose result is `str | None`, and `input["coupon"]` fails at run time when the key is missing, as any missing key does. A key the class does not declare has an unknown type. A recursive TypedDict, one that inherits from another, and the form `TypedDict("Order", {...})` are rejected.
 
-A value that may have several types must be narrowed first. `isinstance(x, str)`, `x is None` and `x is not None` narrow in `if` / `elif` / `else`, in the right operand of `and` / `or`, in conditional expressions, in comprehension conditions and after a branch that returns. `x or default` never gives null, which is falsy, so `xs or []` of an `xs` that may be null is a list.
+A value that may have several types must be narrowed first. `isinstance(x, str)`, `x is None` and `x is not None` narrow in `if` / `elif` / `else`, in the right operand of `and` / `or`, in conditional expressions, in comprehension conditions and after a branch that returns. `x or default` never gives null, which is falsy, so `xs or []` of an `xs` that may be null is a list. A list is tested by counting it and any other value by `$boolean`, so the truth of a value that may be a list or another type besides None needs it narrowed too (see `if x:` in [Expressions](#expressions)).
 
 Annotations are not checked at run time. A wrong one fails the way hand-written JSONata fails, with `States.QueryEvaluationError`.
 
@@ -170,11 +170,11 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c`. An operand of `==` or `!=` that may be missing is tested first (see [a missing key](#a-missing-key)): `$exists(x) ? x = 'OK' : $error("input['k'] reads a missing key")` |
 | `x is None`, `x is not None` | `$x = null`, `$x != null`; a key read with `d["k"]` fails where it is missing and is compared with `null` once it is there |
 | `x is True`, `x is not False` ... | `$x = true`, `$not($x = false)`: `=` compares a boolean only with a boolean, as `is` does (`0 = false` is false), and a missing `x`, as `d.get("k")` never gives, is not `False` |
-| `if x:`, `bool(x)` | the truth of a value: the value itself where it is a boolean for sure, as a comparison is, and a variable every value assigned it that reaches the test is, `$count($x) > 0` for a list, `$boolean($x)` where it cannot be one, and `$type($x) = 'array' ? $count($x) > 0 : $boolean($x)` where the type is unknown, since `$boolean` reads `[0]` as false where Python reads it as true |
-| `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b`, each operand read for its truth |
-| `a or b` as a value | the truth of `a`, then `a` or `b`: `$boolean($a) ? $a : $b` for a value that cannot be a list |
-| `not x` | `$count($x) = 0` for a list, and `$not($x)` otherwise, with `x` read for its truth |
-| `x if c else y` | `$c ? $x : $y` |
+| `if x:`, `bool(x)` | the truth of a value, by its type: the value itself where it is a boolean for sure, as a comparison is, and a variable every value assigned it that reaches the test is; `$count($x) > 0` for a list, which is true when it has items, whatever they are; `$x != null and $count($x) > 0` for a list or None; and `$boolean($x)` for any other value, a value of unknown type included. A value that may be a list or another type besides None is rejected: a list is counted and the rest read by `$boolean`, and the type is not tested at run time to choose, so narrow it with `isinstance(x, list)` or compare what the test asks |
+| `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b`, each operand read for its truth: JSONata reads it as `$boolean` does, and a list is counted |
+| `a or b` as a value | `a` where it is true and `b` otherwise: `$a ? $a : $b`, with `a` read for its truth, so a list is counted |
+| `not x` | `$not` of the truth of `x`: `$count($x) = 0` for a list, `$not($x != null and $count($x) > 0)` for a list or None, and `$not($x)` for any other value, which `$not` reads as `$boolean` does |
+| `x if c else y` | `$c ? $x : $y`, with `c` read for its truth: JSONata reads it as `$boolean` does, and a list is counted |
 | `float(x)`, `int(x)`, `str(x)` | `$number($x)`, `($v := $number($x); $v < 0 ? $ceil($v) : $floor($v))` (towards zero, as Python truncates), `$string($x)` |
 | `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
 | `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$trim($s) = '' ? [] : $split($trim($s), ' ')` |
@@ -598,7 +598,7 @@ An argument written in the source that Python would refuse is rejected when the 
 
 ### The type is only known when it runs
 
-These spellings need a type to pick the JSONata for them. Without one the definition fails where it reads the value, except `in`, which reads a key lookup rather than write the test for a string and a list into every `in` on an undeclared value. Declaring the type gives Python's meaning in each case, and it also shortens what reads a value's truthiness, which is otherwise written out to follow Python.
+These spellings need a type to pick the JSONata for them. Without one the definition fails where it reads the value, except `in`, which reads a key lookup rather than write the test for a string and a list into every `in` on an undeclared value, and the truth of a value, which is `$boolean` of it. Declaring the type gives Python's meaning in each case.
 
 | Source | Value | ASL result | CPython result |
 |---|---|---|---|
@@ -606,6 +606,7 @@ These spellings need a type to pick the JSONata for them. Without one the defini
 | `max(xs)`, `min(xs)` with items of unknown type | strings | `States.QueryEvaluationError` | the greatest or least string |
 | `sorted(xs)` with items of unknown type | booleans or lists | `States.QueryEvaluationError` | a sorted list |
 | `"k" in x` with `x` of unknown type | `"key"` or `["k"]` | `false` (`$exists($x.k)`, a key lookup) | `True` |
+| `if x:`, `bool(x)`, `not x`, `x or y`, an item of `any()` / `all()`, with `x` of unknown type | a list whose items are all false, such as `[0]`, `[""]` or `[[]]` | false (`$boolean($x)`) | `True` |
 
 ### The ASL takes more than Python does
 

@@ -11,7 +11,7 @@ from sfnx import testing
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import array, call, expression, literal, spellings
-from tests import asl, truthy, unpacked
+from tests import asl, unpacked
 
 INPUT = "$states.context.Execution.Input"
 
@@ -96,29 +96,28 @@ def output(body: str, parameter: str = "input") -> object:
         (
             'items: list = input["items"]\nreturn 1 if items and input["a"] else 2',
             (
-                "$count($items) > 0 and ($v := "
+                "$count($items) > 0 and "
                 f"($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? 1 : 2"
+                'key")) ? 1 : 2'
             ),
         ),
         (
             'return 1 if not input["a"] else 2',
             (
-                f"$not(($v := ($exists({INPUT}.a) ? "
+                f"$not($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v))) ? 1 : 2"
+                'key")) ? 1 : 2'
             ),
         ),
         (
             'return 1 if input["a"] or not input["b"] else 2',
             (
-                f"($v := ($exists({INPUT}.a) ? "
+                f"($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) or $not(($v "
-                f":= ($exists({INPUT}.b) ? "
+                f'key")) or $not($exists({INPUT}.b) ? '
                 f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v))) ? 1 : 2"
+                'key")) ? 1 : 2'
             ),
         ),
         (
@@ -190,8 +189,7 @@ def output(body: str, parameter: str = "input") -> object:
             (
                 f"($v := ($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); ($type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? $v : "
-                "'none')"
+                "key\")); $v ? $v : 'none')"
             ),
         ),
         (
@@ -199,8 +197,7 @@ def output(body: str, parameter: str = "input") -> object:
             (
                 f"($v := ($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); ($type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? "
-                f"{INPUT}.b : $v)"
+                f'key")); $v ? {INPUT}.b : $v)'
             ),
         ),
         (
@@ -208,10 +205,9 @@ def output(body: str, parameter: str = "input") -> object:
             (
                 f"($v_2 := ($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); ($type($v_2) = 'array' ? $count($v_2) > 0 : $boolean($v_2)) ? "
-                f"$v_2 : ($v := ($exists({INPUT}.b) ? "
+                f'key")); $v_2 ? $v_2 : ($v := ($exists({INPUT}.b) ? '
                 f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                "key\")); ($type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? $v : 0))"
+                'key")); $v ? $v : 0))'
             ),
         ),
         (
@@ -248,25 +244,24 @@ def output(body: str, parameter: str = "input") -> object:
                 'missing key"))'
             ),
         ),
-        ('return not input["a"]', f"$not({truthy(f'{INPUT}.a')})"),
+        ('return not input["a"]', f"$not({INPUT}.a)"),
         (
             'return not (input["a"] or input["b"])',
             (
-                f"$not(($v := ($exists({INPUT}.a) ? "
+                f"$not(($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) or ($v := "
-                f"($exists({INPUT}.b) ? "
+                f'key")) or ($exists({INPUT}.b) ? '
                 f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)))"
+                'key")))'
             ),
         ),
         ('items: list = input["items"]\nreturn not items', "$count($items) = 0"),
         (
             'return 1 if input["a"] else 2',
             (
-                f"($v := ($exists({INPUT}.a) ? "
+                f"($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? 1 : 2"
+                'key")) ? 1 : 2'
             ),
         ),
         (
@@ -280,13 +275,12 @@ def output(body: str, parameter: str = "input") -> object:
         (
             'return (1 if input["a"] else 2) + 1',
             (
-                f"(($v := ($exists({INPUT}.a) ? "
+                f"(($exists({INPUT}.a) ? "
                 f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); $type($v) = 'array' ? $count($v) > 0 : $boolean($v)) ? 1 : 2) + "
-                "1"
+                'key")) ? 1 : 2) + 1'
             ),
         ),
-        ('return bool(input["a"])', truthy(f"{INPUT}.a")),
+        ('return bool(input["a"])', f"$boolean({INPUT}.a)"),
         ('items: list = input["items"]\nreturn bool(items)', "$count($items) > 0"),
         ('return float(input["a"])', f"$number({INPUT}.a)"),
         (
@@ -647,7 +641,7 @@ def test_equality_evaluates_its_operands_in_order(body, execution_input, cause):
         ('return input["k"] is True', [{"k": True}, {"k": 1}]),
         ('return input["k"] is not False', [{"k": False}, {"k": 0}]),
         ('return isinstance(input["k"], str)', [{"k": "a"}, {"k": 1}]),
-        ('return 1 if input["k"] else 2', [{"k": 0}, {"k": [0]}]),
+        ('return 1 if input["k"] else 2', [{"k": 0}, {"k": [1]}]),
         ('return 1 if not input["k"] else 2', [{"k": 0}, {"k": 1}]),
         ('return 1 if input["k"] > 0 else 2', [{"k": 0}, {"k": 1}]),
         ('xs: list = input["xs"]\nreturn [x for x in xs if x["k"]]', []),
@@ -779,6 +773,67 @@ def test_dividing_by_zero_fails_where_it_divides():
     assert callable(pay)
     with pytest.raises(ZeroDivisionError):
         pay({"a": 10, "b": 0})
+
+
+# A list is counted and any other value read by $boolean, so a value that may
+# be a list or another type besides None has no one test without testing its
+# type at run time, which is not written.
+@pytest.mark.parametrize(
+    "body",
+    [
+        "if v:\n    return 1\nreturn 2",
+        "return not v",
+        "return bool(v)",
+        'return v or "x"',
+        "return v and 1",
+        'if v and input["a"]:\n    return 1\nreturn 2',
+        "return 1 if v else 2",
+    ],
+)
+def test_a_list_or_another_type_has_no_test(body):
+    with pytest.raises(CompileError) as raised:
+        compile_source(source(f'v: list | str = input["v"]\n{body}'))
+    assert raised.value.message == (
+        "v may be array | string, and a list is tested by whether it has items, "
+        "any other value by $boolean: test isinstance(v, list) first, or compare "
+        "what the test asks"
+    )
+
+
+def test_a_list_or_another_type_is_tested_once_narrowed():
+    body = (
+        'v: list | str = input["v"]\nif isinstance(v, list):\n'
+        '    return "some" if v else "none"\nreturn "text" if v else "empty"'
+    )
+    for value, expected in (
+        ([0], "some"),
+        ([], "none"),
+        ("a", "text"),
+        ("", "empty"),
+    ):
+        assert asl.run(definition(body), {"v": value}) == expected
+
+
+# A type without a list is read by $boolean, None included; a list or None is
+# a list that is there and has items.
+@pytest.mark.parametrize(
+    "annotation, value, expected",
+    [
+        ("dict | None", {}, 2),
+        ("dict | None", None, 2),
+        ("dict | None", {"a": 0}, 1),
+        ("str | None", "", 2),
+        ("str | None", "0", 1),
+        ("bool | None", None, 2),
+        ("list | None", None, 2),
+        ("list | None", [], 2),
+        ("list | None", [0], 1),
+        ("list | None", [[]], 1),
+    ],
+)
+def test_a_value_or_none_is_tested_as_its_type_says(annotation, value, expected):
+    body = f'v: {annotation} = input["v"]\nif v:\n    return 1\nreturn 2'
+    assert asl.run(definition(body), {"v": value}) == expected
 
 
 @pytest.mark.parametrize(
@@ -2040,7 +2095,7 @@ def changing_definition(body: str) -> dict:
         ),
         # The operand written once is left where it is, so it is evaluated
         # only when the first one is falsy.
-        ("return a or jsonata('$random ()')", "$boolean($a) ? $a : $random ()"),
+        ("return a or jsonata('$random ()')", "$a ? $a : $random ()"),
         (
             "return 0.2 < random.random() < 0.8",
             "($v := $random(); 0.2 < $v and $v < 0.8)",
@@ -2055,8 +2110,8 @@ def changing_definition(body: str) -> dict:
             "return 0 <= random.random() < random.random() + 1 < 9",
             "($v := $random(); 0 <= $v and ($v_2 := ($random() + 1); $v < $v_2 and $v_2 < 9))",
         ),
-        ("return random.random() or a", "($v := $random(); $boolean($v) ? $v : $a)"),
-        ("return random.random() and a", "($v := $random(); $boolean($v) ? $a : $v)"),
+        ("return random.random() or a", "($v := $random(); $v ? $v : $a)"),
+        ("return random.random() and a", "($v := $random(); $v ? $a : $v)"),
         (
             "return str(uuid.uuid4()) is not None",
             "$uuid() != null",
@@ -2080,7 +2135,7 @@ def changing_definition(body: str) -> dict:
         ),
         (
             'v: float = input["v"]\nreturn random.random() or v',
-            "($v_2 := $random(); $boolean($v_2) ? $v_2 : $v)",
+            "($v_2 := $random(); $v_2 ? $v_2 : $v)",
         ),
         # A name the expression written in jsonata() reads is one the variable
         # must not hide, though the program never declared it.

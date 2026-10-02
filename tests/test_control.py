@@ -23,7 +23,7 @@ from sfnx.compiler import (
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import template_of
 from sfnx.locations import PREFIX
-from tests import asl, truthy
+from tests import asl
 
 INPUT = "$states.context.Execution.Input"
 HEADER = "from sfnx import state_machine, wait\n\n\n"
@@ -102,7 +102,7 @@ def test_elif_adds_rules_to_one_choice():
                 "Assign": {"x": 1},
                 "Next": "return_2",
             },
-            {"Condition": f"{{% {truthy(f'{INPUT}.b')} %}}", "Next": "return"},
+            {"Condition": f"{{% $boolean({INPUT}.b) %}}", "Next": "return"},
         ],
         "Assign": {"x": 0},
         "Default": "return_2",
@@ -122,7 +122,7 @@ def test_empty_branch_links_to_what_follows():
     states = definition('if input["a"]:\n    pass\nreturn 1')["States"]
     assert states["if"] == {
         "Type": "Choice",
-        "Choices": [{"Condition": f"{{% {truthy(f'{INPUT}.a')} %}}", "Next": "return"}],
+        "Choices": [{"Condition": f"{{% $boolean({INPUT}.a) %}}", "Next": "return"}],
         "Default": "return",
     }
 
@@ -481,7 +481,9 @@ def test_the_comments_of_an_if_that_only_assigns_go_with_its_assignment():
             {"a": 1.5},
             1,
         ),
-        ('x = 1\nif input["a"]:\n    x = 2\n    wait(1)\nreturn x', {"a": [0]}, 2),
+        # A value of unknown type is tested by $boolean, which reads [0] as
+        # false; a list is counted.
+        ('x = 1\nif input["a"]:\n    x = 2\n    wait(1)\nreturn x', {"a": [0]}, 1),
         (
             'items: list = input["a"]\nif items:\n    return "some"\nreturn "none"',
             {"a": [0]},
@@ -501,7 +503,7 @@ def test_the_comments_of_an_if_that_only_assigns_go_with_its_assignment():
         # x += v is x = x + v.
         ('t = input["t"] + 0\nt += 2\nt *= 3\nt -= 1\nt //= 2\nreturn t', {"t": 1}, 4),
         ('s: str = input["s"]\ns += "!"\nreturn s', {"s": "a"}, "a!"),
-        # A value that may be a list is tested for one when it is evaluated.
+        # A list or None: None is false, and a list is counted.
         *(
             (f'v: list | None = input["v"]\n{test}', {"v": v, "go": True}, expected)
             for test in (
@@ -967,9 +969,7 @@ def test_an_if_that_reads_what_the_first_assigns_reads_it_as_its_expression():
     body = 'if input["a"]:\n    return 1\ny = input["y"]\nif y:\n    return 2\nreturn 3'
     states = definition(body)["States"]
     assert "if_2" not in states
-    assert states["if"]["Choices"][1]["Condition"] == (
-        f"{{% ($y := {INPUT}.y; $type($y) = 'array' ? $count($y) > 0 : $boolean($y)) %}}"
-    )
+    assert states["if"]["Choices"][1]["Condition"] == f"{{% $boolean({INPUT}.y) %}}"
     assert states["if"]["Choices"][1]["Assign"] == {"y": f"{{% {INPUT}.y %}}"}
     for a, y, expected in [(True, True, 1), (False, True, 2), (False, False, 3)]:
         assert asl.run(definition(body), {"a": a, "y": y}) == expected
@@ -1162,10 +1162,10 @@ def test_a_loop_in_a_loop_takes_in_the_value_drawn_before_it():
         assert asl.run(compiled, {"xs": [0, 0]}) == 2.25
 
 
-def test_a_start_folded_into_a_choice_binds_a_long_value_it_reads_again():
-    """The test of user_name reads it three times: folded into the Choice, it
-    is bound once rather than written out at each read, and the dict the two
-    get() read is written once in each."""
+def test_a_start_folded_into_a_choice_reads_each_value_once():
+    """Folded into the Choice, the tests of user_name and user_password read
+    their expressions where the variables were, and the dict the two get()
+    read is written once in each."""
     body = (
         'attributes = input["packet"].get("attributes", {})\n'
         'user_name = attributes.get("User-Name", "")\n'
@@ -1177,7 +1177,6 @@ def test_a_start_folded_into_a_choice_binds_a_long_value_it_reads_again():
     compiled = definition(body)
     (start,) = [s for s in compiled["States"].values() if s["Type"] == "Choice"]
     condition = start["Choices"][0]["Condition"]
-    assert condition.startswith("{% ($user_name := ")
     assert condition.count(".attributes") == 4
     packet = {"attributes": {"User-Name": "u"}}
     assert asl.run(compiled, {"packet": packet}) == "no password"

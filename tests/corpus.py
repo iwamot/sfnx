@@ -335,11 +335,21 @@ CASES: tuple[Case, ...] = (
     Case(
         "truth-nested-empty-list",
         "truth",
-        'return bool(input["x"])',
+        'x: list = input["x"]\nreturn bool(x)',
         {"x": [[]]},
         Value(True),
         "a list is true when it has items, whatever they are; JSONata's $boolean "
-        "looks into the items, so the generated expression counts them instead",
+        "looks into the items, so the generated expression counts a list instead",
+    ),
+    Case(
+        "truth-unknown-nested-empty-list",
+        "truth",
+        'return bool(input["x"])',
+        {"x": [[]]},
+        Value(False),
+        "a value of unknown type is read by $boolean, which looks into the items "
+        "of an array",
+        python=False,
     ),
     Case(
         "truth-zero",
@@ -599,13 +609,13 @@ CASES: tuple[Case, ...] = (
         QUANTIFIED.format("any"),
         {"xs": [[]]},
         Value(False),
-        "an item is read for its truth as bool() reads it: an empty list is "
-        "false, where $boolean of [[]] would look into the items",
+        "an item of unknown type is read by $boolean, and an empty list is "
+        "false in Python and in JSONata",
     ),
     Case(
         "all-nested-list-of-zero",
         "quantifiers",
-        QUANTIFIED.format("all"),
+        'xs: list[list] = input["xs"]\nreturn all(xs)',
         {"xs": [[0]]},
         Value(True),
         "a list with items is true, whatever the items are, where $boolean of "

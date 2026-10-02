@@ -687,7 +687,7 @@ class Translator:
         if isinstance(node, ast.Compare):
             return self.compare(node)
         if isinstance(node, ast.IfExp):
-            test = self.condition(node.test)
+            test = self.condition(node.test, cast=True)
             when, unless = self.narrowing(node.test)
             with self.narrowed(when), self.branch():
                 then = self.expr(node.body)
@@ -1024,7 +1024,8 @@ class Translator:
                 tests, narrowed = self.conditions(generator.ifs)
                 with self.narrowed(narrowed):
                     element = self.truth(
-                        self.required(argument.elt, self.expr(argument.elt))
+                        argument.elt,
+                        self.required(argument.elt, self.expr(argument.elt)),
                     )
             self.check_hiding({variable: generator.target}, [element, *tests])
             spelled = self.spelling(variable)
@@ -1032,7 +1033,7 @@ class Translator:
             source = self.iterated(argument, f"{name}()", whole=True)
             item = source.type.items if source.type else None
             spelled = self.parameter("x", [source])
-            element = self.truth(expression("$" + spelled, type=item))
+            element = self.truth(argument, expression("$" + spelled, type=item))
         # The item that decides the result is the one that differs from the
         # initial value: a true item for any(), a false one for all(). An item
         # a condition drops leaves the result as it is, which is that initial
@@ -1230,26 +1231,40 @@ class Translator:
             )
         return call("formatNumber", [part, literal(number_picture(found))], of(STRING))
 
-    def truth(self, value: Expr) -> Expr:
-        """A JSON boolean with Python's truthiness. $boolean agrees with
-        bool() except on a non-empty array whose members are all falsy, so a
-        known array is counted instead, and a value that may be one, an
-        unknown type included, is tested for one when it is evaluated.
-        Declaring the type is what keeps the shorter $boolean. The test reads
-        the value three times, so anything longer than a variable is bound to
-        one first."""
+    def truth(self, node: ast.expr, value: Expr) -> Expr:
+        """A JSON boolean for a test of a whole value: a list is counted, as
+        what a test of a list asks is whether it has items, a list or None is
+        a list that is there and has items, and any other value, an unknown
+        type included, is read by $boolean, which is what such a test means.
+        The type is never tested at run time to choose between them, so a
+        value that may be a list or another type besides None is rejected."""
         if value.boolean:
             return value
-        if value.type is not None and ARRAY not in value.type.kinds:
-            return call("boolean", [value], of(BOOLEAN), boolean=True)
+        self.check_tested(node, value)
         if value.type is not None and value.type.kind == ARRAY:
             return self.counted(value)
-        with self.once([value], always=self.bind(value)) as (bindings, (bound,)):
-            kind = call("type", [bound], of(STRING))
-            test = binary(kind, "=", literal("array"), COMPARE, of(BOOLEAN), True)
-            otherwise = call("boolean", [bound], of(BOOLEAN), boolean=True)
-            chosen = conditional(test, self.counted(bound), otherwise, of(BOOLEAN))
-        return block(bindings, chosen)
+        if value.type is not None and value.type.kinds == {ARRAY, NULL}:
+            with self.once([value], always=self.bind(value)) as (bindings, (bound,)):
+                there = binary(bound, "!=", literal(None), COMPARE, of(BOOLEAN), True)
+                test = binary(there, "and", self.counted(bound), AND, of(BOOLEAN), True)
+            return block(bindings, test)
+        return call("boolean", [value], of(BOOLEAN), boolean=True)
+
+    def check_tested(self, node: ast.expr, value: Expr) -> None:
+        """A list is tested by counting it and any other value by $boolean, so
+        a value whose type may be a list or another type besides None has no
+        one test without testing the type at run time."""
+        if value.type is None:
+            return
+        kinds = value.type.kinds
+        if ARRAY in kinds and not kinds <= {ARRAY, NULL}:
+            spelled = ast.unparse(node)
+            raise CompileError(
+                f"{spelled} may be {value.type.describe()}, and a list is tested "
+                "by whether it has items, any other value by $boolean: test "
+                f"isinstance({spelled}, list) first, or compare what the test asks",
+                node,
+            )
 
     def counted(self, value: Expr) -> Expr:
         """An array is truthy when it holds anything, whatever the items are.
@@ -1264,30 +1279,37 @@ class Translator:
         )
         return replace(counted, total=value.total)
 
-    def cast(self, value: Expr) -> Expr:
-        """An operand of JSONata's and, or and $not, which cast it with
-        $boolean. A value that may be an array, an unknown type included, is
-        read as truth() reads it, so that and, or and not agree with if."""
-        if value.type is None or ARRAY in value.type.kinds:
-            return self.truth(value)
+    def cast(self, node: ast.expr, value: Expr) -> Expr:
+        """An operand of JSONata's and, or and $not, which cast it as $boolean
+        does, so it is written as it is; a list is counted, as truth() counts
+        it."""
+        self.check_tested(node, value)
+        if value.type is not None and ARRAY in value.type.kinds:
+            return self.truth(node, value)
         return value
 
-    def condition(self, node: ast.expr, statement: bool = False) -> Expr:
+    def condition(
+        self, node: ast.expr, statement: bool = False, cast: bool = False
+    ) -> Expr:
         """A JSON boolean for if, while and the tests inside expressions.
         Comparisons and their and / or / not are used as they are. A value
         that may be missing fails the test of a conditional expression or a
         comprehension, which would take it for false; an if or a while fails
-        on it already, as a Choice's Condition fails on a missing result."""
+        on it already, as a Choice's Condition fails on a missing result.
+        cast: the test of a conditional, which JSONata casts as $boolean
+        does, so a value that is no list is written as it is."""
         if isinstance(node, ast.BoolOp):
             return self.junction(node, self.operands(node, self.logical))
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             return self.unary(node, required=not statement)
         if isinstance(node, ast.Compare) and not statement:
-            return self.truth(self.requiring_compare(node))
+            return self.truth(node, self.requiring_compare(node))
         value = self.expr(node)
         if self.written_test(node):
             return value
-        return self.truth(value if statement else self.required(node, value))
+        if cast:
+            return self.cast(node, self.required(node, value))
+        return self.truth(node, value if statement else self.required(node, value))
 
     def written_test(self, node: ast.expr) -> bool:
         """Whether a test reads a jsonata() call, whose expression is the test
@@ -1428,7 +1450,9 @@ class Translator:
             if operand.type and operand.type.kind == ARRAY:
                 count = call("count", [operand], of(NUMBER))
                 return binary(count, "=", literal(0), COMPARE, of(BOOLEAN), True)
-            return call("not", [self.cast(operand)], of(BOOLEAN), boolean=True)
+            return call(
+                "not", [self.cast(node.operand, operand)], of(BOOLEAN), boolean=True
+            )
         if isinstance(node.op, ast.USub):
             operand = node.operand
             if (
@@ -1624,7 +1648,9 @@ class Translator:
             values[-1],
         ]
         result = values[-1]
-        for value in reversed(values[:-1]):
+        for operand, value in zip(
+            reversed(node.values[:-1]), reversed(values[:-1]), strict=True
+        ):
             given = value.type
             if isinstance(node.op, ast.Or) and given and NULL in given.kinds:
                 # null is falsy, so or never gives it: x or [] is a list.
@@ -1634,14 +1660,19 @@ class Translator:
                 kind = union(given, result.type) if given else result.type
             else:
                 kind = union(given, result.type)
-            with self.once([value], [result], always=self.bind(value)) as (
+            # A conditional casts its test as $boolean does, so the value is
+            # its own test, written twice where it is a path, as a
+            # hand-writer writes `a ? a : b`, and bound first where longer.
+            longer = SIMPLE_PATH.fullmatch(value.code) is None
+            with self.once([value], [result], always=longer) as (
                 bindings,
                 (value,),
             ):
+                test = self.cast(operand, value)
                 if isinstance(node.op, ast.Or):
-                    chosen = conditional(self.truth(value), value, result, kind)
+                    chosen = conditional(test, value, result, kind)
                 else:
-                    chosen = conditional(self.truth(value), result, value, kind)
+                    chosen = conditional(test, result, value, kind)
             result = block(bindings, chosen)
         return result
 
@@ -1654,7 +1685,7 @@ class Translator:
         cast = [
             value
             if self.written_test(operand)
-            else self.cast(self.required(operand, value))
+            else self.cast(operand, self.required(operand, value))
             for operand, value in zip(node.values, values, strict=True)
         ]
         result = cast[0]
@@ -2316,7 +2347,7 @@ class Translator:
             if name == "str":
                 return text(argument)
             if name == "bool":
-                return self.truth(argument)
+                return self.truth(node.args[0], argument)
             return self.length(node.args[0], argument)
         if name == "isinstance":
             return self.isinstance(node)
