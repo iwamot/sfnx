@@ -175,7 +175,7 @@ def test_a_list_or_dict_of_values_that_are_never_undefined_goes_in_the_return(
 
 @pytest.mark.parametrize(
     "value",
-    ['[1, input["x"]]', '{"a": input["x"]}', '{"a": 10 / input.get("d", 1)}'],
+    ['[1, input["x"]]', '{"a": input["x"]}', '{"a": input["x"] - 1}'],
 )
 def test_a_list_or_dict_that_may_be_undefined_or_fail_keeps_its_pass(value):
     definition = compile_one(machine(f"v = {value}\nreturn [v]"))

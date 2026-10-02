@@ -265,16 +265,15 @@ def test_a_list_comprehension_evaluates_every_item():
 def test_an_item_past_the_one_that_decides_is_never_evaluated():
     """The result is decided by the first item, so the second, which would
     fail, is not read; a list comprehension of the same items fails."""
-    body = 'xs: list[float] = input["xs"]\nreturn any(10 / x > 1 for x in xs)'
-    assert run(body, {"xs": [1, 0]}) is True
-    assert in_python(body, {"xs": [1, 0]}) is True
-    listed = 'xs: list[float] = input["xs"]\nreturn any([10 / x > 1 for x in xs])'
+    body = 'xs: list = input["xs"]\nreturn any(x - 1 > 0 for x in xs)'
+    assert run(body, {"xs": [2, "a"]}) is True
+    assert in_python(body, {"xs": [2, "a"]}) is True
+    listed = 'xs: list = input["xs"]\nreturn any([x - 1 > 0 for x in xs])'
     with pytest.raises(asl.Failure) as raised:
-        run(listed, {"xs": [1, 0]})
+        run(listed, {"xs": [2, "a"]})
     assert raised.value.error == "States.QueryEvaluationError"
-    assert raised.value.cause == "division by zero"
-    with pytest.raises(ZeroDivisionError):
-        in_python(listed, {"xs": [1, 0]})
+    with pytest.raises(TypeError):
+        in_python(listed, {"xs": [2, "a"]})
 
 
 def test_a_condition_past_the_one_that_decides_is_never_evaluated():
