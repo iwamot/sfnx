@@ -160,7 +160,7 @@ NESTED = 'xs: list = input["xs"]\nreturn [[x] for x in xs]'
 ENTRIES = 'ps: list[dict[str, str]] = input["ps"]\nreturn {p["k"]: p["v"] for p in ps}'
 KEPT = 'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 1}'
 QUANTIFIED = 'xs: list = input["xs"]\nreturn {}(xs)'
-SHORT_CIRCUIT = 'xs: list[float] = input["xs"]\nreturn {}(10 / x > 1 for x in xs)'
+SHORT_CIRCUIT = 'xs: list = input["xs"]\nreturn {}(x - 1 > 0 for x in xs)'
 REWRITTEN = (
     'd: dict[str, float] = input["d"]\nreturn {k: v + 1 for k, v in d.items() if v > 1}'
 )
@@ -279,16 +279,16 @@ return inline_map(
 )
 """
 TASK_FAILED = """\
-def f(n):
-    return {"k": n}
+def f(item):
+    return {"k": item["v"] if item["n"] == 0 else 1}
 
 try:
     rs = inline_map(
         f,
-        [context["State"]["RetryCount"]],
+        [{"n": context["State"]["RetryCount"], "v": input["v"]}],
         retry=[{"ErrorEquals": [TaskFailed], "MaxAttempts": 2, "IntervalSeconds": 1}],
     )
-    return 1 / rs[0]["k"]
+    return rs[0]["k"] - 1
 except Exception:
     return "not retried"
 """
@@ -297,10 +297,10 @@ def f(n):
     return {"k": n}
 
 try:
-    rs = inline_map(f, [0])
+    rs = inline_map(f, input["xs"])
 except Declined:
     return "caught"
-return 1 / rs[0]["k"]
+return rs[0]["k"] - 1
 """
 RULE_ASSIGNS = """\
 x: float = input["x"]
@@ -398,17 +398,6 @@ CASES: tuple[Case, ...] = (
         {"a": 7, "b": 2},
         Value(3.5),
         "/ divides as Python does, without truncating",
-    ),
-    Case(
-        "division-by-zero",
-        "numbers",
-        'return input["a"] / input["b"]',
-        {"a": 1, "b": 0},
-        Error(QUERY_ERROR),
-        "JSONata gives the string Infinity, so the divisor is tested and the "
-        "execution fails where it divides; CPython raises ZeroDivisionError, "
-        "so only the failure is compared",
-        python=False,
     ),
     Case(
         "format-spec-half-to-even",
@@ -625,28 +614,28 @@ CASES: tuple[Case, ...] = (
         "any-stops-at-the-first-true-item",
         "quantifiers",
         SHORT_CIRCUIT.format("any"),
-        {"xs": [1, 0]},
+        {"xs": [2, "a"]},
         Value(True),
-        "the first item decides the result, so the second, which divides by "
-        "zero, is never evaluated, as Python never evaluates it",
+        "the first item decides the result, so the second, which subtracts "
+        "from a string, is never evaluated, as Python never evaluates it",
     ),
     Case(
         "all-stops-at-the-first-false-item",
         "quantifiers",
         SHORT_CIRCUIT.format("all"),
-        {"xs": [-1, 0]},
+        {"xs": [0, "a"]},
         Value(False),
-        "the first item decides the result, so the second, which divides by "
-        "zero, is never evaluated, as Python never evaluates it",
+        "the first item decides the result, so the second, which subtracts "
+        "from a string, is never evaluated, as Python never evaluates it",
     ),
     Case(
         "any-of-a-list-comprehension-reads-every-item",
         "quantifiers",
-        'xs: list[float] = input["xs"]\nreturn any([10 / x > 1 for x in xs])',
-        {"xs": [1, 0]},
+        'xs: list = input["xs"]\nreturn any([x - 1 > 0 for x in xs])',
+        {"xs": [2, "a"]},
         Error(QUERY_ERROR),
         "a list comprehension is built before any() reads it, so the item that "
-        "divides by zero fails the execution; CPython raises ZeroDivisionError, "
+        "subtracts from a string fails the execution; CPython raises TypeError, "
         "so only the failure is compared",
         python=False,
     ),
@@ -924,12 +913,12 @@ CASES: tuple[Case, ...] = (
         "task-failed-retrier-misses-a-failing-output",
         "retry",
         TASK_FAILED,
-        {},
+        {"v": "a"},
         Value("not retried"),
         "the return goes in the Output of the Map, whose retrier for "
         "States.TaskFailed does not match the Output's failure, so the Catch "
-        "takes it at once instead of the Map running again with a divisor of "
-        "1; CPython has no context and no retries",
+        "takes it at once instead of the Map running again with a number; "
+        "CPython has no context and no retries",
         python=False,
         backs="A `States.TaskFailed` retrier does not match a failing `Output`",
         states=("Map", "Succeed"),
@@ -938,12 +927,11 @@ CASES: tuple[Case, ...] = (
         "catch-for-another-error-misses-a-failing-output",
         "catch",
         CATCH_MISSES,
-        {},
+        {"xs": ["a"]},
         Error(QUERY_ERROR),
         "the return after the try goes in the Output of the Map, whose Catch "
         "for Declined does not take the Output's failure, so the execution "
-        "fails as the Succeed's failure would; CPython raises "
-        "ZeroDivisionError",
+        "fails as the Succeed's failure would; CPython raises TypeError",
         python=False,
         backs="A Catch or a retrier for other errors does not take it",
         states=("Map", "Succeed"),

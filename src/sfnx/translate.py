@@ -1515,40 +1515,35 @@ class Translator:
             return binary(left, symbol, right, precedence, number)
         if symbol == "**":
             return call("power", [left, right], number)
-        if written_number(right) == 0:
-            raise CompileError(
-                f"dividing by {ast.unparse(node.right)} fails every time; "
-                "divide by a value that is not zero",
-                node.right,
-            )
         a, b = written_number(left), written_number(right)
         if (
             symbol in {"//", "%"}
             and type(a) is int
             and type(b) is int
+            and b != 0
             and max(abs(a), abs(b)) <= EXACT
         ):
             # Integers a double holds exactly give Python's quotient and
             # remainder, as a hand-writer writes 1 for 3 // 2.
             return literal(a // b if symbol == "//" else a % b)
+        # A divisor of zero is the writer's to keep out, as in Python, so
+        # nothing tests for it: Step Functions gives "Infinity", "-Infinity"
+        # or "NaN" for / and //, and fails % in place (measured).
         if symbol in {"/", "//"}:
-            # The divisor is written again in the test that divided() puts
-            # around the division.
-            with self.once([right], [left]) as (bindings, (right,)):
-                quotient = binary(left, "/", right, MULTIPLY, number)
-                if symbol == "//":
-                    quotient = call("floor", [quotient], number)
-                return block(bindings, divided(right, quotient))
+            quotient = binary(left, "/", right, MULTIPLY, number)
+            if symbol == "//":
+                quotient = call("floor", [quotient], number)
+            return quotient
         assert symbol == "%"
         # Python's % takes the sign of the divisor; JSONata's takes the dividend's.
-        # Both sides are written twice, and the divisor once more in the test.
+        # Both sides are written twice.
         with self.once([left, right]) as (bindings, (left, right)):
             quotient = call(
                 "floor", [binary(left, "/", right, MULTIPLY, number)], number
             )
             product = binary(right, "*", quotient, MULTIPLY, number)
             remainder = binary(left, "-", product, ADD, number)
-            return block(bindings, divided(right, remainder))
+            return block(bindings, remainder)
 
     def add(self, node: ast.BinOp) -> Expr:
         left, right = self.expr(node.left), self.expr(node.right)
@@ -4267,15 +4262,3 @@ def known_text(value: Expr) -> str | None:
     if type(number) is int and abs(number) < 2**53:
         return str(number)
     return None
-
-
-def divided(divisor: Expr, value: Expr) -> Expr:
-    """value, with the test Python makes before it divides. Dividing by zero
-    raises there, while JSONata gives the string "Infinity", which fails in a
-    later state that does arithmetic on it, or compares as a string and takes
-    a branch without failing. A divisor written as a number needs no test."""
-    if written_number(divisor) is not None:
-        return value
-    test = binary(divisor, "=", literal(0), COMPARE, of(BOOLEAN), True)
-    raised = call("error", [literal("division by zero")], value.type)
-    return conditional(test, raised, value, value.type)

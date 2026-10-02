@@ -166,7 +166,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `24 * 60 * 60`, `7 // 2`, `0 < 1`, `not True`, `"a" + "b"`, `[1] + [2]`, `-x` where the operands are integers, booleans, strings or lists written in the source | the value, `86400`, `3`, `true`, `false`, `"ab"`, `[1, 2]`, as a hand-writer writes it; of the comparisons of strings, only `==` and `!=` are, as JSONata orders strings by UTF-16 units; an integer past 2^53, which a double does not hold, stays an expression |
 | `a % b` | `$a - $b * $floor($a / $b)` (the sign follows the divisor, as in Python) |
 | `a // b`, `a ** b` | `$floor($a / $b)`, `$power($a, $b)` |
-| `a / b` where `b` is not written as a number | `$b = 0 ? $error('division by zero') : $a / $b`, as dividing by zero raises in Python (`//` and `%` are tested the same way) |
+| `a / b`, `a // b`, `a % b` by a divisor of 0 | nothing tests the divisor: in Step Functions `/` and `//` give `"Infinity"`, `"-Infinity"` or `"NaN"`, and `%` fails (see [JSONata in Step Functions](design.md#jsonata-in-step-functions)) |
 | `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c`. An operand of `==` or `!=` that may be missing is tested first (see [a missing key](#a-missing-key)): `$exists(x) ? x = 'OK' : $error("input['k'] reads a missing key")` |
 | `x is None`, `x is not None` | `$x = null`, `$x != null`; a key read with `d["k"]` fails where it is missing and is compared with `null` once it is there |
 | `x is True`, `x is not False` ... | `$x = true`, `$not($x = false)`: `=` compares a boolean only with a boolean, as `is` does (`0 = false` is false), and a missing `x`, as `d.get("k")` never gives, is not `False` |

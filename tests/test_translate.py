@@ -47,27 +47,24 @@ def output(body: str, parameter: str = "input") -> object:
         ('return input["a"] % 3', f"{INPUT}.a - 3 * $floor({INPUT}.a / 3)"),
         ('return input["a"] // 3', f"$floor({INPUT}.a / 3)"),
         ('return input["a"] / -2', f"{INPUT}.a / -2"),
-        # A divisor not written as a number is tested, as dividing by zero
-        # raises in Python and gives the string "Infinity" in JSONata.
-        (
-            'b: float = input["b"]\nreturn input["a"] / b',
-            f"$b = 0 ? $error('division by zero') : {INPUT}.a / $b",
-        ),
-        (
-            'b: float = input["b"]\nreturn input["a"] // b',
-            f"$b = 0 ? $error('division by zero') : $floor({INPUT}.a / $b)",
-        ),
+        # Nothing tests the divisor: keeping it from zero is the writer's.
+        ('b: float = input["b"]\nreturn input["a"] / b', f"{INPUT}.a / $b"),
+        ('b: float = input["b"]\nreturn input["a"] // b', f"$floor({INPUT}.a / $b)"),
         (
             'b: float = input["b"]\nreturn input["a"] % b',
-            (
-                f"$b = 0 ? $error('division by zero') : "
-                f"{INPUT}.a - $b * $floor({INPUT}.a / $b)"
-            ),
+            f"{INPUT}.a - $b * $floor({INPUT}.a / $b)",
         ),
         (
             'b: float = input["b"]\nc: float = input["c"]\nreturn 1 / (b + c)',
-            "$b + $c = 0 ? $error('division by zero') : 1 / ($b + $c)",
+            "1 / ($b + $c)",
         ),
+        # A divisor of zero written in the source, or folded to it, is
+        # written as it is, for whoever wants to see what it does.
+        ('return input["a"] / 0', f"{INPUT}.a / 0"),
+        ('return input["a"] % 0.0', f"{INPUT}.a - 0.0 * $floor({INPUT}.a / 0.0)"),
+        ("return 1 / (2 - 2)", "1 / 0"),
+        ("return 7 // (2 - 2)", "$floor(7 / 0)"),
+        ("return 7 % 0", "7 - 0 * $floor(7 / 0)"),
         ('return input["a"] ** 2', f"$power({INPUT}.a, 2)"),
         (
             'return {**input, "a": 1}',
@@ -760,13 +757,11 @@ def test_unpacking_a_value_that_is_not_a_dict_fails_where_it_unpacks():
         pay({"d": [{"a": 1}, {"b": 2}]})
 
 
-def test_dividing_by_zero_fails_where_it_divides():
-    """The module raises there, and the definition fails where it divides."""
+def test_dividing_by_zero_is_not_tested():
+    """The module raises there, and the definition divides as written: what
+    Step Functions gives for it is recorded in docs/design.md."""
     body = 'b: float = input["b"]\nreturn input["a"] / b'
-    with pytest.raises(asl.Failure) as raised:
-        asl.run(definition(body), {"a": 10, "b": 0})
-    assert raised.value.error == "States.QueryEvaluationError"
-    assert raised.value.cause == "division by zero"
+    assert output(body) == f"{{% {INPUT}.a / $b %}}"
     namespace: dict[str, object] = {}
     exec(source(body), namespace)
     pay = namespace["pay"]
@@ -880,13 +875,6 @@ def test_a_value_or_none_is_tested_as_its_type_says(annotation, value, expected)
             "'a' is a string, and - takes numbers; convert it with float('a')",
         ),
         ('return -"a"', "is a string, and - takes numbers"),
-        (
-            'return input["a"] / 0',
-            "dividing by 0 fails every time; divide by a value that is not zero",
-        ),
-        ('return input["a"] % 0.0', "dividing by 0.0 fails every time"),
-        # Written in the source, 2 - 2 is 0 as the file compiles.
-        ("return 1 / (2 - 2)", "dividing by 2 - 2 fails every time"),
         ('return +input["a"]', "remove the unary +"),
         ('return ~input["a"]', "no bitwise operators"),
         ('return input["a"] | 1', "no bitwise or matrix operators"),
@@ -1679,15 +1667,13 @@ def test_a_variable_named_after_a_function_is_renamed():
 
 
 def test_a_variable_named_error_does_not_hide_the_error_function():
-    body = 'error = input["error"]\nb: float = input["b"]\nreturn [error, 10 / b]'
+    body = 'error = input["error"]\nreturn [error, input["b"] == 2]'
     compiled = definition(body)
     assert (
         compiled["States"]["error"]["Assign"]["error_val"] == f"{{% {INPUT}.error %}}"
     )
-    assert compiled["States"]["return"]["Output"][1] == (
-        "{% $b = 0 ? $error('division by zero') : 10 / $b %}"
-    )
-    assert asl.run(compiled, {"error": "e", "b": 2}) == ["e", 5]
+    assert "$error(" in compiled["States"]["return"]["Output"][1]
+    assert asl.run(compiled, {"error": "e", "b": 2}) == ["e", True]
 
 
 def test_a_renamed_variable_takes_a_name_the_module_does_not_use():
@@ -2019,7 +2005,7 @@ def numbers_definition(body: str) -> dict:
         ("return sum(xs) / len(xs)", "$average($xs)"),
         (
             'ys: list = input["ys"]\nreturn sum(xs) / len(ys)',
-            "$count($ys) = 0 ? $error('division by zero') : $sum($xs) / $count($ys)",
+            "$sum($xs) / $count($ys)",
         ),
     ],
 )
@@ -2066,10 +2052,7 @@ def changing_definition(body: str) -> dict:
         ),
         (
             "return a % random.random()",
-            (
-                "($v := $random(); $v = 0 ? $error('division by zero') : "
-                "$a - $v * $floor($a / $v))"
-            ),
+            ("($v := $random(); $a - $v * $floor($a / $v))"),
         ),
         (
             "return (random.random() + 1) % 2",
@@ -2128,10 +2111,7 @@ def changing_definition(body: str) -> dict:
         # the parameter of a comprehension, which is not counted as one.
         (
             'v: float = input["v"]\nreturn random.random() % v',
-            (
-                "($v_2 := $random(); $v = 0 ? $error('division by zero') : "
-                "$v_2 - $v * $floor($v_2 / $v))"
-            ),
+            ("($v_2 := $random(); $v_2 - $v * $floor($v_2 / $v))"),
         ),
         (
             'v: float = input["v"]\nreturn random.random() or v',
@@ -2146,8 +2126,8 @@ def changing_definition(body: str) -> dict:
         (
             "return [x % random.random() for x in xs]",
             (
-                "[$map($xs, function($x) { ($v := $random(); $v = 0 ? "
-                "$error('division by zero') : $x - $v * $floor($x / $v)) })]"
+                "[$map($xs, function($x) { ($v := $random(); "
+                "$x - $v * $floor($x / $v)) })]"
             ),
         ),
         (
