@@ -44,14 +44,14 @@
           "Next": "raise"
         }
       ],
-      "Default": "invoke"
+      "Default": "invoke deploy"
     },
     "raise": {
       "Type": "Fail",
       "Error": "Rejected",
       "Cause": "{% $decision.comment %}"
     },
-    "invoke": {
+    "invoke deploy": {
       "Type": "Task",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Arguments": {

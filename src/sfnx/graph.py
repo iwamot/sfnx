@@ -62,17 +62,26 @@ class Graph:
 
 def serial_name(prefix: str, base: str, names: set[str]) -> str:
     """The name for a state of a base: prefix and base, or with the least
-    serial from 2 that no name in names has."""
-    serial = 1
-    name = prefix + base
-    while name in names:
-        serial += 1
-        name = f"{prefix}{base}_{serial}"
+    serial from 2 that no name in names has. A base of an action and what it
+    calls, `putItem orders`, which no variable name can be as it holds a
+    space, gives way to the action alone where the name would be too long."""
+    name = serialed(prefix, base, names)
+    if len(name) > MAX_NAME and " " in base:
+        name = serialed(prefix, base.split(" ", 1)[0], names)
     if len(name) > MAX_NAME:
         raise ValueError(
             f"state name {name} is longer than {MAX_NAME} characters; "
             "use a shorter variable or function name"
         )
+    return name
+
+
+def serialed(prefix: str, base: str, names: set[str]) -> str:
+    serial = 1
+    name = prefix + base
+    while name in names:
+        serial += 1
+        name = f"{prefix}{base}_{serial}"
     return name
 
 

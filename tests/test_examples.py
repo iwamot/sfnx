@@ -205,7 +205,7 @@ RELEASE = {"version": "1.2.0"}
 def test_approval_deploys_an_approved_release():
     tasks = Tasks(
         decision=constant({"approved": True, "comment": "ship it"}),
-        invoke=constant({"Payload": None}),
+        **{"invoke deploy": constant({"Payload": None})},
     )
     assert asl.run(definition("approval"), RELEASE, tasks) == {
         "version": "1.2.0",
@@ -220,14 +220,14 @@ def test_approval_deploys_an_approved_release():
                 "Message": {"release": "1.2.0", "token": "token"},
             },
         ),
-        ("invoke", {"FunctionName": "deploy", "Payload": {"version": "1.2.0"}}),
+        ("invoke deploy", {"FunctionName": "deploy", "Payload": {"version": "1.2.0"}}),
     ]
 
 
 def test_approval_fails_as_rejected_without_deploying():
     tasks = Tasks(
         decision=constant({"approved": False, "comment": "not yet"}),
-        invoke=constant({"Payload": None}),
+        **{"invoke deploy": constant({"Payload": None})},
     )
     with pytest.raises(asl.Failure) as failure:
         asl.run(definition("approval"), RELEASE, tasks)
@@ -238,7 +238,7 @@ def test_approval_fails_as_rejected_without_deploying():
 def test_approval_returns_undeployed_when_nobody_answers():
     tasks = Tasks(
         decision=failing("States.Timeout", "no answer"),
-        invoke=constant({"Payload": None}),
+        **{"invoke deploy": constant({"Payload": None})},
     )
     assert asl.run(definition("approval"), RELEASE, tasks) == {
         "version": "1.2.0",

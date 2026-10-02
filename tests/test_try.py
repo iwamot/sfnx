@@ -94,7 +94,7 @@ def test_values_written_in_the_source_go_in_the_state_that_catches():
     def declined(arguments):
         raise asl.Failure("Declined", "no")
 
-    log = {"invoke": lambda arguments: {}}
+    log = {"invoke log": lambda arguments: {}}
     assert asl.run(definition, {}, {"publish": lambda arguments: {}, **log}) == 200
     assert asl.run(definition, {}, {"publish": declined, **log}) == 500
 
@@ -581,7 +581,7 @@ def test_assignments_that_start_an_except_clause_go_in_its_catch():
         f"    {NOTIFY}\n    return note\nreturn 1"
     )
     compiled = states(body)
-    assert compiled["invoke"]["Catch"][0] == {
+    assert compiled["invoke charge"]["Catch"][0] == {
         "ErrorEquals": ["Declined"],
         "Assign": {
             "reason": "{% $states.errorOutput.Cause %}",
@@ -592,7 +592,9 @@ def test_assignments_that_start_an_except_clause_go_in_its_catch():
         },
         "Next": "publish",
     }
-    note = run(body, {}, {"invoke": fails("Declined", "no funds"), "publish": dict})
+    note = run(
+        body, {}, {"invoke charge": fails("Declined", "no funds"), "publish": dict}
+    )
     assert note == {"reason": "no funds", "kind": "Declined"}
 
 
@@ -769,7 +771,7 @@ def test_a_value_bound_once_is_not_read_by_another_put_in_place():
     compiled = states(body)
     ending = next(s for s in compiled.values() if s.get("End"))
     assert ":=" not in ending["Output"]
-    assert run(body, {"n": 2, "k": 0}, {"invoke": lambda arguments: {}}) == 13
+    assert run(body, {"n": 2, "k": 0}, {"invoke charge": lambda arguments: {}}) == 13
 
 
 def test_values_bound_once_do_not_read_each_other():
@@ -783,7 +785,7 @@ def test_values_bound_once_do_not_read_each_other():
     )
     ending = next(s for s in states(body).values() if s.get("End"))
     assert ":=" not in ending["Output"]
-    assert run(body, {"n": 2, "k": 0}, {"invoke": lambda arguments: {}}) == 25
+    assert run(body, {"n": 2, "k": 0}, {"invoke charge": lambda arguments: {}}) == 25
 
 
 def test_an_assignment_the_catcher_leads_to_as_well_goes_in_both():
