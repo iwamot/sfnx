@@ -92,190 +92,92 @@ def output(body: str, parameter: str = "input") -> object:
         ('return 2 * -input["a"]', f"2 * -{INPUT}.a"),
         (
             'items: list = input["items"]\nreturn 1 if items and input["a"] else 2',
-            (
-                "$count($items) > 0 and "
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) ? 1 : 2'
-            ),
+            f"$count($items) > 0 and {INPUT}.a ? 1 : 2",
         ),
         (
             'return 1 if not input["a"] else 2',
-            (
-                f"$not($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) ? 1 : 2'
-            ),
+            f"$not({INPUT}.a) ? 1 : 2",
         ),
         (
             'return 1 if input["a"] or not input["b"] else 2',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                f'key")) or $not($exists({INPUT}.b) ? '
-                f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                'key")) ? 1 : 2'
-            ),
+            f"{INPUT}.a or $not({INPUT}.b) ? 1 : 2",
         ),
         (
             'return input["a"] == None',
-            (
-                f"$exists({INPUT}.a) ? {INPUT}.a = null"
-                " : $error(\"input['a'] reads a missing key\")"
-            ),
+            f"{INPUT}.a = null",
         ),
         (
             'return input["a"] != "x"',
-            (
-                f"$exists({INPUT}.a) ? {INPUT}.a != 'x'"
-                " : $error(\"input['a'] reads a missing key\")"
-            ),
+            f"{INPUT}.a != 'x'",
         ),
         ('return 0 < input["a"] <= 10', f"0 < {INPUT}.a and {INPUT}.a <= 10"),
         (
             'return (input["a"] < 1) == True',
-            (
-                f"($v := ({INPUT}.a < 1); $exists($v) ? $v = true"
-                " : $error(\"input['a'] < 1 reads a missing key\"))"
-            ),
+            f"({INPUT}.a < 1) = true",
         ),
         (
             'return input["a"] in [1, 2]',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) in [1, 2]'
-            ),
+            f"{INPUT}.a in [1, 2]",
         ),
         ('return "coupon" in input', f"$exists({INPUT}.coupon)"),
         ('return "coupon" not in input', f"$not($exists({INPUT}.coupon))"),
         (
             'return input["a"] is None',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) = null'
-            ),
+            f"{INPUT}.a = null",
         ),
         (
             'return input["a"] is not None',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) != null'
-            ),
+            f"{INPUT}.a != null",
         ),
         (
             'return input["a"] is True',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) = true'
-            ),
+            f"{INPUT}.a = true",
         ),
         (
             'return input["a"] is not False',
-            (
-                f"$not(($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) = false)'
-            ),
+            f"$not({INPUT}.a = false)",
         ),
         (
             'return input["a"] or "none"',
-            (
-                f"($v := ($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                "key\")); $v ? $v : 'none')"
-            ),
+            f"{INPUT}.a ? {INPUT}.a : 'none'",
         ),
         (
             'return input["a"] and input["b"]',
-            (
-                f"($v := ($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                f'key")); $v ? {INPUT}.b : $v)'
-            ),
+            f"{INPUT}.a ? {INPUT}.b : {INPUT}.a",
         ),
         (
             'return input["a"] or input["b"] or 0',
-            (
-                f"($v_2 := ($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                f'key")); $v_2 ? $v_2 : ($v := ($exists({INPUT}.b) ? '
-                f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                'key")); $v ? $v : 0))'
-            ),
+            f"{INPUT}.a ? {INPUT}.a : {INPUT}.b ? {INPUT}.b : 0",
         ),
         (
             'return input["a"] > 1 and input["b"] < 2',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                f'key")) > 1 and ($exists({INPUT}.b) ? '
-                f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                'key")) < 2'
-            ),
+            f"{INPUT}.a > 1 and {INPUT}.b < 2",
         ),
         (
             'return input["a"] > 1 or input["b"] < 2 and input["c"] == 3',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                f'key")) > 1 or ($exists({INPUT}.b) ? '
-                f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                f'key")) < 2 and ($exists({INPUT}.c) ? '
-                f"{INPUT}.c = 3 : $error(\"input['c'] reads a "
-                'missing key"))'
-            ),
+            f"{INPUT}.a > 1 or {INPUT}.b < 2 and {INPUT}.c = 3",
         ),
         (
             'return (input["a"] > 1 or input["b"] < 2) and input["c"] == 3',
-            (
-                f"(($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                f'key")) > 1 or ($exists({INPUT}.b) ? '
-                f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                f'key")) < 2) and ($exists({INPUT}.c) ? '
-                f"{INPUT}.c = 3 : $error(\"input['c'] reads a "
-                'missing key"))'
-            ),
+            f"({INPUT}.a > 1 or {INPUT}.b < 2) and {INPUT}.c = 3",
         ),
         ('return not input["a"]', f"$not({INPUT}.a)"),
         (
             'return not (input["a"] or input["b"])',
-            (
-                f"$not(($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                f'key")) or ($exists({INPUT}.b) ? '
-                f"{INPUT}.b : $error(\"input['b'] reads a missing "
-                'key")))'
-            ),
+            f"$not({INPUT}.a or {INPUT}.b)",
         ),
         ('items: list = input["items"]\nreturn not items', "$count($items) = 0"),
         (
             'return 1 if input["a"] else 2',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) ? 1 : 2'
-            ),
+            f"{INPUT}.a ? 1 : 2",
         ),
         (
             'return 1 if input["a"] > 0 else 2',
-            (
-                f"($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) > 0 ? 1 : 2'
-            ),
+            f"{INPUT}.a > 0 ? 1 : 2",
         ),
         (
             'return (1 if input["a"] else 2) + 1',
-            (
-                f"(($exists({INPUT}.a) ? "
-                f"{INPUT}.a : $error(\"input['a'] reads a missing "
-                'key")) ? 1 : 2) + 1'
-            ),
+            f"({INPUT}.a ? 1 : 2) + 1",
         ),
         ('return bool(input["a"])', f"$boolean({INPUT}.a)"),
         ('items: list = input["items"]\nreturn bool(items)', "$count($items) > 0"),
@@ -301,28 +203,16 @@ def output(body: str, parameter: str = "input") -> object:
         ('tags: dict = input["tags"]\nreturn len(tags)', "$count($keys($tags))"),
         (
             'return isinstance(input["v"], str)',
-            (
-                f"$type($exists({INPUT}.v) ? "
-                f"{INPUT}.v : $error(\"input['v'] reads a missing "
-                "key\")) = 'string'"
-            ),
+            f"$type({INPUT}.v) = 'string'",
         ),
         (
             'return isinstance(input["v"], (float, int, bool))',
-            (
-                f"$type($exists({INPUT}.v) ? "
-                f"{INPUT}.v : $error(\"input['v'] reads a missing "
-                "key\")) in ['number', 'boolean']"
-            ),
+            f"$type({INPUT}.v) in ['number', 'boolean']",
         ),
         ('tags: dict = input["tags"]\nreturn "a" in tags', "$exists($tags.a)"),
         (
             'tags: dict = input["tags"]\nreturn input["k"] in tags',
-            (
-                f"$exists($lookup($tags, $exists({INPUT}.k) ? "
-                f"{INPUT}.k : $error(\"input['k'] reads a missing "
-                'key")))'
-            ),
+            f"$exists($lookup($tags, {INPUT}.k))",
         ),
         ('text: str = input["text"]\nreturn "ab" in text', "$contains($text, 'ab')"),
         ('items: list = input["items"]\nreturn 1 not in items', "$not(1 in $items)"),
@@ -552,118 +442,104 @@ def test_is_true_and_is_false_evaluate_as_python(execution_input):
     assert asl.run(definition(body), execution_input) == expected
 
 
+FAILS = object()
+
+
+# A key read with x["k"] is $x.k, so a missing one is undefined and the
+# expression gives what JSONata gives for it: =, !=, in, and and or take it
+# for false, a conditional takes the other side, and a field that receives
+# undefined fails (measured in Step Functions for each of these).
 @pytest.mark.parametrize(
-    "execution_input", [{"k": "OK"}, {"k": "NG"}, {"k": None}, {"k": 1}, {}]
+    "body, missing, inputs",
+    [
+        ('return input["k"] in ["a", "b"]', False, [{"k": "a"}, {"k": "z"}]),
+        ('return input["k"] not in ["a", "b"]', True, [{"k": "a"}, {"k": "z"}]),
+        ('return "a" in input["k"]', False, [{"k": {"a": 1}}, {"k": {}}]),
+        ('return input["k"] or "d"', "d", [{"k": ""}, {"k": "x"}]),
+        ('return input["k"] and "d"', FAILS, [{"k": ""}, {"k": "x"}]),
+        (
+            'return input["k"] > 1 or input["j"] < 2',
+            False,
+            [{"k": 2}, {"k": 0, "j": 1}],
+        ),
+        (
+            'return input["k"] > 1 and input["j"] < 2',
+            False,
+            [{"k": 0}, {"k": 2, "j": 1}],
+        ),
+        ('return input["k"] is None', False, [{"k": None}, {"k": 0}]),
+        (
+            'return input.get("k", input["m"]) is None',
+            False,
+            [{"m": None}, {"k": 1, "m": None}],
+        ),
+        ('return input["k"] is not None', False, [{"k": None}, {"k": 0}]),
+        ('return input["k"] is True', False, [{"k": True}, {"k": 1}]),
+        ('return isinstance(input["k"], str)', False, [{"k": "a"}, {"k": 1}]),
+        ('return 1 if input["k"] else 2', 2, [{"k": 0}, {"k": [1]}]),
+        ('return 1 if input["k"] > 0 else 2', 2, [{"k": 0}, {"k": 1}]),
+        ('return input["k"] == "OK"', False, [{"k": "OK"}, {"k": "NG"}]),
+        ('return input["k"] != "OK"', False, [{"k": "OK"}, {"k": "NG"}]),
+        ('return input["k"]', FAILS, [{"k": 1}]),
+        ('return not input["k"]', FAILS, [{"k": 0}, {"k": 1}]),
+        ('return input["k"] or True', True, [{"k": 0}, {"k": 1}]),
+        ('return input["k"] and True', FAILS, [{"k": 0}, {"k": 1}]),
+        (
+            'xs: list = input["xs"]\nreturn [x for x in xs if x["k"] > 1]',
+            [],
+            [{"xs": [{"k": 2}, {"k": 0}]}],
+        ),
+        (
+            'xs: list = input["xs"]\nreturn [x["k"] for x in xs]',
+            [],
+            [{"xs": [{"k": 2}]}],
+        ),
+        ('xs: list = input["xs"]\nreturn any(x["k"] for x in xs)', FAILS, []),
+        ('xs: list = input["xs"]\nreturn all(x["k"] for x in xs)', FAILS, []),
+    ],
 )
-def test_equality_with_a_missing_key_fails_as_python_does(execution_input):
-    """JSONata's = and != are false where an operand is missing, where Python
-    raises KeyError, so a missing key fails the comparison, and a present one
-    compares as Python does."""
-    body = (
-        'if input["k"] != "OK":\n'
-        '    return ["not ok", input["k"] == "OK"]\n'
-        'return ["ok", input["k"] == "OK"]'
-    )
+def test_a_missing_key_is_read_as_jsonata_reads_it(body, missing, inputs):
+    """A missing key gives what the expression gives for undefined, and a
+    present one what Python gives."""
     namespace: dict[str, object] = {}
     exec(source(body), namespace)
     pay = namespace["pay"]
     assert callable(pay)
-    if "k" in execution_input:
-        assert asl.run(definition(body), execution_input) == pay(execution_input)
-        return
-    with pytest.raises(KeyError):
-        pay(execution_input)
-    with pytest.raises(asl.Failure) as raised:
-        asl.run(definition(body), execution_input)
-    assert raised.value.error == "States.QueryEvaluationError"
-    assert raised.value.cause == "input['k'] reads a missing key"
-
-
-@pytest.mark.parametrize(
-    "body, execution_input, cause",
-    [
-        # The left operand is evaluated first, and fails first.
-        (
-            'x: int = input["x"]\nreturn x + 1 == input["k"]',
-            {"x": "a"},
-            None,
-        ),
-        (
-            'x: int = input["x"]\nreturn x + 1 == int(input["k"])',
-            {"x": "a"},
-            None,
-        ),
-        # A missing right operand fails too, and of two missing operands the
-        # left one is reported, as Python reads it first.
-        ('return "OK" == input["k"]', {}, "input['k'] reads a missing key"),
-        ('return input["a"] != input["b"]', {}, "input['a'] reads a missing key"),
-        ('return input["a"] != input["b"]', {"a": 1}, "input['b'] reads a missing key"),
-        # The right operand is evaluated only once the left one is there.
-        ('return input["k"] == random.random()', {}, "input['k'] reads a missing key"),
-    ],
-)
-def test_equality_evaluates_its_operands_in_order(body, execution_input, cause):
-    """Python evaluates the left operand before the right one, so where the
-    left one fails or is missing, the right one is not evaluated: a missing
-    right key is not reported first, and random() is not called."""
-    calls: list[float] = []
-    compiled = compile_source("import random\n" + source(body))
-    (machine,) = compiled.values()
-    execution = testing.run(
-        machine,
-        execution_input,
-        functions={"random": lambda: calls.append(0.5) or 0.5},
-    )
-    assert execution.error == "States.QueryEvaluationError"
-    if cause is None:
-        assert "missing" not in str(execution.cause)
+    absent = {"xs": [{"j": 1}]} if "xs" in body else {}
+    assert "$error" not in json.dumps(definition(body))
+    if missing is FAILS:
+        with pytest.raises(asl.Failure) as raised:
+            asl.run(definition(body), absent)
+        assert raised.value.error == "States.QueryEvaluationError"
     else:
-        assert execution.cause == cause
-    assert calls == []
-
-
-@pytest.mark.parametrize(
-    "body, inputs",
-    [
-        ('return input["k"] in ["a", "b"]', [{"k": "a"}, {"k": "z"}]),
-        ('return input["k"] not in ["a", "b"]', [{"k": "a"}, {"k": "z"}]),
-        ('return "a" in input["k"]', [{"k": {"a": 1}}, {"k": {}}]),
-        ('return input["k"] or "d"', [{"k": ""}, {"k": "x"}]),
-        ('return input["k"] and "d"', [{"k": ""}, {"k": "x"}]),
-        ('return not input["k"] or "d"', [{"k": 0}, {"k": 1}]),
-        ('return input["k"] > 1 or input["j"] < 2', [{"k": 2}, {"k": 0, "j": 1}]),
-        ('return input["k"] > 1 and input["j"] < 2', [{"k": 0}, {"k": 2, "j": 1}]),
-        ('return input["k"] is None', [{"k": None}, {"k": 0}]),
-        ('return input["k"] is not None', [{"k": None}, {"k": 0}]),
-        ('return input["k"] is True', [{"k": True}, {"k": 1}]),
-        ('return input["k"] is not False', [{"k": False}, {"k": 0}]),
-        ('return isinstance(input["k"], str)', [{"k": "a"}, {"k": 1}]),
-        ('return 1 if input["k"] else 2', [{"k": 0}, {"k": [1]}]),
-        ('return 1 if not input["k"] else 2', [{"k": 0}, {"k": 1}]),
-        ('return 1 if input["k"] > 0 else 2', [{"k": 0}, {"k": 1}]),
-        ('xs: list = input["xs"]\nreturn [x for x in xs if x["k"]]', []),
-        ('xs: list = input["xs"]\nreturn any(x["k"] for x in xs)', []),
-        ('xs: list = input["xs"]\nreturn all(x["k"] for x in xs)', []),
-    ],
-)
-def test_a_missing_key_fails_where_a_test_would_take_it_for_false(body, inputs):
-    """in, is, isinstance, and, or, not and the test of a conditional
-    expression or a comprehension take a missing value for false, where
-    Python raises KeyError reading the key, so a missing key they read fails,
-    naming it; a present one gives what Python gives."""
-    namespace: dict[str, object] = {}
-    exec(source(body), namespace)
-    pay = namespace["pay"]
-    assert callable(pay)
-    missing = {"xs": [{"j": 1}]} if "xs" in body else {}
-    with pytest.raises(KeyError):
-        pay(missing)
-    with pytest.raises(asl.Failure) as raised:
-        asl.run(definition(body), missing)
-    assert raised.value.error == "States.QueryEvaluationError"
-    assert raised.value.cause.endswith("['k'] reads a missing key")
+        assert asl.run(definition(body), absent) == missing
     for execution_input in inputs:
         assert asl.run(definition(body), execution_input) == pay(execution_input)
+
+
+def test_a_jsonata_value_that_gives_nothing_is_written_as_it_is():
+    """Nothing is added to a jsonata() call used as a value, so one that
+    gives nothing fails the field that receives it, as hand-written JSONata
+    does."""
+    body = 'return jsonata("$v.nothing", v=input["d"])'
+    (compiled,) = compile_source("from sfnx import jsonata\n" + source(body)).values()
+    assert "$error" not in compiled["States"]["return"]["Output"]
+    with pytest.raises(asl.Failure) as raised:
+        asl.run(compiled, {"d": {}})
+    assert raised.value.error == "States.QueryEvaluationError"
+    assert asl.run(compiled, {"d": {"nothing": 1}}) == 1
+
+
+def test_a_test_of_a_missing_key_fails_the_choice():
+    """A Choice's Condition that gives nothing fails (measured), as $boolean,
+    $not and < give nothing for undefined; == gives false."""
+    for test in ('input["k"]', 'not input["k"]', 'input["k"] > 1'):
+        body = f"if {test}:\n    return 1\nreturn 2"
+        with pytest.raises(asl.Failure) as raised:
+            asl.run(definition(body), {})
+        assert raised.value.error == "States.QueryEvaluationError"
+    body = 'if input["k"] == 1:\n    return 1\nreturn 2'
+    assert asl.run(definition(body), {}) == 2
 
 
 @pytest.mark.parametrize(
@@ -701,43 +577,26 @@ def test_what_is_not_read_or_is_read_with_get_does_not_fail(body, execution_inpu
     assert asl.run(definition(body), execution_input) == pay(execution_input)
 
 
-def test_in_reads_its_operands_in_order():
-    """$lookup and $contains evaluate the container first, where Python
-    evaluates the left operand first: of two missing keys the left one is
-    reported, and a left operand that changes on evaluation is evaluated
-    once, before the container."""
+def test_in_evaluates_a_changing_left_operand_once():
+    """A left operand that changes on evaluation is evaluated once, so the
+    key looked up is the one compared."""
     compiled = compile_source(
         "import random\n"
         "from typing import TypedDict\n\n"
         "from sfnx import state_machine\n\n\n"
         "class Input(TypedDict):\n"
-        "    k: str\n"
-        "    d: dict[str, int]\n"
-        "    s: str\n\n\n"
-        "@state_machine\n"
-        "def in_dict(input: Input):\n"
-        '    return input["k"] in input["d"]\n\n\n'
-        "@state_machine\n"
-        "def in_string(input: Input):\n"
-        '    return input["k"] in input["s"]\n\n\n'
+        "    d: dict[str, int]\n\n\n"
         "@state_machine\n"
         "def changing(input: Input):\n"
         '    return str(random.random()) in input["d"]\n'
     )
-    for name in ("in_dict", "in_string"):
-        missing = testing.run(compiled[name], {})
-        assert missing.cause == "input['k'] reads a missing key"
-        container = compiled[name]["States"]["return"]["Output"]
-        assert testing.run(compiled[name], {"k": "a"}).cause == (
-            f"input['{'d' if name == 'in_dict' else 's'}'] reads a missing key"
-        ), container
     calls: list[float] = []
     execution = testing.run(
         compiled["changing"],
-        {},
+        {"d": {"0.5": 1}},
         functions={"random": lambda: calls.append(0.5) or 0.5},
     )
-    assert execution.cause == "input['d'] reads a missing key"
+    assert execution.output is True
     assert calls == [0.5]
 
 
@@ -1147,12 +1006,7 @@ def imported(body: str) -> dict:
         ),
         (
             'return datetime.fromtimestamp(input["t"]) != datetime.fromisoformat(input["at"])',
-            (
-                f"($v := ({INPUT}.t * 1000); $exists($v)"
-                f" ? ($v_2 := $toMillis({INPUT}.at); $exists($v_2) ? $v != $v_2"
-                " : $error(\"datetime.fromisoformat(input['at']) reads a missing key\"))"
-                " : $error(\"datetime.fromtimestamp(input['t']) reads a missing key\"))"
-            ),
+            f"{INPUT}.t * 1000 != $toMillis({INPUT}.at)",
         ),
         # strftime writes the datetime with the picture string that writes
         # what its format writes.
@@ -1667,13 +1521,13 @@ def test_a_variable_named_after_a_function_is_renamed():
 
 
 def test_a_variable_named_error_does_not_hide_the_error_function():
-    body = 'error = input["error"]\nreturn [error, input["b"] == 2]'
+    body = 'error = input["error"]\nreturn [error, {**input["d"]}]'
     compiled = definition(body)
     assert (
         compiled["States"]["error"]["Assign"]["error_val"] == f"{{% {INPUT}.error %}}"
     )
     assert "$error(" in compiled["States"]["return"]["Output"][1]
-    assert asl.run(compiled, {"error": "e", "b": 2}) == ["e", True]
+    assert asl.run(compiled, {"error": "e", "d": {"a": 1}}) == ["e", {"a": 1}]
 
 
 def test_a_renamed_variable_takes_a_name_the_module_does_not_use():
@@ -2052,7 +1906,7 @@ def changing_definition(body: str) -> dict:
         ),
         (
             "return a % random.random()",
-            ("($v := $random(); $a - $v * $floor($a / $v))"),
+            "($v := $random(); $a - $v * $floor($a / $v))",
         ),
         (
             "return (random.random() + 1) % 2",
@@ -2111,7 +1965,7 @@ def changing_definition(body: str) -> dict:
         # the parameter of a comprehension, which is not counted as one.
         (
             'v: float = input["v"]\nreturn random.random() % v',
-            ("($v_2 := $random(); $v_2 - $v * $floor($v_2 / $v))"),
+            "($v_2 := $random(); $v_2 - $v * $floor($v_2 / $v))",
         ),
         (
             'v: float = input["v"]\nreturn random.random() or v',

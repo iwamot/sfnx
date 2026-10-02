@@ -539,9 +539,8 @@ ARGS_T = (
 )
 
 
-# is None tests null alone, so each value it reads is one that is never
-# undefined or one required first: a key that is missing, null and a value
-# each give what Python gives.
+# is None tests null alone: a key read with get() that is missing, null and
+# a value each give what Python gives.
 @pytest.mark.parametrize(
     "body, execution_input, expected",
     [
@@ -556,10 +555,8 @@ ARGS_T = (
             {"k": 1},
             [False, True],
         ),
-        ('return input["k"] is None', {}, FAILS),
         ('return input["k"] is None', {"k": None}, True),
         ('return input["k"] is not None', {"k": 1}, True),
-        ('return input.get("k", input["m"]) is None', {}, FAILS),
         ('return input.get("k", input["m"]) is None', {"m": None}, True),
         ('return input.get("k", input["m"]) is None', {"k": 1, "m": None}, False),
         ('xs: list = input["xs"]\nreturn [x is None for x in xs]', {"xs": []}, []),

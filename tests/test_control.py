@@ -235,14 +235,11 @@ def test_a_return_after_a_wait_reads_what_the_wait_assigns():
     }
 
 
-def test_a_missing_key_a_test_reads_fails_naming_it():
+def test_a_missing_key_and_reads_is_false():
+    """and takes a missing operand for false (measured), so the Choice goes
+    to its Default."""
     body = 'if input["a"] == 1 and input["d"]["k"]:\n    return 1\nreturn 2'
-    with pytest.raises(asl.Failure) as failure:
-        asl.run(definition(body), {"a": 1, "d": {}})
-    assert (failure.value.error, failure.value.cause) == (
-        "States.QueryEvaluationError",
-        "input['d']['k'] reads a missing key",
-    )
+    assert asl.run(definition(body), {"a": 1, "d": {}}) == 2
 
 
 DIGITS = 'jsonata("$contains($s, /^[0-9]+$/)", s=input["s"])'

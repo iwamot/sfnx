@@ -2412,7 +2412,7 @@ class Scope:
         failed: dict[str, Type] = {}
         for test, body in tests:
             with self.translator.narrowed(failed):
-                condition = self.translator.condition(test, statement=True)
+                condition = self.translator.condition(test)
                 when, unless = self.translator.narrowing(test)
             rule: dict[str, object] = {"Condition": condition}
             rules.append(rule)
@@ -2696,7 +2696,7 @@ class Scope:
                     )
                 head: str = added[0]
             else:
-                condition = self.translator.condition(node.test, statement=True)
+                condition = self.translator.condition(node.test)
                 when, unless = self.translator.narrowing(node.test)
                 rule: dict[str, object] = {"Condition": condition}
                 state: dict[str, object] = {"Type": "Choice", "Choices": [rule]}
