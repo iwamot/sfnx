@@ -11,7 +11,7 @@ from sfnx import testing
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from sfnx.expressions import array, call, expression, literal, spellings
-from tests import asl, unpacked
+from tests import asl
 
 INPUT = "$states.context.Execution.Input"
 
@@ -68,16 +68,13 @@ def output(body: str, parameter: str = "input") -> object:
         ('return input["a"] ** 2', f"$power({INPUT}.a, 2)"),
         (
             'return {**input, "a": 1}',
-            f"$merge([{unpacked(INPUT)}, {{'a': 1}}])",
+            f"$merge([{INPUT}, {{'a': 1}}])",
         ),
         (
             'return {"a": 1, **input["b"], **input["c"], "d": 2, "e": 3}',
-            (
-                f"$merge([{{'a': 1}}, {unpacked(f'{INPUT}.b')}, "
-                f"{unpacked(f'{INPUT}.c')}, {{'d': 2, 'e': 3}}])"
-            ),
+            (f"$merge([{{'a': 1}}, {INPUT}.b, {INPUT}.c, {{'d': 2, 'e': 3}}])"),
         ),
-        ('return {**input["b"]}', unpacked(f"{INPUT}.b")),
+        ('return {**input["b"]}', f"{INPUT}.b"),
         (
             'd: dict = input["d"]\nreturn {**d, "k": 1}',
             "$merge([$d, {'k': 1}])",
@@ -600,20 +597,15 @@ def test_in_evaluates_a_changing_left_operand_once():
     assert calls == [0.5]
 
 
-def test_unpacking_a_value_that_is_not_a_dict_fails_where_it_unpacks():
-    """Python raises there, and $merge would take a list of dicts as the
-    dicts themselves."""
+def test_unpacking_a_value_of_unknown_type_merges_it_as_written():
+    """Nothing tests the type: $merge reads a list of dicts as the dicts,
+    and ** of a lone value is the value itself, as hand-written JSONata
+    gives."""
     body = 'return {**input["d"], "k": 1}'
-    with pytest.raises(asl.Failure) as raised:
-        asl.run(definition(body), {"d": [{"a": 1}, {"b": 2}]})
-    assert raised.value.error == "States.QueryEvaluationError"
-    assert raised.value.cause == "** unpacks dicts"
-    namespace: dict[str, object] = {}
-    exec(source(body), namespace)
-    pay = namespace["pay"]
-    assert callable(pay)
-    with pytest.raises(TypeError):
-        pay({"d": [{"a": 1}, {"b": 2}]})
+    assert output(body) == f"{{% $merge([{INPUT}.d, {{'k': 1}}]) %}}"
+    merged = asl.run(definition(body), {"d": [{"a": 1}, {"b": 2}]})
+    assert merged == {"a": 1, "b": 2, "k": 1}
+    assert asl.run(definition('return {**input["d"]}'), {"d": [1]}) == [1]
 
 
 def test_dividing_by_zero_is_not_tested():
@@ -1513,7 +1505,7 @@ def test_a_variable_named_after_a_function_is_renamed():
     compiled = definition(body)
     assert compiled["States"]["count"]["Assign"] == {
         "count_val": f"{{% {INPUT}.xs %}}",
-        "merge_val": f"{{% {unpacked(INPUT)} %}}",
+        "merge_val": f"{{% {INPUT} %}}",
         "type_val": f"{{% $count({INPUT}.xs) %}}",
         "keys_val": f"{{% [$map({INPUT}.xs, function($map_val) {{ $map_val * 2 }})] %}}",
     }
@@ -1521,13 +1513,12 @@ def test_a_variable_named_after_a_function_is_renamed():
 
 
 def test_a_variable_named_error_does_not_hide_the_error_function():
-    body = 'error = input["error"]\nreturn [error, {**input["d"]}]'
+    body = 'error = input["error"]\nreturn [error, input["d"]]'
     compiled = definition(body)
     assert (
         compiled["States"]["error"]["Assign"]["error_val"] == f"{{% {INPUT}.error %}}"
     )
-    assert "$error(" in compiled["States"]["return"]["Output"][1]
-    assert asl.run(compiled, {"error": "e", "d": {"a": 1}}) == ["e", {"a": 1}]
+    assert asl.run(compiled, {"error": "e", "d": 1}) == ["e", 1]
 
 
 def test_a_renamed_variable_takes_a_name_the_module_does_not_use():

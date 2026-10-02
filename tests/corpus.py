@@ -462,13 +462,13 @@ CASES: tuple[Case, ...] = (
         "keeps the last",
     ),
     Case(
-        "unpack-rejects-a-list",
+        "unpack-of-a-list-of-numbers-fails",
         "unpack",
         'return {**input["d"], "k": 1}',
         {"d": [1]},
         Error(QUERY_ERROR),
-        "** unpacks dicts only; CPython raises TypeError, so only the failure "
-        "is compared",
+        "nothing tests the type, and $merge takes objects only, so a number "
+        "fails it; CPython raises TypeError, so only the failure is compared",
         python=False,
     ),
     Case(
