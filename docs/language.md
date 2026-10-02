@@ -222,7 +222,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `x["key"]`, `x[0]`, `s[0]` | `$x.key`, `$x[0]`, `$substring($s, 0, 1)` |
 | `s[1:3]`, `s[-3:]`, `s[1:-1]` | `$substring($s, 1, 2)`, `$substring($s, -3, 3)`, `$substring($s, 1, $length($s) - 2)` |
 | `xs[1:3]`, `xs[-2:]` | `[$filter($xs, function($v, $i) { $i >= 1 and $i < 3 })]`, `[$filter($xs, function($v, $i) { $i >= $count($xs) - 2 })]` |
-| `{**a, "key": v}` | `$merge([$a, {'key': $v}])`, where a later key wins; a value whose type is unknown is checked for a dict first, since Python raises for anything else |
+| `{**a, "key": v}` | `$merge([$a, {'key': $v}])`, where a later key wins; a value known to be no dict is rejected, and one of unknown type is merged as it is, so a list of dicts is read as the dicts and `{**a}` alone is `$a` |
 | `[f(x) for x in xs if c]` | `[$map($filter($xs, function($x) { c }), function($x) { f })]` |
 | `any(xs)`, `all(xs)` | `$reduce($xs, function($a, $x) { $a ? true : $boolean($x) }, false)` and `$reduce($xs, function($a, $x) { $a ? $boolean($x) : false }, true)`, each item read for its truth |
 | `any(f(x) for x in xs if c)` | the same `$reduce` with the condition and the item in its function: `$a ? true : (c ? f : false)` |

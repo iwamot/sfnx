@@ -1351,6 +1351,9 @@ class Translator:
         return call("merge", [listed], of(OBJECT))
 
     def unpacked(self, node: ast.expr) -> Expr:
+        """A dict ** unpacks: a value known to be anything else is rejected,
+        and one of unknown type is merged as it is, as a hand-writer writes
+        $merge([$x, ...]) of what is meant to be an object."""
         value = self.expr(node)
         if value.type is not None and value.type.kinds != {OBJECT}:
             if value.type.kind is None:
@@ -1359,17 +1362,7 @@ class Translator:
                 f"{ast.unparse(node)} is {article(value.type.kind)}; ** unpacks dicts",
                 node,
             )
-        if value.type is not None:
-            return value
-        # Python raises for anything but a dict. An array constructor merges
-        # the items of a list, so $merge would take a list of dicts as the
-        # dicts themselves, and ** of a lone value would pass it through.
-        with self.once([value], always=self.bind(value)) as (bindings, (bound,)):
-            kind = call("type", [bound], of(STRING))
-            test = binary(kind, "=", literal("object"), COMPARE, of(BOOLEAN), True)
-            raised = call("error", [literal("** unpacks dicts")], of(OBJECT))
-            checked = conditional(test, bound, raised, of(OBJECT))
-        return block(bindings, checked)
+        return value
 
     def known(self, node: ast.expr, value: Expr, hint: str, purpose: str) -> str:
         """The one type an operation depends on."""
