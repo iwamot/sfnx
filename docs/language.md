@@ -532,7 +532,7 @@ Each of these is rejected with what to write instead:
 
 ## Where results differ from Python
 
-A Python spelling the compiler accepts follows Python for the values that reach it. These are where it does not, grouped under the reason each difference stays. They are the differences known so far; others may remain.
+A spelling is translated into ordinary JSONata, not into a reproduction of Python, so for some values the ASL gives another result than CPython. These are the differences a Python reader may not expect, grouped under the reason each one stays. A missing key, a divisor of zero and the truth of a value are described with those spellings ([a missing key](#a-missing-key), [Expressions](#expressions)). The list is not complete.
 
 A difference the optimization passes rely on has a name, which the code that relies on it cites. One named `AD-` is one a pass may bring about where it moves or drops what a state evaluates. One named `UD-` comes of what ASL cannot write; a pass never brings one about where it was not, and takes one away where it can.
 

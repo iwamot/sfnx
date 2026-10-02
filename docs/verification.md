@@ -10,13 +10,13 @@ What the tests guarantee, and how to check the generated definitions against Ste
 | `tests/test_corpus.py` | the fixed cases of `tests/corpus.py` in the interpreter, with `$random` fixed and counted, and in CPython where the case claims agreement | every `validate.sh` |
 | `tests/aws_corpus.py` | the same fixed cases in Step Functions | on request, with AWS credentials |
 
-The first two need no credentials and pass or fail on their own. They show that the compiler and the interpreter agree with Python, not that Step Functions does: the interpreter, `sfnx.testing`, is jsonata-python plus the behaviors `docs/design.md` records as measured. The third runs the definitions where they will run, and is the check to repeat when the translator changes what an expression means, or when a new Step Functions behavior is measured.
+The first two need no credentials and pass or fail on their own. They show that the compiler and the interpreter agree with Python where a test or a case compares them, not that Step Functions does: the interpreter, `sfnx.testing`, is jsonata-python plus the behaviors `docs/design.md` records as measured. The third runs the definitions where they will run, and is the check to repeat when the translator changes what an expression means, or when a new Step Functions behavior is measured.
 
 ## What each property rests on
 
-Each property below lists what supports it, what those checks cannot show, and where the property is specified. How often a check runs is given with it: **every run** is every `validate.sh`, **on request** is `tests/aws_corpus.py` in Step Functions, and **recorded** is a measurement made once and written in [design.md](design.md). A limit of a check says what it does not show, not that the property fails there; where the language allows a result other than Python's, [the table of differences](language.md#where-results-differ-from-python) names it, and the checks that compare with CPython keep to values it does not list.
+Each property below lists what supports it, what those checks cannot show, and where the property is specified. How often a check runs is given with it: **every run** is every `validate.sh`, **on request** is `tests/aws_corpus.py` in Step Functions, and **recorded** is a measurement made once and written in [design.md](design.md). A limit of a check says what it does not show, not that the property fails there; where [docs/language.md](language.md) describes a result other than Python's, with a spelling or in [the differences](language.md#where-results-differ-from-python), the checks that compare with CPython keep to values it does not cover.
 
-### Values and failures follow Python
+### Values and failures agree with CPython where docs/language.md says they do
 
 - **Rests on**:
   - `test_cpython_and_the_compiled_definition_agree` (every run): 200 random programs give CPython's result or error when compiled and run in `sfnx.testing`.
@@ -26,7 +26,7 @@ Each property below lists what supports it, what those checks cannot show, and w
 - **Limits**:
   - The random programs hold whole numbers without `/` and `**`, ASCII strings, and inputs that have every key with its declared type. Missing keys, `null`, other types, fractions, text outside ASCII and `jsonata()` are covered by the corpus and the unit tests, at the edges they pick, not by random programs.
   - Their retriers are for their own error: a retrier for `Exception` or `QueryEvaluationError` is covered by unit tests only.
-- **Specified in**: [What a spelling guarantees](design.md#principles) and [Where results differ from Python](language.md#where-results-differ-from-python).
+- **Specified in**: [What a spelling gives](design.md#principles), [A missing key](language.md#a-missing-key) and [Where results differ from Python](language.md#where-results-differ-from-python).
 
 ### The passes keep what the definition does
 
