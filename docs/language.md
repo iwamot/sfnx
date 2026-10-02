@@ -152,7 +152,7 @@ def fulfill(input: Order):
         ...
 ```
 
-A Lambda `Payload` is typed the same way, `receipt: Receipt = task(...)["Payload"]`, and so is the whole result of a Task whose type is unknown, such as a `.waitForTaskToken` or activity result: `decision: Decision = task(...)`. The class derives from `TypedDict` directly (`typing` or `typing_extensions`) and declares every field on itself, one per line; it may name the classes written above it, in `list[Item]`, `dict[str, Item]` or a union. `NotRequired[T]` and `total=False` say a key may be left out, not that its value may be `None`: read such a key with `"coupon" in input` or `input.get("coupon")`, whose result is `str | None`, and `input["coupon"]` fails at run time when the key is missing, as any missing key does. A key the class does not declare has an unknown type. A recursive TypedDict, one that inherits from another, and the form `TypedDict("Order", {...})` are rejected.
+A Lambda `Payload` is typed the same way, `receipt: Receipt = task(...)["Payload"]`, and so is the whole result of a Task whose type is unknown, such as a `.waitForTaskToken` or activity result: `decision: Decision = task(...)`. The class derives from `TypedDict` directly (`typing` or `typing_extensions`) and declares every field on itself, one per line; it may name the classes written above it, in `list[Item]`, `dict[str, Item]` or a union. `NotRequired[T]` and `total=False` say a key may be left out, not that its value may be `None`: read such a key with `"coupon" in input` or `input.get("coupon")`, whose result is `str | None`, and `input["coupon"]` is undefined when the key is missing, as any missing key is (see [a missing key](#a-missing-key)). A key the class does not declare has an unknown type. A recursive TypedDict, one that inherits from another, and the form `TypedDict("Order", {...})` are rejected.
 
 A value that may have several types must be narrowed first. `isinstance(x, str)`, `x is None` and `x is not None` narrow in `if` / `elif` / `else`, in the right operand of `and` / `or`, in conditional expressions, in comprehension conditions and after a branch that returns. `x or default` never gives null, which is falsy, so `xs or []` of an `xs` that may be null is a list. A list is tested by counting it and any other value by `$boolean`, so the truth of a value that may be a list or another type besides None needs it narrowed too (see `if x:` in [Expressions](#expressions)).
 
@@ -167,8 +167,8 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `a % b` | `$a - $b * $floor($a / $b)` (the sign follows the divisor, as in Python) |
 | `a // b`, `a ** b` | `$floor($a / $b)`, `$power($a, $b)` |
 | `a / b`, `a // b`, `a % b` by a divisor of 0 | nothing tests the divisor: in Step Functions `/` and `//` give `"Infinity"`, `"-Infinity"` or `"NaN"`, and `%` fails (see [JSONata in Step Functions](design.md#jsonata-in-step-functions)) |
-| `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c`. An operand of `==` or `!=` that may be missing is tested first (see [a missing key](#a-missing-key)): `$exists(x) ? x = 'OK' : $error("input['k'] reads a missing key")` |
-| `x is None`, `x is not None` | `$x = null`, `$x != null`; a key read with `d["k"]` fails where it is missing and is compared with `null` once it is there |
+| `a == b`, `a != b`, `a < b` ... | `=`, `!=`, `<` ...; `a < b < c` is `$a < $b and $b < $c`. A missing operand: see [a missing key](#a-missing-key) |
+| `x is None`, `x is not None` | `$x = null`, `$x != null`; both are false for a key read with `d["k"]` that is missing (see [a missing key](#a-missing-key)) |
 | `x is True`, `x is not False` ... | `$x = true`, `$not($x = false)`: `=` compares a boolean only with a boolean, as `is` does (`0 = false` is false), and a missing `x`, as `d.get("k")` never gives, is not `False` |
 | `if x:`, `bool(x)` | the truth of a value, by its type: the value itself where it is a boolean for sure, as a comparison is, and a variable every value assigned it that reaches the test is; `$count($x) > 0` for a list, which is true when it has items, whatever they are; `$x != null and $count($x) > 0` for a list or None; and `$boolean($x)` for any other value, a value of unknown type included. A value that may be a list or another type besides None is rejected: a list is counted and the rest read by `$boolean`, and the type is not tested at run time to choose, so narrow it with `isinstance(x, list)` or compare what the test asks |
 | `a and b`, `a or b` in a condition | `$a and $b`, `$a or $b`, each operand read for its truth: JSONata reads it as `$boolean` does, and a list is counted |
@@ -256,7 +256,16 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 
 ### A missing key
 
-A key read with `d["k"]` fails where it is missing, as Python raises `KeyError`, and one read with `d.get("k")` gives `None`. JSONata's tests take a missing value for false instead: `=`, `!=`, `in`, `$exists`, `$type` and `$boolean`, which `==`, `!=`, `in`, `is`, `isinstance`, `and`, `or`, `not` and the test of a conditional expression, a comprehension, `any()` or `all()` are written with. Where one of them reads a value that may be missing, the value is tested first, and a missing one fails with `States.QueryEvaluationError` and a message that names what read it: `($exists(x) ? x : $error("input['k'] reads a missing key")) in ['a', 'b']`. A path is written out twice; a longer value, and one that changes on evaluation, is bound and evaluated once. The operands are tested and evaluated in Python's order, the left one first, and only where Python evaluates them: the right side of `and` and `or`, and a branch of a conditional expression, only where it is reached. An `if` or a `while`, a comparison such as `<` read on its own, and a value that a field holds fail on a missing value already, so they are written as they are.
+A key read with `d["k"]` is `$d.k`, and one read with `d.get("k")` gives `None` where it is missing: `d.get("k")`, `d.get("k", default)` and `"k" in d` are the spellings that handle a missing key. Nothing tests `d["k"]` for one, as a hand-writer tests none, so a missing key is undefined, and what happens to it is what JSONata does with undefined where the expression lands:
+
+| Where `d["k"]` is missing | In Step Functions |
+|---|---|
+| `d["k"] == 1`, `d["k"] != 1`, `d["k"] in xs`, `d["k"] is None` | false, in a value or in a Choice's `Condition` (measured), so `if d["k"] == 1:` goes on to the next rule |
+| `d["k"] and x`, `d["k"] or x` in a condition | `and` and `or` read it as false, and the result follows from the other operand: `d["k"] or True` is true (measured) |
+| `if d["k"]:`, `if not d["k"]:`, `if d["k"] > 1:` | the `Condition` gives nothing, and the state fails with `States.QueryEvaluationError` (measured) |
+| `return d["k"]`, `x = d["k"]`, a Task argument | the field that receives it fails with `States.QueryEvaluationError` (measured) |
+| `a if d["k"] else b`, `d["k"] or default` | `b` and `default`: JSONata's `? :` takes undefined as false |
+| `[v for v in vs if v["k"] > 1]` | the item is left out |
 
 ## Assignments and variables
 
