@@ -201,7 +201,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
 | `s.lower()`, `s.upper()` | `$lowercase($s)`, `$uppercase($s)` |
 | `s.strip()` | `$replace($s, /^\s+\|\s+$/, '')` |
-| `sep.join(items)` | `$join($items, $sep)`, with a string split into its characters first, as Python joins those, and a value that may be one tested for it when it is evaluated |
+| `sep.join(items)` | `$join($items, $sep)`, with a value known to be a string split into its characters first. A value that may be a list, of unknown type or `list[str] \| str`, is joined as it is, and `$join` returns a string as it is; to join a string's characters, narrow it with `isinstance(items, str)` |
 | `sorted(xs, key=lambda x: x["k"])` | `$sort($xs, function($a, $b) { $a.k > $b.k })`, with `<` for `reverse=True` |
 | `max(xs, key=lambda x: x["k"])`, `min(...)` | the same `$sort(...)`, read at `[-1]` and at `[0]` |
 | `list(d)`, `d.keys()` | `[$keys($d)]` |

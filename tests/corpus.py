@@ -447,10 +447,30 @@ CASES: tuple[Case, ...] = (
     Case(
         "join-characters",
         "join",
-        'return ",".join(input["xs"])',
+        's: str = input["xs"]\nreturn ",".join(s)',
         {"xs": "ab"},
         Value("a,b"),
-        "Python joins the characters of a string, so a string is split first",
+        "a value known to be a string joins its characters, so it is split first",
+    ),
+    Case(
+        "join-unknown-string",
+        "join",
+        'return ",".join(input["xs"])',
+        {"xs": "ab"},
+        Value("ab"),
+        "nothing tests the type of a value that may be a list, and $join "
+        "returns a string as it is (measured)",
+        python=False,
+    ),
+    Case(
+        "join-union-string",
+        "join",
+        'xs: list[str] | str = input["xs"]\nreturn ",".join(xs)',
+        {"xs": "ab"},
+        Value("ab"),
+        "a list or a string is joined as $join takes it, which returns a "
+        "string as it is (measured)",
+        python=False,
     ),
     Case(
         "unpack-later-key-wins",
