@@ -31,6 +31,25 @@ A state is named after what it does:
 - Paths that end the same way, with the same value returned or the same error raised with the same message, share one Succeed or Fail, as a hand-writer ends them at one state, and paths whose last states do the same, such as the same Task call before the same end, share those states too, as a hand-writer runs a clean-up the paths share once. A state that reads the context's `State`, which names the state it is read in, keeps its own.
 - States inside a Parallel branch or a Map are prefixed with the function that holds them (`email.return`).
 
+### Naming a state yourself
+
+A comment `# state: Name` at the end of the first line of a statement names the state the statement makes:
+
+```python
+if answer["decision"] == "approve":  # state: IsApproved
+    return "approved"
+aws.optimized.lambda_.invoke(  # state: ReturnRejected
+    FunctionName="return-expense", Payload={"reason": "rejected"}
+)
+```
+
+- A call that makes a Task, a Parallel or a Map names that state, whether it stands on its own line, is assigned or is returned. An `if` or a `while` names its Choice, a `for` the Choice that tests the loop, an assignment its Pass, a `return` its Succeed, a `raise` its Fail and a `wait()` its Wait. A statement that makes none of its own is rejected: a `while True:`, which tests nothing, has no Choice, and a `raise` that an `except` around it catches goes there with no Fail, so name a statement in the loop or in the `except` clause.
+- A statement in a function called directly names the state it writes at each call, with a serial from the second call on (`Notify`, `Notify_2`). The call itself makes no state of its own, so a name on it is rejected.
+- **Naming a state keeps it.** The statement makes its state even where it would leave its work to another, and the optimization passes never remove it, merge it into another, copy it or share it with a state that does the same. An `if` that only assigns makes a Choice instead of a conditional expression, an assignment makes a Pass instead of going in the `Assign` of the Task next to it, and a `return` makes a Succeed instead of the Task's `Output`; a named Choice is entered on every way, rather than taken into the Choice before it. Each of these may add a transition on the ways through the state. Other states' assignments may still go in it, and a named Choice may still take in the tests of the unnamed Choices after it.
+- **A name can change what a missing key gives.** An `if` that only assigns becomes a Choice when named, and a Choice fails on a test of a missing key where a conditional expression takes the other side ([a missing key](#a-missing-key)): `if input["flag"]:  # state: IsHigh` fails where the same `if` unnamed gives `"low"`.
+- A name inside a Parallel branch or a Map takes the prefix of its function (`left.CallLeft`). The same name written twice, a name longer than 80 characters with that prefix, and an empty name are rejected.
+- `# state:` on a line where no statement that makes a state starts, such as `try:`, `else:`, `elif ...:`, `pass` or a declaration, or on a line that holds two statements (`if x: return 1`), is rejected, and so is one on a line of its own, or one spelled otherwise (`# State:`, `# states:`), so that a misspelling is not read as an ordinary comment.
+
 ## Which states a function makes
 
 A statement does not always make a state of its own. The compiler writes the basic form first, and then merges and drops states where the definition keeps the meaning of the source, as a hand-writer would; [From statements to states](design.md#from-statements-to-states) has the exact conditions. Which states a source makes may change in a minor release ([compatibility.md](compatibility.md#what-a-release-can-change)).
@@ -267,6 +286,17 @@ A key read with `d["k"]` is `$d.k`, and one read with `d.get("k")` gives `None` 
 | `return d["k"]`, `x = d["k"]`, a Task argument | the field that receives it fails with `States.QueryEvaluationError` (measured) |
 | `a if d["k"] else b`, `d["k"] or default` | `b` and `default`: JSONata's `? :` takes undefined as false |
 | `[v for v in vs if v["k"] > 1]` | the item is left out |
+
+Which of these an `if` meets depends on the state it becomes. An `if` that only assigns is a conditional expression in the state after it, which takes the other side, while one with a Task in it, or one named with `# state:`, is a Choice, which fails:
+
+```python
+status = "low"
+if input["flag"]:  # with input["flag"] missing
+    status = "high"
+return status  # "low"; with a Task in the if, or # state: on it, States.QueryEvaluationError
+```
+
+To give a missing key a meaning of its own, write `input.get("flag")` or `"flag" in input`.
 
 ## Assignments and variables
 

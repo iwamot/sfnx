@@ -103,6 +103,22 @@ from sfnx.translate import (
 
 # Step Functions reserves $states for its own variables.
 MAX_VARIABLE = 80
+# The field that marks a state a `# state:` comment names, which the passes
+# keep as it is under that name, and which the definition does not show.
+NAMED = "sfnx.name"
+# Statements that make no state of their own, so a name on them would name
+# none: the states their bodies make are named in the body.
+UNNAMED_STATEMENTS = (
+    ast.Try,
+    ast.Pass,
+    ast.FunctionDef,
+    ast.Break,
+    ast.Continue,
+    ast.Global,
+    ast.Nonlocal,
+    ast.Import,
+    ast.ImportFrom,
+)
 # How often a loop is compiled again with wider types before a type that keeps
 # changing is taken as unknown.
 MAX_WIDENING = 8
@@ -344,6 +360,11 @@ class Scope:
         # it adds.
         self.pending_remarks: list[str] = []
         self.remark: str | None = None
+        # The name a `# state:` comment gives the statement being compiled,
+        # until the state it makes takes it, and the name of the Pass of the
+        # pending assignments, which a named assignment starts.
+        self.naming: tuple[str, ast.stmt] | None = None
+        self.pending_name: str | None = None
         # The body of a while True leads back to the first state it adds, so
         # until it adds one, what it assigns cannot go in a state before it.
         self.opening = False
@@ -414,23 +435,50 @@ class Scope:
         if self.remark is not None:
             state = commented(state, self.remark)
             self.remark = None
+        name = self.take_name()
+        if name is not None:
+            return self.insert(name, state, node, origins or [self.here()], True)
         return self.insert(base, state, node, origins or [self.here()])
+
+    def named_here(self, node: ast.stmt) -> bool:
+        """Whether a `# state:` comment names the state node makes, which it
+        then makes even where it would leave its work to another state."""
+        return self.naming is not None and self.naming[1] is node
+
+    def take_name(self) -> str | None:
+        """The name of the first state the named statement adds."""
+        if self.naming is None or self.naming[1] is not self.current:
+            return None
+        name = self.naming[0]
+        self.naming = None
+        return name
 
     def here(self) -> Origin:
         assert self.current is not None
         return Origin(self.current)
 
     def insert(
-        self, base: str, state: dict[str, object], node: ast.AST, origins: list[Origin]
+        self,
+        base: str,
+        state: dict[str, object],
+        node: ast.AST,
+        origins: list[Origin],
+        named: bool = False,
     ) -> str:
+        """named: base is the name a `# state:` comment gives, which the
+        state keeps through the passes, as NAMED marks it."""
         self.result = None
         self.opening = False
         if self.locations is not None:
             located = self.locations.line(origins)
             remark = state.get("Comment")
             state = commented(state, f"{remark}\n{located}" if remark else located)
+        if named:
+            # The caller links the state it holds, such as a Choice's Default.
+            state[NAMED] = base
         try:
-            added = self.graph.add(base, state)
+            line = getattr(node, "lineno", None) if named else None
+            added = self.graph.add(base, state, line)
         except ValueError as exc:
             raise CompileError(str(exc), node) from exc
         self.enclosing[added] = self.within()
@@ -456,11 +504,20 @@ class Scope:
         node = self.pending_node
         origins = self.pending_origins
         remarks = self.pending_remarks
+        named = self.pending_name
         self.pending = {}
         self.pending_first = None
         self.pending_node = None
         self.pending_origins = []
         self.pending_remarks = []
+        self.pending_name = None
+        if named is not None:
+            # A named assignment keeps a Pass of its own.
+            state: dict[str, object] = {"Type": "Pass", "Assign": assign}
+            if remarks:
+                state = commented(state, "\n".join(remarks))
+            self.insert(named, state, node, origins, True)
+            return
         if holding:
             assert result is not None
             self.result = self.fold(result, folded, origins, remarks)
@@ -595,6 +652,15 @@ class Scope:
         as folded. What an earlier assignment of the name put there goes, as
         the new value replaces it: a, b = b, a would read a's new value in
         place of the one the state assigned."""
+        if (
+            self.naming is not None
+            and self.naming[1] is self.current
+            and isinstance(self.current, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+        ):
+            # A named assignment starts the Pass it names.
+            self.flush()
+            self.pending_name = self.naming[0]
+            self.naming = None
         self.folded.pop(name, None)
         result = self.following()
         if folded is not None:
@@ -651,6 +717,27 @@ class Scope:
         compound statement that adds none first leaves it to its body."""
         own = self.module.comments.get(node.lineno)
         self.remark = "\n".join(r for r in (self.remark, own) if r) or None
+        name = self.module.state_names.get(node.lineno)
+        if name is not None:
+            # A function called directly compiles the same statement again;
+            # another statement on the line would take the name too.
+            first = self.module.named.setdefault(node.lineno, node.col_offset)
+            if first != node.col_offset:
+                raise CompileError(
+                    "# state: names the one statement of its line; put the "
+                    "statements on lines of their own",
+                    node,
+                )
+            if isinstance(node, UNNAMED_STATEMENTS) or (
+                isinstance(node, ast.Expr)
+                and not self.makes_state(node.value)
+                and not self.called(node.value, "wait")
+            ):
+                raise CompileError(
+                    "this statement makes no state of its own to name; name a "
+                    "statement in it that does",
+                    node,
+                )
         if (
             isinstance(node, ast.Expr)
             and isinstance(node.value, ast.Constant)
@@ -662,8 +749,14 @@ class Scope:
             return
         enclosing = self.current
         self.current = node
+        if name is not None:
+            self.naming = (name, node)
         try:
             self.compile_statement(node)
+            if self.named_here(node):
+                raise CompileError(
+                    "this statement makes no state of its own to name", node
+                )
         finally:
             self.remark = None
             self.current = enclosing
@@ -690,13 +783,14 @@ class Scope:
         elif isinstance(node, ast.Return):
             if node.value is None:
                 self.end_without_value(node, [self.here()])
-            elif not (
+            elif self.named_here(node) or not (
                 self.return_pending(node.value, node)
                 or self.end_with_result(node.value)
             ):
                 self.finish(*self.translator.statement_value(node.value), node)
         elif (
             isinstance(node, ast.If)
+            and not self.named_here(node)
             and (conditional := self.as_conditional(node)) is not None
         ):
             target, value = conditional
@@ -1411,7 +1505,7 @@ class Scope:
         end_with_result, which ends on that state; after one that cannot, as
         a Catch would take their failure, the Succeed reads them as well."""
         pending = self.pending
-        if not pending or self.holds_pending():
+        if not pending or self.holds_pending() or self.pending_name is not None:
             return False
         if any(self.makes_state(n) for n in ast.walk(value_node)):
             return False
@@ -1793,7 +1887,12 @@ class Scope:
             for name in own:
                 bindings.pop(name, None)
         scope = Scope(
-            Graph(f"{function.name}.", self.graph.names, self.graph.taken),
+            Graph(
+                f"{function.name}.",
+                self.graph.names,
+                self.graph.taken,
+                self.graph.written,
+            ),
             bindings,
             self.module,
             parameters,
@@ -2271,7 +2370,7 @@ class Scope:
         their expressions. The Fail's cause and where it comes from in the
         source, or False where the Pass stays."""
         pending = self.pending
-        if not pending:
+        if not pending or self.pending_name is not None:
             return False
         if not all(v.defined and v.total and not v.volatile for v in pending.values()):
             return False
@@ -4014,7 +4113,11 @@ def thread_choices(
                 before = set(passed)
                 comment = holder.get("Comment")
                 seen = set()
-                while states[target]["Type"] == "Choice" and target not in seen:
+                while (
+                    states[target]["Type"] == "Choice"
+                    and NAMED not in states[target]
+                    and target not in seen
+                ):
                     seen.add(target)
                     decided = decide(states[target], known)
                     if decided is None:
@@ -4321,7 +4424,7 @@ def decide_start(definition: dict[str, object]) -> bool:
     start = definition["StartAt"]
     assert isinstance(states, dict) and isinstance(start, str)
     choice = states[start]
-    if choice["Type"] != "Choice" or start in leading(states):
+    if choice["Type"] != "Choice" or NAMED in choice or start in leading(states):
         return False
     rules = choice["Choices"]
     assert isinstance(rules, list)
@@ -4465,7 +4568,9 @@ def merge_choices(
             second = first.get("Default")
             if (
                 first["Type"] != "Choice"
+                or not isinstance(second, str)
                 or states[second]["Type"] != "Choice"
+                or NAMED in states[second]
                 or led[second] != [name]
             ):
                 continue
@@ -4528,7 +4633,7 @@ def take_in_choices(
                 key = "Next" if rule is not first else "Default"
                 target = rule[key]
                 second = states[target]
-                if target == name or second["Type"] != "Choice":
+                if target == name or second["Type"] != "Choice" or NAMED in second:
                     continue
                 # A Choice that leads back to itself through Choices alone
                 # would be taken in again each time, as a loop unrolled
@@ -5317,6 +5422,10 @@ def return_in_place_of_passes(definition: dict[str, object]) -> None:
             ):
                 continue
             ending = states[after]
+            # A named Succeed is not copied into the Pass's place for one way
+            # in, though the Pass may go into it where it is the only way.
+            if NAMED in ending and led[after] != [name]:
+                continue
             output = ending["Output"]
             code = as_expr(output).code
             where = "return_in_place_of_passes"
@@ -5350,6 +5459,8 @@ def return_in_place_of_passes(definition: dict[str, object]) -> None:
             if comment is not None:
                 succeed["Comment"] = comment
             succeed["Output"] = read_through(output, used)
+            if NAMED in ending:
+                succeed[NAMED] = ending[NAMED]
             if led[after] == [name]:
                 states[after] = succeed
                 redirect(states, {name: after})
@@ -5385,6 +5496,7 @@ def end_before_returns(definition: dict[str, object]) -> None:
             or "Output" in state
             or after is None
             or after["Type"] != "Succeed"
+            or NAMED in after
         ):
             continue
         codes = expressions_in({"Output": after["Output"]})
@@ -5966,6 +6078,9 @@ def compile_machine(
     definition = emitted(definition)
     assert isinstance(definition, dict)
     rename_states(definition, graph.taken)
+    for scope_definition in machines_in(definition):
+        for state in scope_states(scope_definition).values():
+            state.pop(NAMED, None)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
 
@@ -6048,12 +6163,20 @@ def definitions(
     try:
         tree = ast.parse(source, filename)
         context = module(tree, source)
-        return {
+        compiled = {
             function.name: compile_machine(
                 function, options, context, locations, optimizing, checking
             )
             for function, options in machines(tree, context)
         }
+        unnamed = sorted(context.state_names.keys() - context.named)
+        if unnamed:
+            raise CompileError(
+                "# state: names the state of a statement that starts on its "
+                "line in a state machine, and no such statement starts here",
+                line=unnamed[0],
+            )
+        return compiled
     except SyntaxError as exc:
         # Python counts the column of a syntax error in characters already.
         raise CompileError(
