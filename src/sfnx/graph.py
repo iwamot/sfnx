@@ -19,9 +19,14 @@ class Graph:
         prefix: str = "",
         names: set[str] | None = None,
         taken: dict[str, tuple[str, str]] | None = None,
+        written: dict[str, int] | None = None,
     ):
         self.prefix = prefix
         self.names = set() if names is None else names
+        # Each name a `# state:` comment gives, with the line it is written
+        # on: a function called directly writes its states once per call,
+        # and the same comment names each with a serial.
+        self.written: dict[str, int] = {} if written is None else written
         # Each name taken, in the order taken, with the prefix and the base it
         # was taken for, which renaming takes again for the states that remain.
         self.taken: dict[str, tuple[str, str]] = {} if taken is None else taken
@@ -32,10 +37,29 @@ class Graph:
     def name(self, base: str) -> str:
         return serial_name(self.prefix, base, self.names)
 
-    def add(self, base: str, state: dict[str, object]) -> str:
+    def add(self, base: str, state: dict[str, object], line: int | None = None) -> str:
         """Add a state where control currently is. It continues with Next unless
-        it ends the scope or, like a Choice, links its transitions itself."""
-        name = self.name(base)
+        it ends the scope or, like a Choice, links its transitions itself.
+        line: base is the name a `# state:` comment on that line gives the
+        state, taken as it is, or with a serial where the same comment named
+        a state before."""
+        named = line is not None
+        name = self.name(base) if not named else self.prefix + base
+        if named and name in self.names:
+            if self.written.get(name) != line:
+                raise ValueError(
+                    f"the state name {name} is taken already; name it otherwise"
+                )
+            # A name the writer chose keeps its words; a serial past the
+            # limit is rejected below rather than shortened.
+            name = serialed(self.prefix, base, self.names)
+        if named:
+            self.written.setdefault(self.prefix + base, line)
+        if named and len(name) > MAX_NAME:
+            raise ValueError(
+                f"state name {name} is longer than {MAX_NAME} characters; "
+                "use a shorter name"
+            )
         for container, key in self.tails:
             container[key] = name
         if self.start is None:

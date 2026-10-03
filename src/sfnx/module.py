@@ -2,6 +2,7 @@
 
 import ast
 import io
+import re
 import tokenize
 from dataclasses import dataclass
 
@@ -46,8 +47,11 @@ class Module:
     classes and functions hold what the module defines at its top level,
     constants what it assigns there, identifiers every name it binds or reads,
     spellings the Step Functions variable of each name that cannot be one as it
-    is, and comments the comment lines right above a line of code, by that
-    line."""
+    is, comments the comment lines right above a line of code, by that
+    line, and state_names the name a `# state:` comment at the end of a line
+    gives the state of the statement that starts there, by that line, with
+    named the column of the statement on each such line that took it, filled
+    in as they compile."""
 
     names: dict[str, str]
     classes: dict[str, ast.ClassDef]
@@ -57,6 +61,8 @@ class Module:
     spellings: dict[str, str]
     comments: dict[int, str]
     typed: dict[str, Type]
+    state_names: dict[int, str]
+    named: dict[int, int]
 
 
 def module(tree: ast.Module, source: str) -> Module:
@@ -73,6 +79,8 @@ def module(tree: ast.Module, source: str) -> Module:
         spellings(names),
         comments(source),
         typed(tree, imported),
+        state_names(source),
+        {},
     )
 
 
@@ -282,6 +290,47 @@ def comments(source: str) -> dict[int, str]:
             block = []
         else:
             block = []
+    return found
+
+
+# A comment that names a state: `# state: Name` at the end of the line of a
+# statement. What reads like one but is not spelled so is rejected, so that a
+# misspelled name is not taken for an ordinary comment.
+STATE_NAME = re.compile(r"# state: (.*)")
+LOOKS_LIKE_STATE_NAME = re.compile(r"#\s*states?\s*:", re.IGNORECASE)
+
+
+def state_names(source: str) -> dict[int, str]:
+    """The names `# state:` comments give, by the line they end."""
+    found: dict[int, str] = {}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type != tokenize.COMMENT:
+            continue
+        line, column = token.start
+        if not LOOKS_LIKE_STATE_NAME.match(token.string):
+            continue
+        written = STATE_NAME.fullmatch(token.string)
+        if written is None:
+            raise CompileError(
+                "a state is named with # state: Name at the end of its line",
+                line=line,
+                column=column + 1,
+            )
+        if not token.line[:column].strip():
+            raise CompileError(
+                "# state: names the statement on its own line; write it at the "
+                "end of that line",
+                line=line,
+                column=column + 1,
+            )
+        name = written.group(1).strip()
+        if not name:
+            raise CompileError(
+                "# state: needs a name after it, such as # state: ChargeCard",
+                line=line,
+                column=column + 1,
+            )
+        found[line] = name
     return found
 
 
