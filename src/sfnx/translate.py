@@ -1734,6 +1734,7 @@ class Translator:
             # = compares a boolean only with a boolean, as is does: 0 = false is
             # false. A missing value makes = false, so is not negates it rather
             # than use !=, which is false for a missing value too.
+            left = self.compared_get(left_node, left, right)
             test = binary(left, "=", right, COMPARE, boolean, True)
             if isinstance(operator, ast.IsNot):
                 return call("not", [test], boolean, boolean=True)
@@ -1758,6 +1759,9 @@ class Translator:
     ) -> Expr:
         """a == b and a != b: JSONata's = and !=, which are false where an
         operand is missing (measured), so the result is always a boolean."""
+        if isinstance(operator, ast.Eq):
+            left = self.compared_get(left_node, left, right)
+            right = self.compared_get(right_node, right, left)
         symbol = COMPARISONS[type(operator)]
         test = binary(left, symbol, right, COMPARE, of(BOOLEAN), True)
         return replace(test, defined=True)
@@ -2985,15 +2989,7 @@ class Translator:
     def get(self, mapping: Expr, arguments: list[ast.expr]) -> Expr:
         """d.get(key, default) as the value when the key exists, and otherwise
         the default, or null without one."""
-        key = arguments[0]
-        if isinstance(key, ast.Constant) and isinstance(key.value, str):
-            if mapping.type is not None and mapping.type in CONTEXT_OBJECTS:
-                self.context_field(key, mapping.type, key.value)
-            value = field(mapping, key.value)
-        else:
-            name = self.operand(key, STRING, "keys are strings")
-            values = mapping.type.values if mapping.type else None
-            value = call("lookup", [mapping, name], values)
+        value = self.got(mapping, arguments[0])
         default = self.expr(arguments[1]) if len(arguments) == 2 else literal(None)
         # The value is written twice: tested, then read; one longer than a
         # path is bound first.
@@ -3005,6 +3001,36 @@ class Translator:
             )
         # Where the key is missing, the default: never undefined unless it is.
         return replace(block(bindings, chosen), defined=default.defined)
+
+    def got(self, mapping: Expr, key: ast.expr) -> Expr:
+        """The value d.get() reads, undefined where the key is missing."""
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            if mapping.type is not None and mapping.type in CONTEXT_OBJECTS:
+                self.context_field(key, mapping.type, key.value)
+            return field(mapping, key.value)
+        name = self.operand(key, STRING, "keys are strings")
+        values = mapping.type.values if mapping.type else None
+        return call("lookup", [mapping, name], values)
+
+    def compared_get(self, node: ast.expr, value: Expr, other: Expr) -> Expr:
+        """value, or where node is d.get(key) with no default and it is
+        compared with = to a value written in the source other than None, the
+        key as it is read: = is false for a missing key as it is for the null
+        get() gives there (measured), so testing for the key first changes
+        nothing, and a hand-writer does not."""
+        template = other.template
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and len(node.args) == 1
+            and not node.keywords
+            and isinstance(template, (bool, int, float, str))
+            and not (isinstance(template, str) and template.startswith("{%"))
+        ):
+            mapping = self.operand(node.func.value, OBJECT, DICT_METHODS["get"])
+            return self.got(mapping, node.args[0])
+        return value
 
     def listed(self, node: ast.expr, name: str = "list") -> Expr:
         """list(x): the keys of a dict, the characters of a string, or a list

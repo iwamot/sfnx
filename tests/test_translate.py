@@ -439,6 +439,50 @@ def test_is_true_and_is_false_evaluate_as_python(execution_input):
     assert asl.run(definition(body), execution_input) == expected
 
 
+# d.get(key) compared with = to a value written in the source other than None
+# reads the key as it is: = is false for a missing key as for null.
+@pytest.mark.parametrize(
+    "body, code",
+    [
+        ('return input.get("p") == "high"', f"{INPUT}.p = 'high'"),
+        ('return "high" == input.get("p")', f"'high' = {INPUT}.p"),
+        ('return input.get("f") is True', f"{INPUT}.f = true"),
+        ('return input.get("f") is not False', f"$not({INPUT}.f = false)"),
+        # != is false for a missing key, where get() gives None, which is not
+        # "high"; None itself, a default and a value read at run time keep
+        # the test.
+        (
+            'return input.get("p") != "high"',
+            f"($exists({INPUT}.p) ? {INPUT}.p : null) != 'high'",
+        ),
+        (
+            'return input.get("p") == None',
+            f"($exists({INPUT}.p) ? {INPUT}.p : null) = null",
+        ),
+        (
+            'return input.get("n", 0) == 1',
+            f"($exists({INPUT}.n) ? {INPUT}.n : 0) = 1",
+        ),
+        (
+            'return input.get("n") == input["m"]',
+            f"($exists({INPUT}.n) ? {INPUT}.n : null) = {INPUT}.m",
+        ),
+    ],
+)
+def test_a_get_compared_with_a_written_value_reads_the_key(body, code):
+    assert output(body) == "{% " + code + " %}"
+    namespace: dict[str, object] = {}
+    exec(source(body), namespace)
+    pay = namespace["pay"]
+    assert callable(pay)
+    for execution_input in [
+        {"m": None},
+        {"p": None, "f": None, "m": None},
+        {"p": "high", "f": True, "n": 1, "m": 1},
+    ]:
+        assert asl.run(definition(body), execution_input) == pay(execution_input)
+
+
 FAILS = object()
 
 
