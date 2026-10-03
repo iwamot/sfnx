@@ -1530,11 +1530,12 @@ def test_a_renamed_variable_takes_a_name_the_module_does_not_use():
     )
     compiled = definition(body)
     xs = "$states.context.Execution.Input.xs"
-    assert compiled["States"]["count_val"]["Assign"] == {
-        "count_val": f"{{% {xs} %}}",
-        "count_val_3": f"{{% $count({xs}) %}}",
-        "count_val_2": f"{{% [$map({xs}, function($count_val_3) {{ $count_val_3 * 2 }})] %}}",
-    }
+    # The comprehension's count takes a name of its own, count_val_3, which
+    # neither the module's names nor count_val_2 hold.
+    assert compiled["States"]["return"]["Output"] == [
+        f"{{% $count({xs}) %}}",
+        f"{{% [$map({xs}, function($count_val_3) {{ $count_val_3 * 2 }})] %}}",
+    ]
     assert asl.run(compiled, {"xs": [1, 2]}) == [2, [2, 4]]
 
 

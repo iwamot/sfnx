@@ -426,6 +426,29 @@ def test_the_state_an_if_becomes_decides_what_a_missing_key_gives(body, missing)
     assert testing.run(compiled, {"flag": True}, lambda call: {}).output == "high"
 
 
+def test_a_named_assignment_keeps_what_it_assigns():
+    """Nothing reads x, but the state is named after its assignment, which
+    stays, so the Pass is not left empty."""
+    body = '    x = input["x"]  # state: ReadInput\n    return 1\n'
+    states = machine(body)["States"]
+    assert states["ReadInput"] == {
+        "Type": "Pass",
+        "Assign": {"x": "{% $states.context.Execution.Input.x %}"},
+        "Next": "return",
+    }
+
+
+def test_a_named_pass_loses_what_another_statement_adds_and_nothing_reads():
+    body = (
+        '    bucket = input["bucket"]  # state: ReadInput\n'
+        '    key = input["key"]\n'
+        "    return 1\n"
+    )
+    assert machine(body)["States"]["ReadInput"]["Assign"] == {
+        "bucket": "{% $states.context.Execution.Input.bucket %}"
+    }
+
+
 def test_an_ordinary_comment_names_nothing():
     body = "    x = 1  # state of the order\n    return x\n"
     assert [name for name, _, _ in outline(machine(body))] == ["return"]

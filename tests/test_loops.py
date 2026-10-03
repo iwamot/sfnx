@@ -365,10 +365,10 @@ def test_while_narrows_after_the_loop():
             {"i_stop": "{% $n %}", "i": 0},
         ),
         # The start goes in the state before the loop, reading first as the
-        # expression that state assigns it.
+        # expression that state assigns it, and nothing reads first after it.
         (
             'first: float = input["first"]\nfor i in range(first, 10):\n    wait(i)\nreturn 1',
-            {"first": f"{{% {INPUT}.first %}}", "i": f"{{% {INPUT}.first %}}"},
+            {"i": f"{{% {INPUT}.first %}}"},
         ),
     ],
 )
@@ -400,12 +400,15 @@ def test_a_loop_whose_test_is_not_known_on_entry_keeps_it(body):
 
 def test_a_pass_opens_the_way_for_one_that_ran_before_it():
     """The if in the body takes in the loop's test, so only the start leads to
-    the while any more, and the start's assignment goes in it: the passes run
-    again until nothing changes."""
+    the while any more, and the start's assignment goes in it, in the rule
+    that enters the loop, the one way that reads it: the passes run again
+    until nothing changes."""
     body = 'polls: int = input["p"]\nwhile polls < 20:\n    wait(1)\n    if input["b"]:\n        return 1\n    polls += 1\nreturn 0'
     (definition,) = compile_source(source(body)).values()
     assert definition["StartAt"] == "while"
-    assert definition["States"]["while"]["Assign"] == {"polls": f"{{% {INPUT}.p %}}"}
+    choice = definition["States"]["while"]
+    assert choice["Choices"][0]["Assign"] == {"polls": f"{{% {INPUT}.p %}}"}
+    assert "Assign" not in choice
 
 
 def test_a_loop_gives_up_its_first_round_once_however_often_the_passes_run():

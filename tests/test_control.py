@@ -7,6 +7,8 @@ import pytest
 
 from sfnx import testing
 from sfnx.compiler import (
+    NAMED,
+    NAMED_ASSIGNS,
     Rounds,
     both,
     compile_source,
@@ -947,7 +949,8 @@ def test_a_state_that_reads_its_name_keeps_its_own():
 
 def test_an_if_right_after_an_if_that_ends_is_one_choice():
     """The rules of the second follow the first's, and what the first
-    assigns on its Default goes in each of them, as it runs before them."""
+    assigns on its Default goes in each of them that leads to a read of it,
+    as it runs before them: the second's rule returns 2, which reads no y."""
     body = (
         'if input["a"]:\n    return 1\n# the fallback\ny = input["y"]\n'
         'if input["b"]:\n    return 2\nreturn y'
@@ -955,7 +958,7 @@ def test_an_if_right_after_an_if_that_ends_is_one_choice():
     states = definition(body)["States"]
     choice = states["if"]
     assert [rule["Next"] for rule in choice["Choices"]] == ["return", "return_2"]
-    assert choice["Choices"][1]["Assign"] == {"y": f"{{% {INPUT}.y %}}"}
+    assert "Assign" not in choice["Choices"][1]
     assert choice["Choices"][1]["Comment"] == "the fallback"
     plain = definition(body.replace("# the fallback\n", ""))["States"]["if"]
     assert "Comment" not in plain["Choices"][1]
@@ -966,12 +969,13 @@ def test_an_if_right_after_an_if_that_ends_is_one_choice():
 
 def test_an_if_that_reads_what_the_first_assigns_reads_it_as_its_expression():
     """The first Choice evaluates its Default's Assign with the variables and
-    the input its tests read, so the second's tests read the expression."""
+    the input its tests read, so the second's tests read the expression, and
+    nothing reads y after them."""
     body = 'if input["a"]:\n    return 1\ny = input["y"]\nif y:\n    return 2\nreturn 3'
     states = definition(body)["States"]
     assert "if_2" not in states
     assert states["if"]["Choices"][1]["Condition"] == f"{{% $boolean({INPUT}.y) %}}"
-    assert states["if"]["Choices"][1]["Assign"] == {"y": f"{{% {INPUT}.y %}}"}
+    assert all("Assign" not in rule for rule in states["if"]["Choices"])
     for a, y, expected in [(True, True, 1), (False, True, 2), (False, False, 3)]:
         assert asl.run(definition(body), {"a": a, "y": y}) == expected
 
@@ -1229,17 +1233,17 @@ def test_a_variable_that_holds_a_boolean_is_tested_as_it_is(body, wrapped):
 
 def test_a_start_the_values_written_before_it_decide_is_a_pass():
     """o0 is None where the definition starts, so the Choice the start
-    values went into tests nothing: it is the Pass of the rule it takes,
-    under its name, and the else's loop goes."""
+    values went into tests nothing: it is the Pass of the rule it takes, and
+    the else's loop goes; the return reads that Pass's value in place, so
+    a Succeed is all that is left."""
     body = (
         'n0: int = input["n0"]\no0: int | None = None\nif o0 is None:\n'
         "    o0 = 4 + n0\nelse:\n    for x in [1, 2]:\n        o0 = 1\nreturn o0"
     )
     compiled = definition(body)
     states = compiled["States"]
-    assert compiled["StartAt"] == "if"
-    assert states["if"]["Type"] == "Pass"
-    assert not any(s["Type"] == "Choice" for s in states.values())
+    assert compiled["StartAt"] == "return"
+    assert [s["Type"] for s in states.values()] == ["Succeed"]
     assert asl.run(compiled, {"n0": 3}) == 7
 
 
@@ -1835,10 +1839,10 @@ def test_a_return_after_a_wait_reads_a_value_that_may_fail_where_it_fails(body, 
 
 
 @pytest.mark.parametrize(
-    "body, failing",
+    "body, missing, result",
     [
-        # A missing key is undefined, which a list drops without failing.
-        ('wait(1)\nx = input["x"]\nreturn [x, 1]', {}),
+        # A missing key is undefined, which fails the Output that holds it.
+        ('wait(1)\nx = input["x"]\nreturn [x, 1]', {}, None),
         # The return reads n in one branch only.
         (
             (
@@ -1846,17 +1850,23 @@ def test_a_return_after_a_wait_reads_a_value_that_may_fail_where_it_fails(body, 
                 'return n if input["a"] else 0'
             ),
             {"a": False, "n": "s"},
+            0,
         ),
     ],
 )
-def test_a_wait_ending_with_a_return_keeps_a_value_that_may_fail(body, failing):
-    """The Wait's Output reads the value, and its Assign, which stays, fails
-    where Python does, where the Output would not."""
+def test_a_wait_ending_with_a_return_assigns_nothing_its_output_reads_in_place(
+    body, missing, result
+):
+    """The Wait's Output reads the value in its place, so nothing is
+    assigned, and what the Output gives is what the definition gives."""
     compiled = definition(body)
     assert list(compiled["States"]) == ["wait"]
-    assert compiled["States"]["wait"]["Assign"]
-    with pytest.raises(asl.Failure):
-        asl.run(compiled, failing)
+    assert "Assign" not in compiled["States"]["wait"]
+    if result is None:
+        with pytest.raises(asl.Failure):
+            asl.run(compiled, missing)
+    else:
+        assert asl.run(compiled, missing) == result
 
 
 def test_a_return_reads_a_value_that_may_fail_where_it_fails():
@@ -1943,6 +1953,38 @@ def dropped(states: dict, start: str | None = None) -> dict:
     return emitted_definition
 
 
+@pytest.mark.parametrize(
+    "named, kept",
+    [
+        # The Pass a `# state:` comment names on an assignment keeps what that
+        # assignment assigns, and loses what another statement added.
+        ({"Type": "Pass", NAMED_ASSIGNS: ["x"]}, {"x"}),
+        # A named Task loses what nothing reads, as any Task does.
+        (
+            {
+                "Type": "Task",
+                "Resource": "arn:aws:states:::lambda:invoke",
+                "Arguments": {"FunctionName": "f"},
+            },
+            set(),
+        ),
+    ],
+)
+def test_only_a_named_assignment_keeps_what_nothing_reads(named, kept):
+    definition = dropped(
+        {
+            "n": {
+                **named,
+                "Assign": {"x": "{% $states.input %}", "y": "{% $states.input %}"},
+                NAMED: "Named",
+                "Next": "r",
+            },
+            "r": {"Type": "Succeed", "Output": 1},
+        }
+    )
+    assert set(definition["States"]["n"].get("Assign", {})) == kept
+
+
 def test_an_assignment_nothing_reads_goes_with_its_pass():
     definition = dropped(
         {
@@ -1987,16 +2029,9 @@ def test_an_assignment_assigned_again_before_any_read_goes():
     assert definition["States"]["w2"]["Assign"] == {"x": 2}
 
 
-@pytest.mark.parametrize(
-    "value, kept",
-    [
-        # A variable alone fails nowhere, wherever else it is read.
-        ("{% $x %}", False),
-        # A path read in its place elsewhere may fail there otherwise.
-        ("{% $x.a %}", True),
-    ],
-)
-def test_an_assignment_nothing_reads_but_its_expression_elsewhere(value, kept):
+@pytest.mark.parametrize("value", ["{% $x %}", "{% $x.a %}"])
+def test_an_assignment_nothing_reads_but_its_expression_elsewhere(value):
+    """Whatever else reads the same expression, nothing reads y."""
     definition = dropped(
         {
             "w": {**WAIT, "Assign": {"x": "{% $states.input %}"}, "Next": "w2"},
@@ -2004,7 +2039,7 @@ def test_an_assignment_nothing_reads_but_its_expression_elsewhere(value, kept):
             "r": {"Type": "Succeed", "Output": value},
         }
     )
-    assert ("Assign" in definition["States"]["w2"]) == kept
+    assert "Assign" not in definition["States"]["w2"]
 
 
 @pytest.mark.parametrize(
@@ -2040,9 +2075,10 @@ def test_an_assignment_something_reads_stays(reader):
     assert "x" in definition["States"]["w"]["Assign"]
 
 
-def test_an_expression_another_value_reads_in_place_keeps_its_assignment():
-    """y reads xs in its place, where a missing key would give [] where the
-    assignment of xs fails, as Python fails."""
+def test_an_expression_another_value_reads_in_place_drops_its_assignment():
+    """y reads xs in its place, and nothing reads the variable, so it is not
+    assigned, though a missing key gives [] there where the assignment of
+    xs would fail."""
     xs = "{% $states.input.xs %}"
     definition = dropped(
         {
@@ -2057,7 +2093,7 @@ def test_an_expression_another_value_reads_in_place_keeps_its_assignment():
             "r": {"Type": "Succeed", "Output": "{% $y %}"},
         }
     )
-    assert definition["States"]["w"]["Assign"]["xs"] == xs
+    assert "xs" not in definition["States"]["w"]["Assign"]
 
 
 def test_a_definition_that_calls_eval_keeps_every_assignment():

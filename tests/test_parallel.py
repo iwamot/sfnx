@@ -126,13 +126,13 @@ def test_a_branch_assigns_names_of_its_own():
     machine's, where Python keeps the two apart, so the branch's name is
     numbered."""
     body = (
-        'total = 0\ndef f():\n    total = int("1")\n    wait(0)\n    return [total]\n'
-        "r = parallel(f)\nreturn [total, r]"
+        'total = 0\ndef f():\n    total = input["n"] + 1\n    wait(0)\n    wait(0)\n'
+        "    return [total, total + 1]\nr = parallel(f)\nreturn [total, r]"
     )
     branch = states(body)["r"]["Branches"][0]["States"]
     assigned = {k for state in branch.values() for k in state.get("Assign", {})}
     assert assigned == {"total_2"}
-    assert run(body, {}) == [0, [[1]]]
+    assert run(body, {"n": 1}) == [0, [[2, 3]]]
     # The machine may assign the name after the branch too.
     body = (
         "def f():\n    for total in range(1):\n        pass\n    return 1\n"

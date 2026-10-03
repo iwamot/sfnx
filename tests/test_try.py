@@ -573,8 +573,8 @@ def test_a_caught_error_named_after_a_function_is_renamed():
 def test_assignments_that_start_an_except_clause_go_in_its_catch():
     """They read the error as the error output the Catch assigns, and one
     reads what another before it assigns as its expression. Nothing reads e
-    after them, so the Catch does not assign it; note reads the expression
-    of reason, which keeps its assignment where Python reads it."""
+    after them, so the Catch does not assign it, and note reads the
+    expression of reason, so nothing reads reason either."""
     body = (
         f"try:\n    {CHARGE}\nexcept Declined as e:\n"
         '    reason = str(e)\n    note = {"reason": reason, "kind": type(e).__name__}\n'
@@ -584,7 +584,6 @@ def test_assignments_that_start_an_except_clause_go_in_its_catch():
     assert compiled["invoke charge"]["Catch"][0] == {
         "ErrorEquals": ["Declined"],
         "Assign": {
-            "reason": "{% $states.errorOutput.Cause %}",
             "note": {
                 "reason": "{% $states.errorOutput.Cause %}",
                 "kind": "{% $states.errorOutput.Error %}",
@@ -743,7 +742,7 @@ def test_an_assignment_that_cannot_fail_goes_in_the_task_the_except_reads(
 
 
 def test_a_value_read_twice_is_bound_once():
-    """The Task's value for r is longer than a path, so the assignment that
+    """The Task's value for r is longer than a path, so the Output that
     reads it twice binds it to r first, where it reads it once."""
     body = (
         f'r = None\ntry:\n    r = json.loads({CHARGE}["Payload"])\n'
@@ -751,11 +750,11 @@ def test_a_value_read_twice_is_bound_once():
         "except Exception:\n    return r\nreturn x"
     )
     (compiled,) = compile_source(source(body, CLASSES + "import json\n")).values()
-    assign = next(s for s in compiled["States"].values() if s["Type"] == "Task")[
-        "Assign"
+    output = next(s for s in compiled["States"].values() if s["Type"] == "Task")[
+        "Output"
     ]
-    assert assign["x"].startswith("{% ($r := $parse(")
-    assert assign["x"].count("$parse(") == 1
+    assert output.startswith("{% ($r := $parse(")
+    assert output.count("$parse(") == 1
 
 
 def test_a_value_bound_once_is_not_read_by_another_put_in_place():
@@ -1109,7 +1108,7 @@ def test_a_return_of_variables_goes_in_a_task_whose_catch_takes_everything(
 @pytest.mark.parametrize(
     "clauses, folded",
     [
-        # The except that reads r catches Declined, which a failing Assign
+        # The except that reads r catches Declined, which a failing Output
         # never raises; the one that takes it reads nothing of r.
         ("except Declined:\n    return r\nexcept Exception:\n    raise", True),
         ("except Exception:\n    return r", False),
@@ -1118,13 +1117,16 @@ def test_a_return_of_variables_goes_in_a_task_whose_catch_takes_everything(
 def test_a_statement_goes_in_the_task_when_no_catcher_of_its_failure_reads_r(
     clauses, folded
 ):
+    """Where it goes in, the return reads it in place, as the Task's Output,
+    which its catchers take as they would take the Assign."""
     body = (
         f'r = {{}}\ntry:\n    r = {CHARGE}\n    y = r["Payload"]["n"]\n'
         f"{clauses}\nreturn [y, 1]"
     )
     compiled = states(body)
     [task] = [n for n, s in compiled.items() if s["Type"] == "Task"]
-    assert ("y" in compiled[task]["Assign"]) is folded
+    assert ("Output" in compiled[task]) is folded
+    assert ("y" in compiled) is not folded
     tasks = {task: lambda arguments: {"Payload": {"n": 3}}}
     assert run(body, {}, tasks) == [3, 1]
     if folded:

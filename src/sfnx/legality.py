@@ -30,10 +30,8 @@ from sfnx.expressions import (
 from sfnx.syntax import (
     Strictness,
     UndefinedPropagation,
-    evaluates,
     evaluations,
     facts,
-    lone_variable,
     names_read,
     path_alone,
     propagation,
@@ -42,7 +40,6 @@ from sfnx.syntax import (
     reads_own_states,
     reads_state_name,
     reads_the_name,
-    same_code,
     sensitivity,
     strictness,
 )
@@ -348,25 +345,6 @@ def evaluated_once(
     return None
 
 
-def failure_seen_before(
-    value: object, holder: dict[str, object], state: dict[str, object]
-) -> bool:
-    """Whether a failure of a value in holder's Assign is one the state has
-    already met: the same state, so the same catchers and retriers, and the
-    same values of the variables, as every field of a state reads those from
-    before it, evaluates the same code as a whole field before its call or
-    wait, whose failure fails the state there, so the value fails nowhere
-    that does not. Only for a value that is never undefined: what a state
-    does with a field that is undefined is not measured for every field."""
-    if holder is not state or not isinstance(value, Expr) or not value.defined:
-        return False
-    return any(
-        f.before_effect and not f.repeated and same_code(f.code, value.code)
-        for f in fields_of(state)
-        if state["Type"] in BEFORE
-    )
-
-
 def read_at_most_once(codes: list[str], name: str) -> Reject | None:
     """Whether the codes, each evaluated once, evaluate a read of the variable
     of a name at most once between them, as evaluations bounds it: a read in
@@ -375,30 +353,6 @@ def read_at_most_once(codes: list[str], name: str) -> Reject | None:
     if None in counts or sum(c or 0 for c in counts) > 1:
         return Reject.CHANGES_EVALUATION_COUNT
     return None
-
-
-def held_elsewhere(template: object, codes: list[str]) -> bool:
-    """Whether another expression holds the expression of a value that may
-    fail, as reading the variable in its place writes it: a value written
-    out or a variable alone has nothing to fail, whatever holds it, nor has
-    one that can neither fail nor be undefined. The syntax trees are
-    compared, as evaluates says, however the code is spaced or
-    parenthesized where it is read in place, so $a.b is held by
-    $count($a.b[0].c) and not by $a.bc; one the parser cannot read may hold
-    anything."""
-    if failsafe(template):
-        return False
-    found = [code.strip() for code in expressions_in(template)]
-    return any(
-        not (lone_variable(code) is not None or code in NEVER_FAILS)
-        and sum(evaluates(other, code) is not False for other in codes) > 1
-        for code in found
-    )
-
-
-# What a state reads of its own that is always there: the result of a Task,
-# a Parallel or a Map, and the error output of a catcher.
-NEVER_FAILS = frozenset({"$states.result", "$states.errorOutput"})
 
 
 def resolve_reads(
