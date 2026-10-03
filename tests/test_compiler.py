@@ -806,11 +806,13 @@ TESTED = 'x = input["x"]\nif x is None:\n    return 0\nreturn 1'
 
 def test_each_pass_that_changes_the_definition_is_logged(caplog):
     """The start Pass goes in the Choice after it, as fold_start does, which
-    the machine now starts at; the other passes change nothing here."""
+    the machine now starts at, and then x goes, as nothing reads it after
+    the test that reads its expression; the other passes change nothing."""
     with caplog.at_level(logging.DEBUG, logger="sfnx.passes"):
         compile_one(machine(TESTED))
-    [record] = caplog.records
-    assert record.getMessage().splitlines()[:2] == ["fold_start", "StartAt: x -> if"]
+    folded, dropped = caplog.records
+    assert folded.getMessage().splitlines()[:2] == ["fold_start", "StartAt: x -> if"]
+    assert dropped.getMessage().splitlines()[0] == "drop_dead_assignments"
 
 
 def test_nothing_is_logged_where_debug_is_off(caplog):
@@ -1089,20 +1091,21 @@ READ_FURTHER = (
         ),
     ],
 )
-def test_a_value_a_comprehension_reads_further_in_its_place_still_fails(body):
-    """d is read in place as the start of a longer path, where a missing key
-    gives an empty list; its assignment stays, so a missing d fails as Python
-    fails, after the call where one follows (AD-DEFERRED-FAILURE)."""
+def test_a_value_a_comprehension_reads_further_in_its_place_is_not_assigned(body):
+    """d is read in place as the start of a longer path, and nothing reads
+    the variable, so it is not assigned: a missing d gives the empty list
+    the comprehension gives for it, and the call runs once either way."""
     source = (
         "from sfnx import state_machine, task\n\n\n@state_machine\ndef pay(input):\n"
         + textwrap.indent(body, "    ")
     )
     definition = compile_one(source)
-    tasks = {"y": lambda arguments: arguments["Payload"]}
-    with pytest.raises(asl.Failure) as failed:
-        asl.run(definition, {}, tasks)
-    assert failed.value.error == "States.QueryEvaluationError"
+    assert all("d" not in s.get("Assign", {}) for s in definition["States"].values())
+    calls = []
+    tasks = {"y": lambda arguments: calls.append(arguments) or arguments["Payload"]}
+    assert asl.run(definition, {}, tasks) == []
     assert asl.run(definition, {"d": {"items": [1, 2]}}, tasks) == [2, 4]
+    assert len(calls) == (2 if "task(" in body else 0)
 
 
 def test_the_examples_of_which_states_a_function_makes():

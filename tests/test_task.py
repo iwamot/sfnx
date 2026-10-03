@@ -70,8 +70,7 @@ def test_a_return_right_after_a_task_is_its_output():
         "Type": "Task",
         "Resource": LAMBDA,
         "Arguments": {"FunctionName": "f"},
-        # fee goes in the Task, which reads it as its expression.
-        "Assign": {"fee": f"{{% {INPUT}.fee %}}"},
+        # The Output reads fee as its expression, so nothing assigns it.
         "Output": f"{{% $states.result.Payload.total + {INPUT}.fee %}}",
         "End": True,
     }
@@ -171,8 +170,8 @@ def test_assignments_right_after_a_task_go_in_its_assign():
     )
     compiled = states(body)
     assert list(compiled) == ["r", "wait"]
+    # due reads fee as its expression, so nothing assigns fee.
     assert compiled["r"]["Assign"] == {
-        "fee": f"{{% {INPUT}.fee %}}",
         "r": "{% $states.result %}",
         "total": "{% $states.result.Payload.total %}",
         "due": f"{{% $states.result.Payload.total + {INPUT}.fee %}}",
@@ -251,13 +250,32 @@ def test_a_value_that_changes_the_arguments_read_once_goes_in_them():
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="example c: the Arguments evaluate the same expression first, but it "
-    "may be undefined, and what an undefined field of the Arguments does is "
-    "not measured yet",
-)
+def test_an_unread_assignment_after_a_retried_task_goes_without_another_call():
+    """xs is read in place by the comprehension, and nothing reads the
+    variable, so its Pass goes: a missing key gives the empty list, and the
+    Task is called once either way, as no value that may fail is in the
+    Assign its retrier takes."""
+    body = (
+        f'r: dict = task("{LAMBDA}", {{"FunctionName": "f"}}, '
+        'retry=[{"ErrorEquals": [Exception], "MaxAttempts": 2}])["Payload"]\n'
+        'xs: list = r["xs"]\nys = [x * 2 for x in xs]\nreturn ys'
+    )
+    compiled = definition(body)
+    assert [s["Type"] for s in compiled["States"].values()] == ["Task", "Succeed"]
+    assert compiled["States"]["r"]["Retry"]
+    for payload, expected in [({"xs": [1, 2]}, [2, 4]), ({}, [])]:
+        calls: list[object] = []
+
+        def call(arguments, p=payload, calls=calls):
+            calls.append(arguments)
+            return {"Payload": p}
+
+        assert asl.run(compiled, {}, {"r": call}) == expected
+        assert len(calls) == 1
+
+
 def test_an_assignment_the_arguments_evaluate_first_goes():
+    """The Arguments read x as its expression, and nothing else reads it."""
     body = f'x = input["a"]\ny = task("{LAMBDA}", {{"FunctionName": "f", "Payload": x}})\nreturn y'
     assert states(body) == {
         "y": {
@@ -298,9 +316,8 @@ def test_an_assignment_whose_failure_the_arguments_meet_first_goes(value, payloa
 
 
 def test_the_fields_of_a_state_read_the_variables_from_before_it():
-    """What failure_seen_before relies on: the Arguments, the Assign and the
-    Output of a Task all read a variable as it was before the state, however
-    its Assign assigns it again."""
+    """The Arguments, the Assign and the Output of a Task all read a variable
+    as it was before the state, however its Assign assigns it again."""
     machine = {
         "QueryLanguage": "JSONata",
         "StartAt": "v",

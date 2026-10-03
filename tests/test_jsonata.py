@@ -74,7 +74,7 @@ READ_AFTER_WAIT = (
 
 def test_the_expression_reads_the_variables_it_names():
     compiled = definition(READ_AFTER_WAIT.format(name="a", text="$a + 1"))
-    assert compiled["States"]["wait_2"]["Assign"] == {"b": "{% $a + 1 %}"}
+    assert compiled["States"]["wait_2"]["Output"] == ["{% $a + 1 %}"]
     assert asl.run(compiled, {"a": 1}) == [2]
 
 
@@ -83,13 +83,13 @@ def test_the_expression_reads_a_variable_named_outside_ascii(name):
     # Step Functions variable names are Unicode identifiers, so an expression
     # written by hand reads one under whatever name it was declared with.
     compiled = definition(READ_AFTER_WAIT.format(name=name, text=f"${name} + 1"))
-    assert compiled["States"]["wait_2"]["Assign"] == {"b": f"{{% ${name} + 1 %}}"}
+    assert compiled["States"]["wait_2"]["Output"] == [f"{{% ${name} + 1 %}}"]
     assert asl.run(compiled, {"a": 1}) == [2]
 
 
 def test_the_expression_reads_a_variable_by_the_name_the_definition_gives_it():
     compiled = definition(READ_AFTER_WAIT.format(name="count", text="$count_val + 1"))
-    assert compiled["States"]["wait_2"]["Assign"] == {"b": "{% $count_val + 1 %}"}
+    assert compiled["States"]["wait_2"]["Output"] == ["{% $count_val + 1 %}"]
     assert asl.run(compiled, {"a": 1}) == [2]
 
 

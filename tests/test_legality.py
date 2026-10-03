@@ -16,9 +16,7 @@ from sfnx.legality import (
     evaluated_as_before,
     evaluated_once,
     failure_escapes,
-    failure_seen_before,
     fields_of,
-    held_elsewhere,
     read_at_most_once,
     refused,
     resolve_reads,
@@ -259,33 +257,6 @@ DEFINED = expression("$a * 2", frozenset({"a"}), defined=True)
 
 
 @pytest.mark.parametrize(
-    "state, value, seen",
-    [
-        # The Arguments evaluate the same code before the call.
-        ({**TASK, "Arguments": {"Payload": "{% $a * 2 %}"}}, DEFINED, True),
-        ({**TASK, "Arguments": "{% ($a*2) %}"}, DEFINED, True),
-        # A value that may be undefined, and one read in part only.
-        ({**TASK, "Arguments": {"Payload": "{% $a * 2 %}"}}, MAY_FAIL, False),
-        ({**TASK, "Arguments": {"Payload": "{% $a * 2 + 1 %}"}}, DEFINED, False),
-        # A retrier evaluates the Arguments again; a Choice calls nothing.
-        (
-            {**TASK, "Arguments": "{% $a * 2 %}", "Retry": [{"ErrorEquals": ["X"]}]},
-            DEFINED,
-            False,
-        ),
-        (
-            {"Type": "Choice", "Choices": [{"Condition": "{% $a * 2 %}"}]},
-            DEFINED,
-            False,
-        ),
-    ],
-)
-def test_a_failure_the_state_meets_before_its_assign(state, value, seen):
-    assert failure_seen_before(value, state, state) is seen
-    assert not failure_seen_before(value, {"Next": "x"}, state)
-
-
-@pytest.mark.parametrize(
     "codes, reason",
     [
         (["$x + 1"], None),
@@ -296,33 +267,3 @@ def test_a_failure_the_state_meets_before_its_assign(state, value, seen):
 )
 def test_what_reads_a_variable_at_most_once(codes, reason):
     assert read_at_most_once(codes, "x") is reason
-
-
-@pytest.mark.parametrize(
-    "value, codes, held",
-    [
-        # Read in place of its variable elsewhere, where it may not fail.
-        (MAY_FAIL, [f"{INPUT}.a", f"[{INPUT}.a]"], True),
-        (MAY_FAIL, [f"{INPUT}.a"], False),
-        # The text holds it, the syntax tree does not.
-        (MAY_FAIL, [f"{INPUT}.a", f"{INPUT}.ab"], False),
-        # The syntax tree holds it, the text does not: as the start of a path
-        # read further, or in parentheses.
-        (
-            MAY_FAIL,
-            [f"{INPUT}.a", f"$map({INPUT}.a.items, function($v) {{ $v }})"],
-            True,
-        ),
-        (
-            expression(f"({INPUT}.a)"),
-            [f"({INPUT}.a)", f"$map({INPUT}.a, function($v) {{ $v }})"],
-            True,
-        ),
-        # Nothing in it can fail or be undefined.
-        (SAFE, ["$exists($a)", "[$exists($a)]"], False),
-        (expression("$a"), ["$a", "[$a]"], False),
-        (expression("$states.result"), ["$states.result", "[$states.result]"], False),
-    ],
-)
-def test_a_value_whose_failure_another_expression_takes(value, codes, held):
-    assert held_elsewhere(value, codes) is held

@@ -364,7 +364,7 @@ def test_a_comprehension_with_several_fors(kind, written, items, expected):
 
 def test_the_comprehension_variable_does_not_leak():
     body = 'x = "outer"\nxs: list = input["xs"]\ny = [x for x in xs]\nreturn [x, y]'
-    assert output(body) == ["{% $x %}", "{% $y %}"]
+    assert output(body) == ["outer", f"{{% [{INPUT}.xs] %}}"]
 
 
 def test_the_comprehension_variable_cannot_hide_what_another_name_reads():
@@ -396,9 +396,13 @@ def test_types():
     body = (
         'xs: list[float] = input["xs"]\nys = [str(x) for x in xs]\nreturn ys[0] + "!"'
     )
-    assert output(body) == "{% $ys[0] & '!' %}"
+    assert output(body) == (
+        f"{{% [$map({INPUT}.xs, function($x) {{ $string($x) }})][0] & '!' %}}"
+    )
     body = 'xs: list[str] = input["xs"]\nys = [x for x in xs if x != ""]\nreturn len(ys[0])'
-    assert output(body) == "{% $length($ys[0]) %}"
+    assert output(body) == (
+        f"{{% $length([$filter({INPUT}.xs, function($x) {{ $x != '' }})][0]) %}}"
+    )
     body = 'xs: list[str] = input["xs"]\nd = {x: 1 for x in xs}\nreturn d["a"] + 1'
     assert output(body) == "{% $d.a + 1 %}"
     body = 'e: dict[str, str] = input["e"]\nd = {k: v for k, v in e.items() if v != ""}\nreturn d["a"] + "!"'

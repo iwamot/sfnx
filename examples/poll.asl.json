@@ -56,10 +56,7 @@
           }
         }
       ],
-      "Default": "raise_2",
-      "Assign": {
-        "polls": "{% $polls + 1 %}"
-      }
+      "Default": "raise_2"
     },
     "return": {
       "Type": "Succeed",

@@ -137,15 +137,18 @@ def test_a_value_the_call_does_not_use_is_not_evaluated():
 def test_the_names_of_the_function_are_its_own():
     """A name the function assigns is renamed where the machine uses it too,
     so the machine's variable keeps its value, as Python keeps it."""
-    module = "\n\ndef bump(x: float):\n    ids = x + 1\n    return ids\n"
+    module = (
+        "\nfrom sfnx import wait\n\n\ndef bump(x: float):\n"
+        "    ids = x + 1\n    wait(0)\n    return ids + ids\n"
+    )
     body = 'ids = input["n"]\nr = bump(ids)\nreturn [ids, r]'
     compiled = states(body, module)
-    assert compiled["ids"]["Assign"]["ids_2"] == (
-        "{% $states.context.Execution.Input.n + 1 %}"
+    assert compiled["wait"]["Output"][1] == (
+        "{% ($ids_2 := $states.context.Execution.Input.n + 1; $ids_2 + $ids_2) %}"
     )
-    assert run(body, {"n": 1}, module=module) == [1, 2]
+    assert run(body, {"n": 1}, module=module) == [1, 4]
     # A name the machine does not use stays as written.
-    assert "ids" in states('r = bump(input["n"])\nreturn r', module)
+    assert "$ids :=" in str(states('r = bump(input["n"])\nreturn r', module))
 
 
 def test_calls_inside_calls_keep_their_names_apart():

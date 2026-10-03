@@ -69,9 +69,7 @@ from sfnx.legality import (
     failsafe,
     failure_escapes,
     failure_kept,
-    failure_seen_before,
     fields_of,
-    held_elsewhere,
     read_at_most_once,
     refused,
     resolve_reads,
@@ -106,6 +104,10 @@ MAX_VARIABLE = 80
 # The field that marks a state a `# state:` comment names, which the passes
 # keep as it is under that name, and which the definition does not show.
 NAMED = "sfnx.name"
+# The variables the named assignment itself assigns in its Pass, which stay
+# there though nothing reads them, as the name names that assignment; what
+# other statements add to the Pass goes as it would anywhere.
+NAMED_ASSIGNS = "sfnx.named_assigns"
 # Statements that make no state of their own, so a name on them would name
 # none: the states their bodies make are named in the body.
 UNNAMED_STATEMENTS = (
@@ -365,6 +367,7 @@ class Scope:
         # pending assignments, which a named assignment starts.
         self.naming: tuple[str, ast.stmt] | None = None
         self.pending_name: str | None = None
+        self.pending_named: tuple[ast.stmt, set[str]] | None = None
         # The body of a while True leads back to the first state it adds, so
         # until it adds one, what it assigns cannot go in a state before it.
         self.opening = False
@@ -505,15 +508,21 @@ class Scope:
         origins = self.pending_origins
         remarks = self.pending_remarks
         named = self.pending_name
+        own = self.pending_named[1] if self.pending_named is not None else set()
         self.pending = {}
         self.pending_first = None
         self.pending_node = None
         self.pending_origins = []
         self.pending_remarks = []
         self.pending_name = None
+        self.pending_named = None
         if named is not None:
             # A named assignment keeps a Pass of its own.
-            state: dict[str, object] = {"Type": "Pass", "Assign": assign}
+            state: dict[str, object] = {
+                "Type": "Pass",
+                "Assign": assign,
+                NAMED_ASSIGNS: sorted(self.spelling(n) for n in own),
+            }
             if remarks:
                 state = commented(state, "\n".join(remarks))
             self.insert(named, state, node, origins, True)
@@ -660,7 +669,10 @@ class Scope:
             # A named assignment starts the Pass it names.
             self.flush()
             self.pending_name = self.naming[0]
+            self.pending_named = (self.naming[1], set())
             self.naming = None
+        if self.pending_named is not None and self.pending_named[0] is self.current:
+            self.pending_named[1].add(name)
         self.folded.pop(name, None)
         result = self.following()
         if folded is not None:
@@ -4279,13 +4291,14 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
     with nothing to do goes, each way to it leading on to its Next. Every
     expression of a state, those of its branches or its processor included,
     reads the variables it names; a definition that calls $eval, which reads
-    variables by names not written out, keeps every assignment. So does one
-    whose expression another value reads in its place, as y = [x for x in
-    xs] reads xs = input["xs"]: Python reads the variable there, and the
-    expression read in place may not fail where the assignment would, as a
-    comprehension gives [] for a missing key. A Task's, a Parallel's or a
-    Map's own assignment that an except clause reads stays, as excepted
-    says, even where nothing after the state reads it."""
+    variables by names not written out, keeps every assignment. One whose
+    expression another value reads in its place goes too, as a hand-writer
+    writes no variable nothing reads, though the value read in place may not
+    fail where the assignment would, as a comprehension gives [] for a
+    missing key. A Task's, a Parallel's or a Map's own assignment that an
+    except clause reads stays, as excepted says, even where nothing after
+    the state reads it, and so does what a named assignment itself assigns
+    in its Pass."""
     states = definition["States"]
     assert isinstance(states, dict)
     if any(sensitivity(c).dependencies_unknown for c in expressions_in(states)):
@@ -4294,25 +4307,20 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
     while changed:
         changed = False
         live = live_reads(states)
-        codes = expressions_in(states)
         for state in states.values():
             for holder, target in ways_out(state):
                 own = holder.get("Assign")
                 if not isinstance(own, dict):
                     continue
+                # A named assignment's Pass keeps what that assignment
+                # assigns, which is what the name names.
+                kept = state.get(NAMED_ASSIGNS, []) if holder is state else []
+                assert isinstance(kept, list)
                 following = live[target] if target is not None else set()
                 if holder is state:
                     following = following | excepted(state, live)
                 # Allowed by AD-DEAD-FAILURE.
-                dead = [
-                    k
-                    for k in own
-                    if k not in following
-                    and (
-                        not held_elsewhere(own[k], codes)
-                        or failure_seen_before(own[k], holder, state)
-                    )
-                ]
+                dead = [k for k in own if k not in following and k not in kept]
                 for k in dead:
                     del own[k]
                     changed = True
@@ -6081,6 +6089,7 @@ def compile_machine(
     for scope_definition in machines_in(definition):
         for state in scope_states(scope_definition).values():
             state.pop(NAMED, None)
+            state.pop(NAMED_ASSIGNS, None)
     return {**comment, "QueryLanguage": "JSONata", **options, **definition}
 
 
