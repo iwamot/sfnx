@@ -56,6 +56,20 @@ def definition(body: str) -> dict:
     return compiled
 
 
+@pytest.mark.parametrize(
+    "assigned, written",
+    [
+        ("xs: list = []", "xs += [input['x']]"),
+        ("n = 0", "n += 1"),
+    ],
+)
+def test_an_augmented_assignment_compiles_as_the_assignment(assigned, written):
+    name, operator, value = written.split(" ", 2)
+    spelled = f"{name} = {name} {operator[0]} {value}"
+    body = f"{assigned}\nif input['go']:\n    {{}}\nreturn {name}"
+    assert definition(body.format(written)) == definition(body.format(spelled))
+
+
 def test_choice_example():
     body = (
         'if input["amount"] > 1000:\n    fee = 100\n    tier = "big"\n'
@@ -502,6 +516,12 @@ def test_the_comments_of_an_if_that_only_assigns_go_with_its_assignment():
         # x += v is x = x + v.
         ('t = input["t"] + 0\nt += 2\nt *= 3\nt -= 1\nt //= 2\nreturn t', {"t": 1}, 4),
         ('s: str = input["s"]\ns += "!"\nreturn s', {"s": "a"}, "a!"),
+        ('xs: list = input["xs"]\nxs += [3]\nreturn xs', {"xs": [1, 2]}, [1, 2, 3]),
+        (
+            'xs: list = input["xs"]\nxs += input["ys"]\nreturn xs',
+            {"xs": [1], "ys": [2]},
+            [1, 2],
+        ),
         # A list or None: None is false, and a list is counted.
         *(
             (f'v: list | None = input["v"]\n{test}', {"v": v, "go": True}, expected)
@@ -640,10 +660,6 @@ def test_declarations_join_after_branches():
             "Wait timestamps are UTC with T and Z",
         ),
         ("wait(until=10)", "10 is a number; until takes a timestamp string"),
-        (
-            "xs = [1]\nxs += [2]",
-            "xs += extends the list in place, which other names for it see in Python; write xs = xs + [2]",
-        ),
         (
             'd = {"a": 1}\nd["a"] += 1',
             "a JSON value is a copy, so write d = {**d, 'a': d['a'] + 1}",

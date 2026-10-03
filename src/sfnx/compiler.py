@@ -856,8 +856,8 @@ class Scope:
             )
 
     def augment(self, node: ast.AugAssign) -> None:
-        """x += v as x = x + v. A list is extended in place in Python, which
-        other names for it see; a JSON value is a copy, so it is written out."""
+        """x += v as x = x + v, a list's included: xs += [x] assigns xs the
+        list with x appended."""
         if isinstance(node.target, ast.Subscript):
             whole = ast.BinOp(node.target, node.op, node.value)
             raise self.changed_in_place(node.target, whole)
@@ -867,18 +867,6 @@ class Scope:
             )
         name = node.target.id
         reading = ast.copy_location(ast.Name(name, ast.Load()), node.target)
-        current = self.translator.expr(reading)
-        if (
-            isinstance(node.op, ast.Add)
-            and current.type is not None
-            and ARRAY in current.type.kinds
-        ):
-            symbol = ast.unparse(node.value)
-            raise CompileError(
-                f"{name} += extends the list in place, which other names for it "
-                f"see in Python; write {name} = {name} + {symbol}",
-                node,
-            )
         value = ast.copy_location(ast.BinOp(reading, node.op, node.value), node)
         self.assign(
             ast.copy_location(ast.Name(name, ast.Store()), node.target), value, None
@@ -3480,7 +3468,8 @@ def flags(function: ast.FunctionDef) -> dict[str, list[ast.Compare]]:
 
 
 def alone(statements: list[ast.stmt]) -> tuple[ast.Name, ast.expr] | None:
-    """The variable and the value of a block that is one assignment."""
+    """The variable and the value of a block that is one assignment, x += v
+    giving x + v."""
     if len(statements) != 1:
         return None
     statement = statements[0]
@@ -3490,6 +3479,11 @@ def alone(statements: list[ast.stmt]) -> tuple[ast.Name, ast.expr] | None:
         and isinstance(statement.targets[0], ast.Name)
     ):
         return statement.targets[0], statement.value
+    if isinstance(statement, ast.AugAssign) and isinstance(statement.target, ast.Name):
+        target = statement.target
+        reading = ast.copy_location(ast.Name(target.id, ast.Load()), target)
+        value = ast.BinOp(reading, statement.op, statement.value)
+        return target, ast.copy_location(value, statement)
     return None
 
 
