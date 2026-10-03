@@ -2940,24 +2940,11 @@ class Translator:
                     "join() takes a list of strings",
                     arguments[0],
                 )
-            # Python joins the characters of a string, which $join returns as
-            # it is, so a string is split first and one that may be a string
-            # is tested for it when it is evaluated.
-            kinds = items.type.kinds if items.type is not None else {ARRAY, STRING}
-            if kinds == {STRING}:
+            # A value known to be a string joins its characters, as written;
+            # one that may be a list is joined as $join takes it, which
+            # returns a string as it is.
+            if items.type is not None and items.type.kinds == {STRING}:
                 items = call("split", [items, literal("")], of(ARRAY))
-            elif kinds != {ARRAY}:
-                with self.once([items], [receiver], always=self.bind(items)) as (
-                    bindings,
-                    (bound,),
-                ):
-                    kind = call("type", [bound], of(STRING))
-                    test = binary(
-                        kind, "=", literal("string"), COMPARE, of(BOOLEAN), True
-                    )
-                    characters = call("split", [bound, literal("")], of(ARRAY))
-                    items = conditional(test, characters, bound, of(ARRAY))
-                return block(bindings, call("join", [items, receiver], text))
             return call("join", [items, receiver], text)
         raise CompileError(f"{name}() is written {usage}", node)
 

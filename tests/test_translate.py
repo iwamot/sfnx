@@ -183,12 +183,10 @@ def output(body: str, parameter: str = "input") -> object:
             'return int(input["a"])',
             f"($v := $number({INPUT}.a); $v < 0 ? $ceil($v) : $floor($v))",
         ),
+        ('return ",".join(input["xs"])', f"$join({INPUT}.xs, ',')"),
         (
-            'return ",".join(input["xs"])',
-            (
-                f"($v := {INPUT}.xs; $join($type($v) = 'string' "
-                f"? $split($v, '') : $v, ','))"
-            ),
+            'xs: list[str] | str = input["xs"]\nreturn ",".join(xs)',
+            "$join($xs, ',')",
         ),
         (
             's: str = input["s"]\nreturn ",".join(s)',
@@ -385,7 +383,19 @@ def test_annotations(annotation, body, code):
         ),
         ('return ",".join(input["xs"])', {"xs": ["a", "b"]}, "a,b"),
         ('s: str = input["s"]\nreturn ",".join(s)', {"s": "ab"}, "a,b"),
-        ('return ",".join(input["xs"])', {"xs": "ab"}, "a,b"),
+        ('return ",".join(input["xs"])', {"xs": "ab"}, "ab"),
+        *(
+            (
+                (
+                    'xs: list[str] | str = input["xs"]\n'
+                    'if isinstance(xs, str):\n    return ",".join(xs)\n'
+                    'return ",".join(xs)'
+                ),
+                {"xs": xs},
+                "a,b",
+            )
+            for xs in ("ab", ["a", "b"])
+        ),
         ('return {**input["d"], "k": 1}', {"d": {"a": 2}}, {"a": 2, "k": 1}),
         ('return isinstance(input["v"], (list, dict))', {"v": {}}, True),
         (
