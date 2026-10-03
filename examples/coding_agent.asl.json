@@ -11,7 +11,7 @@
         "dictionary": "{% $states.context.Execution.Input.encoding_dictionary %}",
         "version": "{% $states.context.Execution.Input.encoding_dictionary_version %}",
         "study": "{% $states.context.Execution.Input.source_study %}",
-        "derivation_only": "{% ($exists($states.context.Execution.Input.derivation_only) ? $states.context.Execution.Input.derivation_only : null) = true %}",
+        "derivation_only": "{% $states.context.Execution.Input.derivation_only = true %}",
         "failure_reason": null,
         "agent_candidate": null
       },
