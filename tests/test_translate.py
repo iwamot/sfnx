@@ -398,6 +398,10 @@ def test_annotations(annotation, body, code):
         ),
         ('return {**input["d"], "k": 1}', {"d": {"a": 2}}, {"a": 2, "k": 1}),
         ('return isinstance(input["v"], (list, dict))', {"v": {}}, True),
+        # A class asks for the JSONata type: a boolean is not an int, and a
+        # number with a fraction is.
+        ('return isinstance(input["v"], int)', {"v": True}, False),
+        ('return isinstance(input["v"], int)', {"v": 1.5}, True),
         (
             'tags: dict = input["tags"]\nreturn ["a" in tags, input["k"] in tags]',
             {"tags": {"a": None}, "k": "b"},

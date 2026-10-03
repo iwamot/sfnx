@@ -145,7 +145,7 @@ One side is enough (`input["name"] + "!"` is a string join), a literal string ke
 
 Types come from:
 
-- **Annotations** on assignments and parameters: `float` / `int`, `str`, `bool`, `list` / `list[X]`, `dict` / `dict[str, X]`, `None`, unions such as `str | None`, and the TypedDict classes of the module. An annotated variable keeps its type when reassigned with a value of unknown type. An annotation without a value, `images: list`, gives its type to each later assignment of the name, those of `a, b = ...` included, which takes no annotation of its own.
+- **Annotations** on assignments and parameters: `float` / `int` (both a JSONata `number`), `str`, `bool`, `list` / `list[X]`, `dict` / `dict[str, X]`, `None`, unions such as `str | None`, and the TypedDict classes of the module. An annotated variable keeps its type when reassigned with a value of unknown type. An annotation without a value, `images: list`, gives its type to each later assignment of the name, those of `a, b = ...` included, which takes no annotation of its own.
 - **Literals and results**: `-` gives a number, comparisons a boolean, `len` a number, `str()` a string, `x[0]` of a `list[float]` a number.
 - **AWS responses**: the botocore output shape of an SDK or optimized integration. What external code returns is unknown: a Lambda `Payload`, the `Output` of a `.sync:2` child execution, the result of an activity, the `ResponseBody` of an HTTP Task, and every result of `.sync` and `.waitForTaskToken`.
 
@@ -196,7 +196,7 @@ Annotations are not checked at run time. A wrong one fails the way hand-written 
 | `not x` | `$not` of the truth of `x`: `$count($x) = 0` for a list, `$not($x != null and $count($x) > 0)` for a list or None, and `$not($x)` for any other value, which `$not` reads as `$boolean` does |
 | `x if c else y` | `$c ? $x : $y`, with `c` read for its truth: JSONata reads it as `$boolean` does, and a list is counted |
 | `float(x)`, `int(x)`, `str(x)` | `$number($x)`, `($v := $number($x); $v < 0 ? $ceil($v) : $floor($v))` (towards zero, as Python truncates), `$string($x)` |
-| `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']` |
+| `isinstance(x, (str, float))` | `$type($x) in ['string', 'number']`: a class asks for the JSONata type of the value, not for Python's class hierarchy. `int` and `float` are both `number`, which a type test cannot tell apart, so `isinstance(1.5, int)` is true; `bool` is `boolean`, which is not a number, so `isinstance(True, int)` is false |
 | `s.split(sep)`, `s.split()` | `$split($s, $sep)`, `$trim($s) = '' ? [] : $split($trim($s), ' ')` |
 | `s.replace(old, new)`, `s.replace(old, new, count)` | `$replace($s, $old, $new)`, `$replace($s, $old, $new, $count)` |
 | `s.lower()`, `s.upper()` | `$lowercase($s)`, `$uppercase($s)` |
