@@ -208,18 +208,35 @@ def strictness(code: str, name: str) -> Strictness:
 class UndefinedPropagation(Enum):
     """Whether code gives undefined, which fails an Assign or an Output, where
     a variable it reads is undefined: certainly, where the code is the
-    variable itself, and not known otherwise, as $type() and & give a value
-    for undefined."""
+    variable itself or an operand of arithmetic on it, and not known
+    otherwise, as $type() and & give a value for undefined."""
 
     PROPAGATES = "propagates"
     UNKNOWN = "unknown"
 
 
+# The operators that give undefined where an operand is undefined, either
+# side, evaluating both (measured).
+ARITHMETIC = frozenset({"+", "-", "*", "/", "%"})
+
+
 def propagation(code: str, name: str) -> UndefinedPropagation:
     """How an undefined variable of a name passes through the code."""
-    if lone_variable(code) == name:
+    tree = tree_of(code)
+    if tree is not None and carries(tree, name):
         return UndefinedPropagation.PROPAGATES
     return UndefinedPropagation.UNKNOWN
+
+
+def carries(node: Parser.Symbol, name: str) -> bool:
+    """Whether node is undefined wherever the variable of a name is: the
+    variable itself, or arithmetic with it as an operand."""
+    if named(node):
+        return text(node) == name
+    if node.type == "binary" and node.value in ARITHMETIC:
+        assert node.lhs is not None and node.rhs is not None
+        return carries(node.lhs, name) or carries(node.rhs, name)
+    return False
 
 
 def eager(node: Parser.Symbol, bound: frozenset[str]) -> frozenset[str]:

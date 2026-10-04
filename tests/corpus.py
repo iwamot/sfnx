@@ -879,6 +879,32 @@ CASES: tuple[Case, ...] = (
         states=("Pass", "Map", "Succeed"),
     ),
     Case(
+        "arithmetic-in-the-return-fails-as-the-assign",
+        "missing",
+        't = input["t"] / 1000\nreturn input["a"] - t',
+        {"a": 5},
+        Error(QUERY_ERROR),
+        "t is undefined, which arithmetic passes on, so the Output that reads "
+        "it as its expression is undefined and fails as the Pass's Assign "
+        "would; CPython raises KeyError",
+        python=False,
+        backs="as the `return` itself or an operand of `+`, `-`, `*`, `/` or `%` "
+        "on either side does",
+        states=("Succeed",),
+    ),
+    Case(
+        "an-item-of-the-return-keeps-the-pass",
+        "missing",
+        't = input["t"] / 1000\nreturn {"x": t}',
+        {"a": 5},
+        Error(QUERY_ERROR),
+        "t is undefined, which a dict would drop without failing, so its "
+        "assignment keeps the Pass, whose Assign fails; CPython raises KeyError",
+        python=False,
+        backs="which a list or a dict would drop without failing",
+        states=("Pass", "Succeed"),
+    ),
+    Case(
         "failed-assign-assigns-nothing",
         "catch",
         ASSIGNS_NOTHING,

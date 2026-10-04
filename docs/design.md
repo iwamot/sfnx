@@ -141,7 +141,8 @@ A `return` right after assignments that no Task, Parallel or Map holds is a Succ
 
 - one that neither fails nor is undefined, as Python evaluates each even when the `return` does not read it;
 - the variable the `return` is, whose `Output` fails where the Pass would;
-- one the `return` reads that may fail every time it is evaluated, as an operand or an item does, and is never undefined, which a list or a dict would drop without failing.
+- one the `return` reads that may fail every time it is evaluated, as an operand or an item does, and is never undefined, which a list or a dict would drop without failing (measured; corpus: `an-item-of-the-return-keeps-the-pass`);
+- one whose undefined makes the whole `Output` undefined, which fails it as the `Assign` would, as the `return` itself or an operand of `+`, `-`, `*`, `/` or `%` on either side does (measured; corpus: `arithmetic-in-the-return-fails-as-the-assign`).
 
 Where two may fail, the `Output` may fail on another of them first, which only its message shows, and a hand-writer would not spend a state to keep that order.
 

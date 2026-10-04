@@ -24,18 +24,11 @@
           }
         },
         {
-          "StartAt": "snapshot_execution_elapsed_time.started",
+          "StartAt": "snapshot_execution_elapsed_time.return",
           "States": {
-            "snapshot_execution_elapsed_time.started": {
-              "Type": "Pass",
-              "Assign": {
-                "started": "{% $toMillis($states.context.Execution.StartTime) / 1000 %}"
-              },
-              "Next": "snapshot_execution_elapsed_time.return"
-            },
             "snapshot_execution_elapsed_time.return": {
               "Type": "Succeed",
-              "Output": "{% $millis() / 1000 - $started %}"
+              "Output": "{% $millis() / 1000 - $toMillis($states.context.Execution.StartTime) / 1000 %}"
             }
           }
         }
