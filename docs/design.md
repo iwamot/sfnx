@@ -137,9 +137,9 @@ A first value another name in the same `Assign` takes whole, as `b` takes `a` in
 
 ### `return` and `raise` after assignments
 
-A `return` right after assignments that no Task, Parallel or Map holds is a Succeed whose `Output` reads them as their expressions, as a hand-writer returns what they compute, since nothing reads them after it. Each assignment has to be one of these:
+A `return` right after assignments that no Task, Parallel or Map holds is a Succeed whose `Output` reads them as their expressions, as a hand-writer returns what they compute, since nothing reads them after it. One the `return` does not read goes, as [an assignment nothing reads](#what-nothing-reads) does, and each it reads has to be one of these:
 
-- one that neither fails nor is undefined, as Python evaluates each even when the `return` does not read it;
+- one that neither fails nor is undefined;
 - the variable the `return` is, whose `Output` fails where the Pass would;
 - one the `return` reads that may fail every time it is evaluated, as an operand or an item does, and is never undefined, which a list or a dict would drop without failing (measured; corpus: `an-item-of-the-return-keeps-the-pass`);
 - one whose undefined makes the whole `Output` undefined, which fails it as the `Assign` would, as the `return` itself or an operand of `+`, `-`, `*`, `/` or `%` on either side does (measured; corpus: `arithmetic-in-the-return-fails-as-the-assign`).
@@ -148,7 +148,7 @@ Where two may fail, the `Output` may fail on another of them first, which only i
 
 One that changes on evaluation goes in the `Output` only where the `Output` evaluates it at most once, as the Pass would: a random value read once, or the time read in one `{% %}`, which reads one time however often it calls `$now()`; nothing between the Pass and the Succeed calls or waits, so the time is read where Python reads it. One read twice, or in the function a comprehension runs for each item, keeps the Pass.
 
-A `raise` right after such assignments is a Fail alone where none of them can fail, be undefined or change on evaluation: nothing reads them after it, and its message reads them as their expressions. So is one right after such assignments that follow a Task, a Parallel or a Map, which then go in neither a Pass nor the state's `Assign`.
+A `raise` right after such assignments is a Fail alone where none its message reads can fail, be undefined or change on evaluation: nothing reads them after it, its message reads those as their expressions, and the others go as an assignment nothing reads does. So is one right after such assignments that follow a Task, a Parallel or a Map, which then go in neither a Pass nor the state's `Assign`.
 
 ### After a Task, a Parallel or a Map
 

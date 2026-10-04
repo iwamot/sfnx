@@ -2363,16 +2363,22 @@ class Scope:
         self, message: ast.expr | None
     ) -> tuple[Expr | None, list[Origin]] | Literal[False]:
         """A raise right after assignments that wait for a Pass as a Fail
-        alone: nothing reads them after it, and where none fails, is undefined
-        or changes on evaluation, Python's evaluating them has no effect, so
-        the Pass goes, and so do they where they would go in the Assign of a
-        Task, a Parallel or a Map right before them. The message reads them as
-        their expressions. The Fail's cause and where it comes from in the
-        source, or False where the Pass stays."""
+        alone: nothing reads them after it, so the Pass goes, and so do they
+        where they would go in the Assign of a Task, a Parallel or a Map right
+        before them. The message reads them as their expressions, where each
+        it reads neither fails, is undefined nor changes on evaluation, as a
+        Cause that fails or reads another value would not be the one written.
+        The Fail's cause and where it comes from in the source, or False where
+        the Pass stays."""
         pending = self.pending
         if not pending or self.pending_name is not None:
             return False
-        if not all(v.defined and v.total and not v.volatile for v in pending.values()):
+        read = self.read_with({}, message).variables if message is not None else set()
+        if not all(
+            v.defined and v.total and not v.volatile
+            for name, v in pending.items()
+            if name in read
+        ):
             return False
         cause = None
         if message is not None:
