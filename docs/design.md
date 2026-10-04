@@ -120,7 +120,7 @@ Three more properties decide what a move must keep:
 
 ### What makes a state
 
-`Assign` evaluates every expression with the values from before the state, so an assignment that reads a pending one reads its expression instead, as a hand-writer spells the path out again, except where the expression would give another value when read again (the time, a random value, or a `jsonata()` expression that calls one, as its syntax tree shows) and where a name is assigned again, whose first value Python still evaluates; those need a new state. A Task is one state per call, and a Choice is one state.
+`Assign` evaluates every expression with the values from before the state, so an assignment that reads a pending one reads its expression instead, as a hand-writer spells the path out again, except where the expression would give another value when read again (the time, a random value, or a `jsonata()` expression that calls one, as its syntax tree shows) and where a name is assigned again, whose first value's `Assign` still fails where that value fails, as below; those need a new state. A Task is one state per call, and a Choice is one state.
 
 A variable assigned its own value makes no state, as reading a variable neither fails nor is undefined; a name bound to an expression, such as the parameter of a function called directly, becomes a variable so, as any assignment makes it one.
 
@@ -130,12 +130,12 @@ Everything else shares a Pass, a Task's result goes in its own `Assign`, and a m
 
 ### A name assigned again
 
-A name assigned again shares the state of its first value where that first value changes on no evaluation and can never be undefined: a value written in the source, a variable, or `d.get()`, which gives `None` for a missing key, with no default or a default that can never be undefined itself. That alone is not enough; one of these holds too:
+The first value of a name assigned again is an assignment of its own: its `Assign` fails where the value fails or is undefined. The new value takes its place in the same state only where the state still fails there, so the first value changes on no evaluation and can never be undefined (a value written in the source, a variable, or `d.get()`, which gives `None` for a missing key, with no default or a default that can never be undefined itself), and one of these holds too:
 
-- The new value reads the first where JSONata always evaluates it, such as the test of a conditional expression: undefined fails an `Assign` but passes through a test such as `$type()`, so a key that is missing would otherwise give a value where Python fails.
-- A first value that can neither fail nor be undefined, such as one written in the source, leaves Python nothing to evaluate, so the new value takes its place in the same state wherever it reads the first.
+- The new value evaluates the first every time it is evaluated, as the test of a conditional expression does, so it fails wherever the first would.
+- The first value cannot fail either, as one written in the source cannot, so there is no failure to keep, and the new value takes its place wherever it reads the first.
 
-A first value another name in the same `Assign` takes whole, as `b` takes `a` in `a, b = b, a` or in `b = a` before `a` is assigned again, is still evaluated there, where the `Assign` fails as Python fails evaluating it, so the new value takes its place too.
+A first value another name in the same `Assign` takes whole, as `b` takes `a` in `a, b = b, a` or in `b = a` before `a` is assigned again, is still evaluated there, where the `Assign` fails where the value does, so the new value takes its place too.
 
 ### `return` and `raise` after assignments
 

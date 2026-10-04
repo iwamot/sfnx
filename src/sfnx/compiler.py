@@ -1399,11 +1399,11 @@ class Scope:
         # state, so one that reads a pending assignment reads its expression
         # instead, as a hand-writer spells a path out again. One that changes on
         # evaluation would give another value there, so it needs a state of its
-        # own, and so does a name assigned again, whose first value is still
-        # evaluated, as Python evaluates it, unless the new value evaluates it
-        # every time, as the test of `v = a if test(v) else v` does, and it
-        # never gives undefined, which a test reads without failing where the
-        # first Assign would fail. A first value that can neither fail nor be
+        # own, and so does a name assigned again, whose first value's Assign
+        # fails where the value fails, unless the new value evaluates it every
+        # time, as the test of `v = a if test(v) else v` does, and it never
+        # gives undefined, which a test reads without failing where the first
+        # Assign would fail. A first value that can neither fail nor be
         # undefined, such as one written in the source, has nothing to
         # evaluate, so the new value takes its place, and so does one that
         # another pending name holds whole, which still evaluates it.
@@ -1467,7 +1467,7 @@ class Scope:
             if call is None and whole.volatile:
                 # Each name reads the value again, and evaluating it again
                 # would give other items, so the names take the value the
-                # state before them kept, as Python does.
+                # state before them kept, evaluated once as written.
                 if whole.variables & self.pending.keys():
                     self.flush()
                 copy = self.fresh(f"{self.spelling(names[0])}_items", target)
