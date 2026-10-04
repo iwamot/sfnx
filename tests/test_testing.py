@@ -1309,6 +1309,11 @@ def test_text_that_is_not_json_fails_to_parse():
         ("$toMillis('2026-01-01T00:00:00.123+09:00')", 1767193200123),
         ("['2026-01-01T00:00:00Z'].$toMillis()", 1767225600000),
         ("($f := $toMillis(?); $f('2026-01-01T00:00:00Z'))", 1767225600000),
+        ("$map([1, 2], $string)", ["1", "2"]),
+        ("$filter([1, 0], $string)", [1, 0]),
+        ("$map(['a%20b'], $decodeUrlComponent)", "a b"),
+        ("$map(['YQ=='], $base64decode)", "a"),
+        ("($f := $string(?); $f(5))", "5"),
     ],
 )
 def test_functions_give_what_step_functions_gives(code, expected):
@@ -1380,6 +1385,8 @@ def test_range_gives_a_sequence(code, expected):
         ("['invalid'].$toMillis()", 'Given "invalid"'),
         ("$toMillis(null)", 'Argument 1 of function "toMillis"'),
         ("$toMillis(1)", "does not match"),
+        # A replaced function says how many arguments it takes, as $map asks.
+        ("$map([0.125], $formatNumber)", 'Argument 2 of function "formatNumber"'),
         ("$number({})", "does not match"),
         ("$number(1, 2)", "does not match"),
     ],
