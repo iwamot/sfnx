@@ -509,6 +509,7 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     # The functions whose Step Functions behavior differs from jsonata-python's.
     for name, function in DIFFERING.items():
         expression.register_function(name, Replaced(name, function))
+    expression.register_function("number", Cast("number"))
     for name, function in REPLACED.get({}).items():
         expression.register_lambda(name, function)
     try:
@@ -600,6 +601,35 @@ def mismatch(name: str, position: int) -> jsonata.JException:
 def at_most(name: str, args: tuple[object, ...], count: int) -> None:
     if len(args) > count:
         raise mismatch(name, count + 1)
+
+
+class Cast(jsonata.Jsonata.JFunction):
+    """The built-in function of a name, with its signature, failing as Step
+    Functions does where jsonata-python raises ValueError: $number of a text
+    that is not a number fails with D3030 (measured), where Python's float()
+    and int() raise."""
+
+    def __init__(self, name: str) -> None:
+        super().__init__(None, None)
+        frame = jsonata.Jsonata.static_frame
+        assert frame is not None
+        built_in = frame.lookup(name)
+        assert isinstance(built_in, jsonata.Jsonata.JFunction)
+        self.built_in = built_in
+        self.signature = built_in.signature
+        self.function_name = built_in.function_name
+
+    def call(self, input: object, args: object) -> object:
+        try:
+            return self.built_in.call(input, args)
+        except ValueError as exc:
+            written = args[0] if isinstance(args, list) and args else input
+            raise jsonata.JException(
+                f"D3030: Unable to cast value to a number: {json_text(written, None)}"
+            ) from exc
+
+    def get_number_of_args(self) -> int:
+        return self.built_in.get_number_of_args()
 
 
 def is_number(value: object) -> TypeGuard[int | float]:
