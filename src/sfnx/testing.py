@@ -540,7 +540,9 @@ class Replaced(jsonata.Jsonata.JFunction):
     takes its first argument from the context where the built-in's
     signature leaves that place to it, as $string() reads each item in a
     filter, and checks its arguments itself, in the words of the errors
-    Step Functions gives (measured)."""
+    Step Functions gives (measured). It keeps the built-in's signature to say
+    how many arguments it takes, as $map and a partial application ask, but
+    not to check them."""
 
     def __init__(self, name: str, function: Callable[..., object]) -> None:
         super().__init__(None, None)
@@ -553,6 +555,15 @@ class Replaced(jsonata.Jsonata.JFunction):
         self.pattern = signature._regex
         self.symbol = signature.get_symbol
         self.implementation = function
+        self.signature = signature
+        self.function_name = built_in.function_name
+        self.built_in = built_in
+
+    def validate(self, args: object, context: object) -> object:
+        return args
+
+    def get_number_of_args(self) -> int:
+        return self.built_in.get_number_of_args()
 
     def call(self, input: object, args: object) -> object:
         written = list(args) if isinstance(args, list) else []
