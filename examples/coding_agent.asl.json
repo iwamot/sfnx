@@ -164,7 +164,7 @@
       ],
       "Assign": {
         "agent_candidate": "{% $parse(($text := $states.result.Output.Message.Content[0].Text; $match($text, /\\{[\\s\\S]*\\}/)[0].match)) %}",
-        "score": "{% ($agent_candidate := $parse(($text := $states.result.Output.Message.Content[0].Text; $match($text, /\\{[\\s\\S]*\\}/)[0].match)); $not($type($exists($agent_candidate.score) ? $agent_candidate.score : null) = 'number') ? 0 : $exists($agent_candidate.score) ? $agent_candidate.score : null) %}",
+        "score": "{% ($agent_candidate := $parse(($text := $states.result.Output.Message.Content[0].Text; $match($text, /\\{[\\s\\S]*\\}/)[0].match)); ($score := $exists($agent_candidate.score) ? $agent_candidate.score : null; $not($type($score) = 'number') ? 0 : $score)) %}",
         "candidate": "{% $parse(($text := $states.result.Output.Message.Content[0].Text; $match($text, /\\{[\\s\\S]*\\}/)[0].match)) %}"
       },
       "Next": "if_2"

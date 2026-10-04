@@ -670,7 +670,7 @@ A minus sign written in the source counts from the end; a negative number that a
 | `type(e).__name__` | `e` caught from a class that assigns `error = "..."` | the name the class declares, which is the error's name in Step Functions | the class name |
 | `f(x)` on a line of its own | a function that returns a value that fails, such as `return x["missing"]` | not evaluated, as nothing reads it | `KeyError` |
 | `[f(x) for x in xs if c]` | a `c` and an `f` that each give another value on every call, such as `random.random()` | `$filter` tests every item, then `$map` reads a result for each item it kept | the condition and the result of one item before the next item, so a dropped item takes no result |
-| `AD-FAILURE-ORDER`: assignments right before a `return` that reads each of them, where more than one may fail | a value for which more than one of them fails | `States.QueryEvaluationError`, whose cause may be of another than the first | the error of the first |
+| `AD-FAILURE-ORDER`: assignments right before a `return` that reads each of them, and a value that binds at its start a long pending one it reads more than once, where more than one may fail | a value for which more than one of them fails | `States.QueryEvaluationError`, whose cause may be of another than the first | the error of the first |
 | `AD-TIMING-WITHIN-EFFECT-INTERVAL`: `t = str(datetime.now())`, `time.time()` | any time | read in the state before or after the statement's, between the same calls and waits, so some milliseconds apart | read where the statement is |
 
 ### The ASL's own semantics

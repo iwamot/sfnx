@@ -1,4 +1,5 @@
 import copy
+import json
 import logging
 import re
 import textwrap
@@ -79,6 +80,93 @@ def test_independent_assignments_share_a_pass():
         },
         "return": {"Type": "Succeed", "Output": ["{% $fee %}", "{% $rate %}"]},
     }
+
+
+BOUND_HEADER = "from sfnx import aws, state_machine\n\n\n"
+
+
+@pytest.mark.parametrize(
+    "body, execution_input, expected",
+    [
+        # A list built by a comprehension, read three times by one dict.
+        (
+            (
+                'xs: list = input["xs"]\nids = [x["id"] for x in xs if x["bad"]]\n'
+                's = {"n": len(ids), "ids": ids}\nreturn s'
+            ),
+            {"xs": [{"id": 1, "bad": True}, {"id": 2, "bad": False}]},
+            {"n": 1, "ids": [1]},
+        ),
+        # The same after a Task, in its Assign.
+        (
+            (
+                'rs: list = aws.optimized.lambda_.invoke(FunctionName="f", Payload={})'
+                '["Payload"]\nids = [r["id"] for r in rs if r["bad"]]\n'
+                's = {"n": len(ids), "ids": ids}\n'
+                'aws.sdk.s3.put_object(Bucket="b", Key="k", Body=str(s))\nreturn s'
+            ),
+            {},
+            {"n": 1, "ids": [1]},
+        ),
+        # An undefined value is as undefined bound as written at each read.
+        ('p = input["p"] + 1\nr = {"a": p * 2, "b": p * 3}\nreturn r', {}, {}),
+    ],
+)
+def test_a_long_value_read_more_than_once_is_bound_once(
+    body, execution_input, expected
+):
+    """A value that reads a long pending one more than once, on every
+    evaluation, binds it at its start rather than writing it at each read."""
+    definition = compile_one(
+        BOUND_HEADER
+        + "@state_machine\ndef pay(input):\n"
+        + textwrap.indent(body, "    ")
+    )
+    assert ":=" in json.dumps(definition)
+
+    items = [{"id": 1, "bad": True}, {"id": 2, "bad": False}]
+    tasks = {"rs": lambda _: {"Payload": items}, "putObject": lambda _: {}}
+    assert asl.run(definition, execution_input, tasks) == expected
+
+
+@pytest.mark.parametrize("caught", [False, True])
+def test_a_binding_moves_only_which_failure_the_cause_names(caught):
+    """A value bound at the start is evaluated before what comes first in the
+    value: where both fail, the cause names the bound one
+    (AD-FAILURE-ORDER), while the error, the calls and the way taken stay."""
+    call = 'aws.sdk.s3.put_object(Bucket="b", Key="k", Body=str(s))'
+    if caught:
+        call = f"try:\n    {call}\nexcept Exception:\n    return 0"
+    body = (
+        'p = float(input["p"])\ns = {"first": float(input["q"]), "a": p, "b": p}\n'
+        f"{call}\nreturn s"
+    )
+    definition = compile_one(
+        BOUND_HEADER
+        + "@state_machine\ndef pay(input):\n"
+        + textwrap.indent(body, "    ")
+    )
+    assert ":=" in json.dumps(definition)
+    failed = testing.run(definition, {"p": "x", "q": "y"}, lambda _: {})
+    assert failed.error == "States.QueryEvaluationError"
+    assert failed.cause is not None and '"x"' in failed.cause
+    assert not failed.calls
+    passed = testing.run(definition, {"p": "1", "q": "2"}, lambda _: {})
+    assert passed.output == {"first": 2, "a": 1, "b": 1}
+    assert len(passed.calls) == 1
+
+
+def test_a_value_read_on_one_side_of_a_test_is_not_bound():
+    """A binding at the start would evaluate a value the test may skip, and
+    $number("a") fails, so the value stays written at each read."""
+    body = (
+        'n = float(input["s"])\n'
+        'r = {"a": n * 2 if input["c"] else 0, "b": n * 3 if input["c"] else 0}\n'
+        "return r"
+    )
+    definition = compile_one(machine(body))
+    assert ":=" not in json.dumps(definition)
+    assert asl.run(definition, {"s": "a", "c": False}) == {"a": 0, "b": 0}
 
 
 def test_a_read_of_a_pending_assignment_reads_its_expression():

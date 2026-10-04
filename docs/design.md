@@ -120,7 +120,7 @@ Three more properties decide what a move must keep:
 
 ### What makes a state
 
-`Assign` evaluates every expression with the values from before the state, so an assignment that reads a pending one reads its expression instead, as a hand-writer spells the path out again, except where the expression would give another value when read again (the time, a random value, or a `jsonata()` expression that calls one, as its syntax tree shows) and where a name is assigned again, whose first value's `Assign` still fails where that value fails, as below; those need a new state. A Task is one state per call, and a Choice is one state.
+`Assign` evaluates every expression with the values from before the state, so an assignment that reads a pending one reads its expression instead, as a hand-writer spells the path out again, or, for a longer one that appears more than once in it and is read on every evaluation, binds it to its name at its start, where that writes less, as a hand-writer binds a long value (where it and what comes before it in the value both fail, the cause names it first, as `AD-FAILURE-ORDER` allows), except where the expression would give another value when read again (the time, a random value, or a `jsonata()` expression that calls one, as its syntax tree shows) and where a name is assigned again, whose first value's `Assign` still fails where that value fails, as below; those need a new state. A Task is one state per call, and a Choice is one state.
 
 A variable assigned its own value makes no state, as reading a variable neither fails nor is undefined; a name bound to an expression, such as the parameter of a function called directly, becomes a variable so, as any assignment makes it one.
 
