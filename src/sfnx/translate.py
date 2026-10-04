@@ -435,7 +435,7 @@ MODULE_REWRITES = {
 # the method, and what to write instead.
 METHOD_REWRITES = {
     "format": 'write an f-string, such as f"{n} items"',
-    "append": "a list is a value here, so write xs = xs + [x]",
+    "append": "it gives no value; assign the new list to a name: xs = xs + [x]",
     "extend": "a list is a value here, so write xs = xs + ys",
     "insert": "a list is a value here, so write xs = xs[:i] + [x] + xs[i:]",
 }

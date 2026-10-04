@@ -826,8 +826,8 @@ def test_a_value_or_none_is_tested_as_its_type_says(annotation, value, expected)
         (
             'return input["a"].append("k")',
             (
-                "input['a'].append() is not supported; a list is a value here, "
-                "so write xs = xs + [x]"
+                "input['a'].append() is not supported; it gives no value; assign "
+                "the new list to a name: xs = xs + [x]"
             ),
         ),
         (

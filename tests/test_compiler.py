@@ -578,33 +578,117 @@ def test_asl_matches_python(body, execution_input):
         ('d["a"]: int = 2', {"d": {"a": 1}}),
     ],
 )
-def test_the_line_a_dict_changed_in_place_gets_returns_what_python_does(
-    changed, execution_input
-):
-    """The diagnostic for d["k"] = v writes the line that builds the dict
-    again, and that line returns what the change in place returns."""
+def test_setting_a_key_assigns_the_dict_again(changed, execution_input):
+    """d["k"] = v of a variable of the function is d = {**d, "k": v}, through
+    every key written as a string."""
     source = machine(f'd = input["d"]\n{changed}\nreturn d')
-    with pytest.raises(CompileError) as raised:
-        compile_one(source)
-    advised = raised.value.message.split(", so write ")[1]
-    definition = compile_one(machine(f'd = input["d"]\n{advised}\nreturn d'))
     # Python changes the input it is given in place.
     expected = python(source, copy.deepcopy(execution_input))
-    assert asl.run(definition, execution_input) == expected
+    assert asl.run(compile_one(source), execution_input) == expected
 
 
-def test_another_name_for_a_dict_written_again_keeps_the_old_one():
-    """What the diagnostic says: in Python another name for the dict sees the
-    change in place, and after the line it advises that name keeps the old
-    dict."""
-    changed = machine('d = input["d"]\nother = d\nd["k"] = 1\nreturn other')
-    with pytest.raises(CompileError) as raised:
-        compile_one(changed)
-    assert "which other names for it see" in raised.value.message
-    advised = raised.value.message.split(", so write ")[1]
-    written = machine(f'd = input["d"]\nother = d\n{advised}\nreturn other')
-    assert python(changed, {"d": {"a": 0}}) == {"a": 0, "k": 1}
-    assert asl.run(compile_one(written), {"d": {"a": 0}}) == {"a": 0}
+def test_an_append_named_with_a_state_comment_keeps_its_pass():
+    body = 'xs: list = input["xs"]\nxs.append(1)  # state: AddOne\nreturn xs'
+    definition = compile_one(machine(body))
+    assert definition["States"]["AddOne"]["Type"] == "Pass"
+    assert asl.run(definition, {"xs": [0]}) == [0, 1]
+
+
+def test_another_name_for_a_dict_keeps_the_one_before_a_key_is_set():
+    """Setting a key assigns the dict's name again, so another name for it
+    keeps the dict from before."""
+    changed = machine('d = input["d"]\nother = d\nd["k"] = 1\nreturn [d, other]')
+    assert asl.run(compile_one(changed), {"d": {"a": 0}}) == [
+        {"a": 0, "k": 1},
+        {"a": 0},
+    ]
+
+
+@pytest.mark.parametrize(
+    "body, execution_input, expected",
+    [
+        ('xs: list = input["xs"]\nxs.append(3)\nreturn xs', {"xs": [1, 2]}, [1, 2, 3]),
+        (
+            (
+                'xs: list[float] = input["xs"]\nout: list = []\nfor x in xs:\n'
+                "    out.append(x * 2)\nreturn out"
+            ),
+            {"xs": [1, 2]},
+            [2, 4],
+        ),
+        ("xs: list = []\nxs.append([1])\nreturn xs", {}, [[1]]),
+        # A loop variable is the function's own.
+        (
+            (
+                'nested: list[list] = input["n"]\nout: list = []\nfor xs in nested:\n'
+                "    xs.append(1)\n    out.append(xs)\nreturn out"
+            ),
+            {"n": [[0], []]},
+            [[0, 1], [1]],
+        ),
+        (
+            (
+                'ds: list[dict] = input["ds"]\nout: list = []\nfor d in ds:\n'
+                '    d["k"] = 1\n    out.append(d)\nreturn out'
+            ),
+            {"ds": [{"a": 0}]},
+            [{"a": 0, "k": 1}],
+        ),
+    ],
+)
+def test_append_assigns_the_list_again(body, execution_input, expected):
+    """xs.append(x) of a variable of the function is xs = xs + [x]."""
+    assert asl.run(compile_one(machine(body)), execution_input) == expected
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            'def setb(e):\n    e["b"] = 2\n    return e\n\nreturn setb(input["d"])',
+            "e is a parameter here, and its changed copy would not reach the caller",
+        ),
+        (
+            "def add(ys: list):\n    ys.append(9)\n    return ys\n\nreturn add([1])",
+            "ys is a parameter here",
+        ),
+        (
+            (
+                'def f(item):\n    item["k"] = 1\n    return item\n\n'
+                'return inline_map(f, input["ds"])'
+            ),
+            "item is a parameter here",
+        ),
+        (
+            'd = {"a": 1}\ndef setb():\n    d["b"] = 2\n\nsetb()\nreturn d',
+            "d is a variable around this function, which the function cannot change",
+        ),
+        (
+            (
+                "out: list = []\ndef f(x):\n    out.append(x)\n    return x\n\n"
+                'rs = inline_map(f, input["xs"])\nreturn out'
+            ),
+            "out is a variable around this function",
+        ),
+        (
+            (
+                "out: list = []\ndef f():\n    out.append(1)\n    return 1\n\n"
+                "rs = parallel(f)\nreturn out"
+            ),
+            "out is a variable around this function",
+        ),
+        (
+            "xs: list = []\nys = xs.append(1)\nreturn ys",
+            "it gives no value; assign the new list to a name: xs = xs + [x]",
+        ),
+    ],
+)
+def test_a_change_that_would_not_reach_where_the_name_comes_from(body, message):
+    source = machine(body).replace(
+        "import state_machine", "import inline_map, parallel, state_machine"
+    )
+    with pytest.raises(CompileError, match=re.escape(message)):
+        compile_one(source)
 
 
 @pytest.mark.parametrize(
