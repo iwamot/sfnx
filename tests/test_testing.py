@@ -1298,6 +1298,14 @@ def test_text_that_is_not_json_fails_to_parse():
         ("$exists($decodeUrlComponent($nothing))", False),
         ("$exists($fromMillis($nothing))", False),
         ("$exists($fromMillis('a'))", False),
+        ("$number('12')", 12),
+        ("$number('-1.5e3')", -1500),
+        ("$number('0x1F')", 31),
+        ("$number(true)", 1),
+        ("$exists($number($nothing))", False),
+        ("['1', '2'].$number()", [1, 2]),
+        ("$map(['1', '2'], $number)", [1, 2]),
+        ("($f := $number(?); $f('5'))", 5),
     ],
 )
 def test_functions_give_what_step_functions_gives(code, expected):
@@ -1356,6 +1364,14 @@ def test_range_gives_a_sequence(code, expected):
         ("$decodeUrlComponent(1)", 'Argument 1 of function "decodeUrlComponent"'),
         ("$string(1, 1)", 'Argument 2 of function "string"'),
         ("$string(1, true, 1)", 'Argument 3 of function "string"'),
+        # A text that is not a number, where Python's float() and int() raise.
+        ("$number('a')", 'D3030: Unable to cast value to a number: "a"'),
+        ("$number('')", 'D3030: Unable to cast value to a number: ""'),
+        ("$number('0xzz')", 'D3030: Unable to cast value to a number: "0xzz"'),
+        ("['a'].$number()", 'D3030: Unable to cast value to a number: "a"'),
+        ("$number(null)", "does not match"),
+        ("$number({})", "does not match"),
+        ("$number(1, 2)", "does not match"),
     ],
 )
 def test_functions_fail_where_step_functions_fails(code, cause):

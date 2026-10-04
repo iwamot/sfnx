@@ -392,6 +392,16 @@ CASES: tuple[Case, ...] = (
         "int() reads a string of digits, as $number does",
     ),
     Case(
+        "float-of-text-that-is-not-a-number",
+        "numbers",
+        'return float(input["x"])',
+        {"x": "a"},
+        Error(QUERY_ERROR),
+        "$number fails on a text that is not a number, as any failure of an "
+        "expression does; CPython raises ValueError",
+        python=False,
+    ),
+    Case(
         "division",
         "numbers",
         'return input["a"] / input["b"]',
