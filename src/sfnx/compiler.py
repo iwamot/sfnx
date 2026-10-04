@@ -1417,7 +1417,17 @@ class Scope:
             self.flush()
         reads = sorted(value.variables & self.pending.keys())
         if reads and not any(self.pending[read].volatile for read in reads):
-            substituted = self.read_as(value_node, {r: self.pending[r] for r in reads})
+            values = {r: self.pending[r] for r in reads}
+            substituted = self.read_as(value_node, values)
+            bound = self.bound_reads(value, values)
+            if bound:
+                placed = {r: v for r, v in values.items() if r not in bound}
+                binding = bound_in(
+                    self.read_as(value_node, placed) if placed else value,
+                    {self.spelling(r): values[r] for r in bound},
+                )
+                if shorter(binding, substituted):
+                    substituted = binding
             # jsonata() reads a variable by its name, which no expression
             # replaces.
             if not substituted.variables & self.pending.keys():
@@ -1428,8 +1438,22 @@ class Scope:
         result = self.following()
         folded = None
         if result is not None and all(read in self.folded for read in reads):
-            substituted = {**result.values, **{r: self.folded[r] for r in reads}}
+            values = {r: self.folded[r] for r in reads}
+            substituted = {**result.values, **values}
             folded = self.read_result(Result({}, substituted, [], None), value_node)
+            plain = self.read_result(Result({}, result.values, [], None), value_node)
+            bound = [] if plain is None else self.bound_reads(plain, values)
+            if folded is not None and bound:
+                placed = {r: v for r, v in values.items() if r not in bound}
+                partly = self.read_result(
+                    Result({}, {**result.values, **placed}, [], None), value_node
+                )
+                if partly is not None:
+                    binding = bound_in(
+                        partly, {self.spelling(r): values[r] for r in bound}
+                    )
+                    if shorter(binding, folded):
+                        folded = binding
         error = self.catching()
         if error is not None and all(read in self.caught for read in reads):
             error_output = expression("$states.errorOutput", type=ERROR_OUTPUT)
@@ -1784,6 +1808,26 @@ class Scope:
             value = self.translator.expr(argument)
             self.bindings[name] = replace(value, type=before[name].type)
             changed.add(name)
+
+    def bound_reads(self, value: Expr, values: dict[str, Expr]) -> list[str]:
+        """The pending values that appear more than once in a value and are
+        longer than a binding: bound to their names at the start of the
+        value, as a hand-writer binds a long value, rather than written at
+        each read. Only where the value reads each of them on every
+        evaluation, so the binding evaluates nothing the value would not;
+        where something before the first read fails too, the cause names the
+        bound one first (AD-FAILURE-ORDER)."""
+        bound = []
+        for name, first in values.items():
+            spelled = self.spelling(name)
+            count = len(re.findall(rf"\${re.escape(spelled)}(?!\w)", value.code))
+            if (
+                count > 1
+                and strictness(value.code, spelled) is Strictness.ALWAYS
+                and bound_once(spelled, first, count)
+            ):
+                bound.append(name)
+        return bound
 
     def read_as(self, value_node: ast.expr, values: dict[str, Expr]) -> Expr:
         """A value that makes no state, with the variables in values read as
@@ -3974,6 +4018,19 @@ def read_through(
     return composed(
         leaf, code, [v for n, v in values.items() if reads[n]], around=around
     )
+
+
+def shorter(first: Expr, second: Expr) -> bool:
+    """Whether one value is written in fewer characters than another."""
+    return len(json.dumps(first.template)) < len(json.dumps(second.template))
+
+
+def bound_in(value: Expr, bindings: dict[str, Expr]) -> Expr:
+    """A value that reads variables bound at its start to the expressions
+    they take: one expression, ($name := ...; value), whose own properties
+    are composed with theirs."""
+    names = "".join(f"${n} := {v.code}; " for n, v in bindings.items())
+    return composed(value, f"({names}{value.code})", list(bindings.values()))
 
 
 def bound_once(name: str, value: Expr, reads: int) -> bool:
