@@ -660,10 +660,6 @@ def test_declarations_join_after_branches():
             "Wait timestamps are UTC with T and Z",
         ),
         ("wait(until=10)", "10 is a number; until takes a timestamp string"),
-        (
-            'd = {"a": 1}\nd["a"] += 1',
-            "a JSON value is a copy, so write d = {**d, 'a': d['a'] + 1}",
-        ),
         ("input.a += 1", "assign one variable per statement"),
         ("t += 1", "t is not assigned here"),
         (
@@ -677,10 +673,6 @@ def test_declarations_join_after_branches():
         ),
         # A call on a line of its own that changes a list or a dict in place
         # says what to write; one that does nothing in Python too does not.
-        (
-            "xs = [1]\nxs.append(2)",
-            "xs.append() is not supported; a list is a value here, so write xs = xs + [2]",
-        ),
         ("xs = [1]\nxs.extend(ys)", "so write xs = xs + ys"),
         ("xs = [1]\nxs.insert(i, 2)", "so write xs = xs[:i] + [2] + xs[i:]"),
         ("xs = [1]\nxs.insert(0, 2)", "so write xs = xs[:0] + [2] + xs[0:]"),

@@ -237,6 +237,7 @@ class Expansion:
     call: ast.Call
     depth: int
     names: set[str]
+    parameters: set[str]
     returns: list[Flow] = field(default_factory=list)
 
 
@@ -316,6 +317,10 @@ class Scope:
         self.bindings = bindings
         self.module = module
         self.parameters = parameters
+        # The names local to the function this scope compiles, as Python
+        # makes them, and those of them that are its parameters.
+        self.own_locals: set[str] = set()
+        self.own_parameters: set[str] = set()
         self.partial: set[str] = set()
         self.translator = Translator(
             bindings,
@@ -664,7 +669,10 @@ class Scope:
         if (
             self.naming is not None
             and self.naming[1] is self.current
-            and isinstance(self.current, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+            and (
+                isinstance(self.current, (ast.Assign, ast.AnnAssign, ast.AugAssign))
+                or appending(self.current) is not None
+            )
         ):
             # A named assignment starts the Pass it names.
             self.flush()
@@ -744,6 +752,7 @@ class Scope:
                 isinstance(node, ast.Expr)
                 and not self.makes_state(node.value)
                 and not self.called(node.value, "wait")
+                and appending(node) is None
             ):
                 raise CompileError(
                     "this statement makes no state of its own to name; name a "
@@ -835,6 +844,8 @@ class Scope:
             remark = self.remark
             added = self.add_call(call.name, call, {}, node)
             self.result = Result(self.graph.states[added], {}, [self.here()], remark)
+        elif isinstance(node, ast.Expr) and self.appended(node):
+            return
         elif isinstance(node, ast.FunctionDef):
             self.define(node)
         elif isinstance(node, ast.Pass):
@@ -860,7 +871,8 @@ class Scope:
         list with x appended."""
         if isinstance(node.target, ast.Subscript):
             whole = ast.BinOp(node.target, node.op, node.value)
-            raise self.changed_in_place(node.target, whole)
+            self.set_key(node.target, whole)
+            return
         if not isinstance(node.target, ast.Name):
             raise CompileError(
                 "assign one variable per statement: x = ...", node.target
@@ -955,8 +967,14 @@ class Scope:
         assigned = {renaming[n] for n in assigned_names(function.body)}
         self.assigned |= assigned
         self.expanded |= assigned
+        parameters = {renaming[p.arg] for p in function.args.args}
         frame = Expansion(
-            function.name, node, call, len(self.loops), set(renaming.values())
+            function.name,
+            node,
+            call,
+            len(self.loops),
+            set(renaming.values()),
+            parameters,
         )
         self.expansions.append(frame)
         read = {
@@ -1229,12 +1247,11 @@ class Scope:
                 node,
             )
 
-    def changed_in_place(self, target: ast.Subscript, value: ast.expr) -> CompileError:
-        """d["k"] = v changes the dict in place, which a JSON value cannot: the
-        dict is written again whole, d = {**d, "k": v}, through every key
-        written as a string, d["a"]["b"] = v as d = {**d, "a": {**d["a"], "b":
-        v}}. Another name for the dict keeps the old one, where in Python it
-        sees the change, so the message says so."""
+    def set_key(self, target: ast.Subscript, value: ast.expr) -> None:
+        """d["k"] = v assigns d again, as d = {**d, "k": v}, through every key
+        written as a string: d["a"]["b"] = v is d = {**d, "a": {**d["a"], "b":
+        v}}. Only a variable of the function itself is assigned so, as
+        changed() says."""
         whole: ast.expr = value
         held: ast.expr = target
         while (
@@ -1245,22 +1262,62 @@ class Scope:
             whole = ast.Dict([None, held.slice], [held.value, whole])
             held = held.value
         if whole is value or not isinstance(held, ast.Name):
-            return CompileError(
+            raise CompileError(
                 "a list or dict is not changed in place; assign the new value "
                 "to a name",
                 target,
             )
         if held.id in self.parameters:
-            return CompileError(
+            raise CompileError(
                 f"{held.id} is the execution input; write the changed copy to "
                 f"another name: data = {ast.unparse(whole)}",
                 target,
             )
-        self.claim(held.id, target)
-        return CompileError(
-            "a dict is changed in place in Python, which other names for it see; "
-            f"a JSON value is a copy, so write {held.id} = {ast.unparse(whole)}",
-            target,
+        self.changed(held, target)
+        name = ast.copy_location(ast.Name(held.id, ast.Store()), held)
+        self.assign(name, ast.copy_location(whole, target), None)
+
+    def appended(self, node: ast.Expr) -> bool:
+        """xs.append(x) on a line of its own assigns xs again, as xs = xs +
+        [x], where xs is a variable of the function itself, as changed()
+        says."""
+        found = appending(node)
+        if found is None or found[0].id in self.parameters:
+            return False
+        held, added = found
+        self.changed(held, node)
+        reading = ast.copy_location(ast.Name(held.id, ast.Load()), held)
+        item = ast.copy_location(ast.List([added], ast.Load()), added)
+        value = ast.copy_location(ast.BinOp(reading, ast.Add(), item), node.value)
+        name = ast.copy_location(ast.Name(held.id, ast.Store()), held)
+        self.assign(name, value, None)
+        return True
+
+    def changed(self, held: ast.Name, node: ast.AST) -> None:
+        """A name a change assigns again: one local to the function, as
+        Python makes the names it assigns and its loop variables, not a
+        parameter of it nor a variable around it, whose new value would not
+        reach where the name comes from."""
+        if self.expansions:
+            frame = self.expansions[-1]
+            own, parameters = frame.names, frame.parameters
+        else:
+            own, parameters = self.own_locals, self.own_parameters
+        own = own - parameters
+        if held.id in own:
+            return
+        if held.id in parameters:
+            raise CompileError(
+                f"{held.id} is a parameter here, and its changed copy would not "
+                "reach the caller; build the new value in another name and "
+                "return it",
+                node,
+            )
+        raise CompileError(
+            f"{held.id} is a variable around this function, which the function "
+            "cannot change; return the new value and assign it where the "
+            "function's result is read",
+            node,
         )
 
     def define(self, node: ast.FunctionDef) -> None:
@@ -1296,7 +1353,8 @@ class Scope:
             self.unpack(target, value_node)
             return
         if isinstance(target, ast.Subscript):
-            raise self.changed_in_place(target, value_node)
+            self.set_key(target, value_node)
+            return
         if not isinstance(target, ast.Name):
             raise CompileError("assign one variable per statement: x = ...", target)
         name = target.id
@@ -1906,6 +1964,8 @@ class Scope:
         scope.optimizing = self.optimizing
         scope.checking = self.checking
         scope.flags = flags(function)
+        scope.own_parameters = {a.arg for a in function.args.args}
+        scope.own_locals = local_names(function)
         if local:
             scope.functions = dict(self.functions)
             scope.declared = {n: t for n, t in self.declared.items() if n not in own}
@@ -3266,6 +3326,24 @@ STATEMENTS = {
 LIST_CHANGES = frozenset({"append", "extend", "insert", "remove", "sort", "reverse"})
 DICT_CHANGES = frozenset({"update", "setdefault", "popitem"})
 BOTH_CHANGES = frozenset({"pop", "clear"})
+
+
+def appending(node: ast.stmt | None) -> tuple[ast.Name, ast.expr] | None:
+    """The list and the item of xs.append(x) on a line of its own."""
+    if not isinstance(node, ast.Expr):
+        return None
+    call = node.value
+    if (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "append"
+        and isinstance(call.func.value, ast.Name)
+        and len(call.args) == 1
+        and not isinstance(call.args[0], ast.Starred)
+        and not call.keywords
+    ):
+        return call.func.value, call.args[0]
+    return None
 
 
 def changing_call(call: ast.Call, parameters: Iterable[str]) -> str | None:
@@ -6074,6 +6152,8 @@ def compile_machine(
     scope.optimizing = optimizing
     scope.checking = checking
     scope.flags = flags(function)
+    scope.own_locals = local_names(function)
+    scope.own_parameters = set(bindings)
     scope.block(function.body)
     if graph.reachable:
         scope.end_without_value(function, [ended(function)])
