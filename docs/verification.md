@@ -37,6 +37,7 @@ Where docs/language.md gives a spelling Python's result, CPython is the referenc
   - `misread` and `miscaught` (every run, where the tests compile with `checking=True`: the examples, the random programs and the compiler's tests): each read in the definition reads the assignment it read before the passes, and each except clause sees what it saw.
 - **Limits**:
   - The random programs' inputs have every key, so they do not show where a missing key fails after the passes. Where a pass moves that failure after a call or a wait, or drops a value nothing reads, `AD-DEFERRED-FAILURE` and `AD-DEAD-FAILURE` allow it; unit tests check chosen cases of both.
+  - A test written with `jsonata()` that gives no boolean fails a Choice whose whole `Condition` it is, and is cast to a boolean where a pass takes it into another Choice's test with `and`, so an execution that failed there before the passes may take a way after them ([JSONata expressions](language.md#jsonata-expressions)). The random programs write no `jsonata()`.
   - The comparison requires the same Task calls, with the same arguments and in the same order, on each execution. Sharing the same Task state between alternative paths keeps that; a pass that dropped a call, or made one call serve two on the same execution, would need the calls compared otherwise.
 - **Specified in**: [What the passes keep](design.md#what-the-passes-keep) and [Properties used by the passes](design.md#properties-used-by-the-passes).
 
