@@ -377,14 +377,14 @@ def test_a_name_bound_to_an_expression_assigned_itself_becomes_a_variable():
     """The parameter of a function called directly is bound to the argument's
     expression, so assigning it makes the variable the return reads."""
     source = (
-        HEADER + "def helper(v):\n    v = v\n    return v + 1\n\n\n"
+        HEADER + "def helper(v):\n    v = v\n    return {'v': v}\n\n\n"
         '@state_machine\ndef pay(input):\n    return helper(input["n"])\n'
     )
     compiled = compile_one(source)
     assert compiled["States"]["v"]["Assign"] == {
         "v": "{% $states.context.Execution.Input.n %}"
     }
-    assert asl.run(compiled, {"n": 4}) == 5
+    assert asl.run(compiled, {"n": 4}) == {"v": 4}
 
 
 # Values that neither fail nor are undefined, whatever the input holds.

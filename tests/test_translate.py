@@ -48,11 +48,11 @@ def output(body: str, parameter: str = "input") -> object:
         ('return input["a"] // 3', f"$floor({INPUT}.a / 3)"),
         ('return input["a"] / -2', f"{INPUT}.a / -2"),
         # Nothing tests the divisor: keeping it from zero is the writer's.
-        ('b: float = input["b"]\nreturn input["a"] / b', f"{INPUT}.a / $b"),
+        ('b: float = input["b"]\nreturn input["a"] / b', f"{INPUT}.a / {INPUT}.b"),
         ('b: float = input["b"]\nreturn input["a"] // b', f"$floor({INPUT}.a / $b)"),
         (
             'b: float = input["b"]\nreturn input["a"] % b',
-            f"{INPUT}.a - $b * $floor({INPUT}.a / $b)",
+            f"{INPUT}.a - {INPUT}.b * $floor({INPUT}.a / {INPUT}.b)",
         ),
         (
             'b: float = input["b"]\nc: float = input["c"]\nreturn 1 / (b + c)',
@@ -246,11 +246,11 @@ def test_a_declaration_without_a_value_types_the_later_assignments():
 
 def test_declared_type_holds_for_untyped_reassignment():
     body = 'total: float = input["a"]\ntotal = input["b"]\nreturn total + input["c"]'
-    assert output(body) == f"{{% $total + {INPUT}.c %}}"
+    assert output(body) == f"{{% {INPUT}.b + {INPUT}.c %}}"
     body = (
         'total: float = input["a"]\ntotal, n = input["b"], 1\nreturn total + input["c"]'
     )
-    assert output(body) == f"{{% $total + {INPUT}.c %}}"
+    assert output(body) == f"{{% {INPUT}.b + {INPUT}.c %}}"
 
 
 @pytest.mark.parametrize(
@@ -306,7 +306,7 @@ def test_inferred_types_flow_through_variables():
         ),
         ("list[str] | list[float]", "return x[0] + 1", None),
         ("None", "return x is None", "$x = null"),
-        ("int", "return x + input['y']", f"$x + {INPUT}.y"),
+        ("int", "return x + input['y']", f"{INPUT}.x + {INPUT}.y"),
     ],
 )
 def test_annotations(annotation, body, code):
@@ -670,7 +670,7 @@ def test_dividing_by_zero_is_not_tested():
     """The module raises there, and the definition divides as written: what
     Step Functions gives for it is recorded in docs/design.md."""
     body = 'b: float = input["b"]\nreturn input["a"] / b'
-    assert output(body) == f"{{% {INPUT}.a / $b %}}"
+    assert output(body) == f"{{% {INPUT}.a / {INPUT}.b %}}"
     namespace: dict[str, object] = {}
     exec(source(body), namespace)
     pay = namespace["pay"]
@@ -2039,7 +2039,7 @@ def changing_definition(body: str) -> dict:
             "[$map($xs, function($v) { ($v_2 := $random(); $v_2 - 2 * $floor($v_2 / 2)) })]",
         ),
         # A value that holds still is written as it is.
-        ("return a % 3", "$a - 3 * $floor($a / 3)"),
+        ("return xs[0] % 3", "$xs[0] - 3 * $floor($xs[0] / 3)"),
         ("return 0 <= a < xs[0] < 1", "0 <= $a and $a < $xs[0] and $xs[0] < 1"),
     ],
 )
