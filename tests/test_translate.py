@@ -992,27 +992,60 @@ def imported(body: str) -> dict:
         # where it is written.
         (
             "return str(datetime.now() + timedelta(hours=1))",
-            "$fromMillis($millis() + 3600000)",
+            "$fromMillis($millis() + 60 * 60 * 1000)",
         ),
         (
             "return str(timedelta(hours=1) + datetime.now())",
-            "$fromMillis($millis() + 3600000)",
+            "$fromMillis($millis() + 60 * 60 * 1000)",
         ),
         (
             "return str(datetime.now() - timedelta(minutes=30))",
-            "$fromMillis($millis() - 1800000)",
+            "$fromMillis($millis() - 30 * 60 * 1000)",
         ),
         (
             "return str(datetime.now() + timedelta(hours=-1))",
-            "$fromMillis($millis() - 3600000)",
+            "$fromMillis($millis() - 60 * 60 * 1000)",
         ),
         (
             "return str(datetime.now() + timedelta(days=1, minutes=-30))",
-            "$fromMillis($millis() + 84600000)",
+            "$fromMillis($millis() + (24 * 60 * 60 * 1000 - 30 * 60 * 1000))",
         ),
         (
             'return str(datetime.fromisoformat(input["at"]) - timedelta(weeks=1))',
-            f"$fromMillis($toMillis({INPUT}.at) - 604800000)",
+            f"$fromMillis($toMillis({INPUT}.at) - 7 * 24 * 60 * 60 * 1000)",
+        ),
+        # A unit shows as a count of it; several are added up in parentheses
+        # first, and the moment moves once, by their sum.
+        (
+            'return str(datetime.fromisoformat(input["at"]) + timedelta(days=4))',
+            f"$fromMillis($toMillis({INPUT}.at) + 4 * 24 * 60 * 60 * 1000)",
+        ),
+        (
+            (
+                'return str(datetime.fromisoformat(input["at"]) + timedelta(hours=9)'
+                " - timedelta(days=1))"
+            ),
+            f"$fromMillis($toMillis({INPUT}.at) + (9 * 60 * 60 * 1000 - 24 * 60 * 60 * 1000))",
+        ),
+        # A fraction, and a product past what a double holds exactly, go in as
+        # the milliseconds they add up to.
+        (
+            'return str(datetime.fromisoformat(input["at"]) + timedelta(days=1.5))',
+            f"$fromMillis($toMillis({INPUT}.at) + 129600000)",
+        ),
+        (
+            (
+                'return str(datetime.fromisoformat(input["at"])'
+                " + timedelta(days=200000000))"
+            ),
+            f"$fromMillis($toMillis({INPUT}.at) + 17280000000000000)",
+        ),
+        (
+            (
+                'return str(datetime.fromisoformat(input["at"]) + timedelta(days=1)'
+                " - timedelta(hours=24))"
+            ),
+            f"$fromMillis($toMillis({INPUT}.at))",
         ),
         (
             'return f"at {datetime.now() + timedelta(milliseconds=1)}"',
@@ -1026,12 +1059,12 @@ def imported(body: str) -> dict:
         ),
         (
             'return (datetime.fromtimestamp(input["t"]) - timedelta(days=1)).timestamp()',
-            f"({INPUT}.t * 1000 - 86400000) / 1000",
+            f"({INPUT}.t * 1000 - 24 * 60 * 60 * 1000) / 1000",
         ),
         # A unit given a value only known when it runs is multiplied then.
         (
             'return str(datetime.now() + timedelta(hours=input["h"], minutes=30))',
-            f"$fromMillis($millis() + {INPUT}.h * 3600000 + 1800000)",
+            f"$fromMillis($millis() + {INPUT}.h * (60 * 60 * 1000) + 30 * 60 * 1000)",
         ),
         (
             'return (datetime.now() - timedelta(milliseconds=input["ms"])).timestamp()',
@@ -1039,20 +1072,20 @@ def imported(body: str) -> dict:
         ),
         (
             'return (timedelta(seconds=2) + datetime.now() - timedelta(days=input["d"])).timestamp()',
-            f"($millis() - {INPUT}.d * 86400000 + 2000) / 1000",
+            f"($millis() - {INPUT}.d * (24 * 60 * 60 * 1000) + 2 * 1000) / 1000",
         ),
         (
             'return timedelta(days=input["d"]).total_seconds()',
-            f"{INPUT}.d * 86400000 / 1000",
+            f"{INPUT}.d * (24 * 60 * 60 * 1000) / 1000",
         ),
         (
             'return timedelta(days=-input["d"], seconds=1).total_seconds()',
-            f"(-{INPUT}.d * 86400000 + 1000) / 1000",
+            f"(-{INPUT}.d * (24 * 60 * 60 * 1000) + 1000) / 1000",
         ),
         # Datetimes compare as the milliseconds since the epoch.
         (
             'return datetime.fromisoformat(input["at"]) < datetime.now() - timedelta(days=7)',
-            f"$toMillis({INPUT}.at) < $millis() - 604800000",
+            f"$toMillis({INPUT}.at) < $millis() - 7 * 24 * 60 * 60 * 1000",
         ),
         (
             'return datetime.fromtimestamp(input["t"]) != datetime.fromisoformat(input["at"])',
@@ -1070,7 +1103,7 @@ def imported(body: str) -> dict:
         ),
         (
             'return (datetime.now() + timedelta(days=1)).strftime("%j")',
-            "$fromMillis($millis() + 86400000, '[d001]')",
+            "$fromMillis($millis() + 24 * 60 * 60 * 1000, '[d001]')",
         ),
         (
             'return datetime.now().strftime("100%% [ok] %y")',
@@ -1105,6 +1138,41 @@ def test_module_functions_evaluate():
     )
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", moment)
     assert later is True
+
+
+@pytest.mark.parametrize(
+    "span, moved",
+    [
+        ("timedelta(hours=9) - timedelta(days=1)", "2025-12-31T09:00:00.000Z"),
+        (
+            "timedelta(days=1, hours=-2, minutes=3, seconds=4, milliseconds=5)",
+            "2026-01-01T22:03:04.005Z",
+        ),
+        (
+            "timedelta(days=100000000) - timedelta(days=99999999)",
+            "2026-01-02T00:00:00.000Z",
+        ),
+        (
+            "timedelta(weeks=3) - timedelta(days=20, hours=23)",
+            "2026-01-01T01:00:00.000Z",
+        ),
+    ],
+)
+def test_units_written_apart_move_a_moment_as_their_sum(span, moved):
+    """The units added up in parentheses move the moment once, by their sum,
+    even where large ones cancel out."""
+    body = f'return str(datetime.fromisoformat(input["at"]) + {span})'
+    assert asl.run(imported(body), {"at": "2026-01-01T00:00:00.000Z"}) == moved
+
+
+def test_a_unit_given_when_it_runs_is_multiplied_once():
+    """The milliseconds in the unit are worked out in parentheses first, so
+    the value read when it runs is multiplied once, by the number."""
+    body = (
+        'return str(datetime.fromisoformat(input["at"]) + timedelta(days=input["d"]))'
+    )
+    moved = asl.run(imported(body), {"at": "2026-01-01T00:00:00.000Z", "d": 1.5})
+    assert moved == "2026-01-02T12:00:00.000Z"
 
 
 @pytest.mark.parametrize(

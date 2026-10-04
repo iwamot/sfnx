@@ -304,6 +304,15 @@ DATETIMES = (NOW, FROM_ISO, FROM_TIMESTAMP)
 # timedelta takes to the millisecond: microseconds is left out, as Step
 # Functions keeps time to the millisecond.
 TIMEDELTA = "datetime.timedelta"
+# How a hand-writer spells the milliseconds in one of each unit of timedelta,
+# so the unit shows: a day is 24 * 60 * 60 * 1000.
+UNIT_SPELLINGS = {
+    604_800_000: "7 * 24 * 60 * 60 * 1000",
+    86_400_000: "24 * 60 * 60 * 1000",
+    3_600_000: "60 * 60 * 1000",
+    60_000: "60 * 1000",
+    1000: "1000",
+}
 # The units of timedelta, and the milliseconds in one of each.
 TIMEDELTA_UNITS = {
     "weeks": 604_800_000,
@@ -314,11 +323,12 @@ TIMEDELTA_UNITS = {
     "milliseconds": 1,
 }
 TIMEDELTA_WRITTEN = "timedelta(hours=1)"
-# How far timedeltas move a datetime: the milliseconds written in the source,
-# and each unit given a value only known when it runs, with the signed
-# milliseconds in one of it.
-Span = tuple[int, tuple[tuple[ast.expr, int], ...]]
-NO_SPAN: Span = (0, ())
+# How far timedeltas move a datetime: the units written in the source, each as
+# a signed count and the milliseconds in one of it, and each unit given a value
+# only known when it runs, with the signed milliseconds in one of it.
+Terms = tuple[tuple[int, int], ...]
+Span = tuple[Terms, tuple[tuple[ast.expr, int], ...]]
+NO_SPAN: Span = ((), ())
 
 # The strftime directives that have a picture component writing the same
 # value, measured against CPython on Step Functions. The rest are left out:
@@ -2336,12 +2346,12 @@ class Translator:
     def shifted(self, moment: Expr, span: Span) -> Expr:
         """A moment moved by a span: each unit given a value that is only
         known when it runs, times the milliseconds in the unit, and then the
-        milliseconds written in the source, added up while the file compiles."""
+        units written in the source, as terms() writes them."""
         written, units = span
         for node, millis in units:
             value = self.numeric(node, "timedelta()")
             if abs(millis) != 1:
-                value = binary(value, "*", literal(abs(millis)), MULTIPLY, of(NUMBER))
+                value = binary(value, "*", unit(abs(millis)), MULTIPLY, of(NUMBER))
             if millis > 0:
                 moment = sum_of(moment, value)
             else:
@@ -2350,9 +2360,11 @@ class Translator:
 
     def timedelta_millis(self, node: ast.expr) -> Span | None:
         """The span a timedelta() call names, or None where the expression is
-        not one. The units written in the source as numbers are added up here,
-        so one number goes into the expression; a unit given any other value is
-        kept to be multiplied when it runs."""
+        not one. The units written in the source as whole numbers are kept
+        apart, so the expression shows each unit as a count of it; where one is
+        a fraction, they are added up here into one number of milliseconds,
+        which a double holds exactly. A unit given any other value is kept to
+        be multiplied when it runs."""
         if not isinstance(node, ast.Call):
             return None
         if (qualified(node.func, self.names) or "") != TIMEDELTA:
@@ -2404,7 +2416,17 @@ class Translator:
                 f"{ast.unparse(node)} is a fraction of one",
                 node,
             )
-        return microseconds // 1000, tuple(given)
+        total = microseconds // 1000
+        counted = tuple(
+            (count, TIMEDELTA_UNITS[unit])
+            for unit, count in units.items()
+            if type(count) is int and count
+        )
+        exact = all(abs(n * millis) <= EXACT for n, millis in counted)
+        whole = all(type(count) is int for count in units.values())
+        if whole and exact and sum(n * m for n, m in counted) == total:
+            return counted, tuple(given)
+        return ((1 if total > 0 else -1, abs(total)),) if total else (), tuple(given)
 
     def total_seconds(self, node: ast.Call, method: ast.Attribute) -> Expr:
         """A timedelta's .total_seconds(): the seconds a timedelta() call
@@ -2414,7 +2436,7 @@ class Translator:
         if not node.args and not node.keywords:
             named = self.timedelta_millis(span)
             if named is not None and not named[1]:
-                written = named[0]
+                written = sum(n * m for n, m in named[0])
                 return literal(
                     written // 1000 if written % 1000 == 0 else written / 1000
                 )
@@ -3999,16 +4021,75 @@ def joined(first: Span, second: Span, sign: int) -> Span:
     """Two spans added, or the second taken from the first."""
     written, units = second
     moved = tuple((node, sign * millis) for node, millis in units)
-    return first[0] + sign * written, first[1] + moved
+    counted = tuple((sign * n, millis) for n, millis in written)
+    return first[0] + counted, first[1] + moved
 
 
-def shifted(moment: Expr, millis: int) -> Expr:
-    """A moment moved by whole milliseconds. A span that runs backwards is
-    subtracted rather than added as a negative number, so the expression reads
-    as the time it names, and a span of nothing leaves the moment as it is."""
-    if millis >= 0:
-        return sum_of(moment, literal(millis))
-    return difference(moment, literal(-millis))
+def shifted(moment: Expr, terms: Terms) -> Expr:
+    """A moment moved by units written in the source, each as its count times
+    the milliseconds in one, or the milliseconds alone for a count of one, as
+    a hand-writer shows the unit. Several are added up in parentheses before
+    the moment is moved, once, as the milliseconds they add up to would move
+    it; where a product or a partial sum is past what a double holds exactly,
+    or the units add up to nothing, the sum goes in as one number. A span that
+    runs backwards is subtracted rather than added as a negative number, so
+    the expression reads as the time it names, and a span of nothing leaves
+    the moment as it is."""
+    terms = tuple((n, millis) for n, millis in terms if n)
+    total = sum(n * millis for n, millis in terms)
+    partial = 0
+    exact = True
+    for n, millis in terms:
+        partial += n * millis
+        exact = exact and abs(n * millis) <= EXACT and abs(partial) <= EXACT
+    if not total:
+        return moment
+    if not exact:
+        value = literal(abs(total))
+    elif len(terms) == 1:
+        value = counted(abs(terms[0][0]), terms[0][1])
+    else:
+        pieces = []
+        for n, millis in terms:
+            written = counted(abs(n), millis).code
+            if not pieces:
+                pieces.append(written if n > 0 else f"-{written}")
+            else:
+                pieces.append(f"{'+' if n > 0 else '-'} {written}")
+        # The moment moves once, by the sum, in either direction.
+        grouped = expression(
+            "(" + " ".join(pieces) + ")",
+            type=of(NUMBER),
+            defined=True,
+            total=True,
+        )
+        return sum_of(moment, grouped)
+    return sum_of(moment, value) if total > 0 else difference(moment, value)
+
+
+def counted(count: int, millis: int) -> Expr:
+    """A count of a unit of timedelta, as its milliseconds spelled out:
+    4 * 24 * 60 * 60 * 1000 for four days, which whole numbers multiplied
+    from the left keep exact."""
+    spelled = UNIT_SPELLINGS.get(millis, str(millis))
+    if millis == 1:
+        code = str(count)
+    else:
+        code = spelled if count == 1 else f"{count} * {spelled}"
+    precedence = MULTIPLY if "*" in code else ATOM
+    return expression(
+        code, type=of(NUMBER), precedence=precedence, defined=True, total=True
+    )
+
+
+def unit(millis: int) -> Expr:
+    """The milliseconds in one unit of timedelta, which a value only known
+    when it runs is multiplied by: worked out first, in parentheses, so the
+    value is multiplied once, as by the number."""
+    spelled = UNIT_SPELLINGS.get(millis, str(millis))
+    if "*" not in spelled:
+        return literal(millis)
+    return expression(f"({spelled})", type=of(NUMBER), defined=True, total=True)
 
 
 def difference(left: Expr, right: Expr) -> Expr:

@@ -188,11 +188,11 @@ def with_datetimes(body: str) -> dict:
         ("wait(until=datetime.now())", "$now()"),
         (
             "wait(until=datetime.now() + timedelta(hours=1))",
-            "$fromMillis($millis() + 3600000)",
+            "$fromMillis($millis() + 60 * 60 * 1000)",
         ),
         (
             'wait(until=datetime.fromisoformat(input["at"]) - timedelta(minutes=5))',
-            f"$fromMillis($toMillis({INPUT}.at) - 300000)",
+            f"$fromMillis($toMillis({INPUT}.at) - 5 * 60 * 1000)",
         ),
         # A datetime written as its text is the text, as it was before.
         ("wait(until=str(datetime.now()))", "$now()"),
