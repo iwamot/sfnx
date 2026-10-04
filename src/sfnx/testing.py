@@ -509,7 +509,8 @@ def evaluate(code: str, variables: Mapping[str, object], states: object) -> obje
     # The functions whose Step Functions behavior differs from jsonata-python's.
     for name, function in DIFFERING.items():
         expression.register_function(name, Replaced(name, function))
-    expression.register_function("number", Cast("number"))
+    for name in CASTS:
+        expression.register_function(name, Cast(name))
     for name, function in REPLACED.get({}).items():
         expression.register_lambda(name, function)
     try:
@@ -603,11 +604,27 @@ def at_most(name: str, args: tuple[object, ...], count: int) -> None:
         raise mismatch(name, count + 1)
 
 
+# The built-in functions that fail on a text jsonata-python reads with
+# Python, which raises ValueError, as Step Functions fails them (measured):
+# the message, and whether null fails the signature, as it does for
+# $toMillis, where jsonata-python raises TypeError.
+CASTS = {
+    "number": ("D3030: Unable to cast value to a number: {}", False),
+    "toMillis": (
+        (
+            "D3110: The argument of the toMillis function must be an ISO 8601 "
+            "formatted timestamp. Given {}"
+        ),
+        True,
+    ),
+}
+
+
 class Cast(jsonata.Jsonata.JFunction):
     """The built-in function of a name, with its signature, failing as Step
-    Functions does where jsonata-python raises ValueError: $number of a text
-    that is not a number fails with D3030 (measured), where Python's float()
-    and int() raise."""
+    Functions does where jsonata-python raises a Python exception, as CASTS
+    says: $number of a text that is not a number, and $toMillis of one that
+    is not a timestamp or of null."""
 
     def __init__(self, name: str) -> None:
         super().__init__(None, None)
@@ -618,15 +635,17 @@ class Cast(jsonata.Jsonata.JFunction):
         self.built_in = built_in
         self.signature = built_in.signature
         self.function_name = built_in.function_name
+        self.name = name
 
     def call(self, input: object, args: object) -> object:
+        message, null_fails = CASTS[self.name]
+        written = args[0] if isinstance(args, list) and args else input
+        if null_fails and written is Utils.NULL_VALUE:
+            raise mismatch(self.name, 1)
         try:
             return self.built_in.call(input, args)
         except ValueError as exc:
-            written = args[0] if isinstance(args, list) and args else input
-            raise jsonata.JException(
-                f"D3030: Unable to cast value to a number: {json_text(written, None)}"
-            ) from exc
+            raise jsonata.JException(message.format(json_text(written, None))) from exc
 
     def get_number_of_args(self) -> int:
         return self.built_in.get_number_of_args()

@@ -1306,6 +1306,9 @@ def test_text_that_is_not_json_fails_to_parse():
         ("['1', '2'].$number()", [1, 2]),
         ("$map(['1', '2'], $number)", [1, 2]),
         ("($f := $number(?); $f('5'))", 5),
+        ("$toMillis('2026-01-01T00:00:00.123+09:00')", 1767193200123),
+        ("['2026-01-01T00:00:00Z'].$toMillis()", 1767225600000),
+        ("($f := $toMillis(?); $f('2026-01-01T00:00:00Z'))", 1767225600000),
     ],
 )
 def test_functions_give_what_step_functions_gives(code, expected):
@@ -1370,6 +1373,13 @@ def test_range_gives_a_sequence(code, expected):
         ("$number('0xzz')", 'D3030: Unable to cast value to a number: "0xzz"'),
         ("['a'].$number()", 'D3030: Unable to cast value to a number: "a"'),
         ("$number(null)", "does not match"),
+        # A text that is not a timestamp, where Python's fromisoformat raises,
+        # and null, where jsonata-python raises TypeError.
+        ("$toMillis('invalid')", "D3110: The argument of the toMillis function"),
+        ("$toMillis('2026-13-45T00:00:00Z')", 'Given "2026-13-45T00:00:00Z"'),
+        ("['invalid'].$toMillis()", 'Given "invalid"'),
+        ("$toMillis(null)", 'Argument 1 of function "toMillis"'),
+        ("$toMillis(1)", "does not match"),
         ("$number({})", "does not match"),
         ("$number(1, 2)", "does not match"),
     ],
