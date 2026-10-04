@@ -16,11 +16,13 @@ The first two need no credentials and pass or fail on their own. They show that 
 
 Each property below lists what supports it, what those checks cannot show, and where the property is specified. How often a check runs is given with it: **every run** is every `validate.sh`, **on request** is `tests/aws_corpus.py` in Step Functions, and **recorded** is a measurement made once and written in [design.md](design.md). A limit of a check says what it does not show, not that the property fails there; where [docs/language.md](language.md) describes a result other than Python's, with a spelling or in [the differences](language.md#where-results-differ-from-python), the checks that compare with CPython keep to values it does not cover.
 
-### Values and failures agree with CPython where docs/language.md says they do
+### Values and failures are what docs/language.md says
+
+Where docs/language.md gives a spelling Python's result, CPython is the reference to compare with; elsewhere the reference is the result docs/language.md describes, measured in Step Functions.
 
 - **Rests on**:
-  - `test_cpython_and_the_compiled_definition_agree` (every run): 200 random programs give CPython's result or error when compiled and run in `sfnx.testing`.
-  - The corpus cases that claim `python` (every run, and on request in Step Functions): truth, numbers, `join`, missing keys and null, encoded text and the other categories of [the corpus](#the-corpus).
+  - `test_cpython_and_the_compiled_definition_agree` (every run): 200 random programs, which keep to spellings and values whose meaning is Python's, give CPython's result or error when compiled and run in `sfnx.testing`.
+  - The corpus cases (every run, and on request in Step Functions): truth, numbers, `join`, missing keys and null, encoded text and the other categories of [the corpus](#the-corpus). A case that claims `python` gives CPython's result too; one that does not records the result docs/language.md describes where CPython gives another.
   - Unit tests of each spelling (every run), which run definitions on failing and missing values as well, such as a Task result without the key read or of another type.
   - 80 random programs run 240 times in Step Functions against CPython (recorded; [Programs as a whole](design.md#programs-as-a-whole)).
 - **Limits**:
