@@ -4,7 +4,7 @@ import ast
 import datetime
 import difflib
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 
@@ -599,7 +599,7 @@ class Translator:
         return value, call
 
     @contextmanager
-    def branch(self) -> Iterator[None]:
+    def branch(self) -> Generator[None]:
         self.conditional += 1
         try:
             yield
@@ -847,7 +847,7 @@ class Translator:
         )
 
     @contextmanager
-    def parameters(self, names: dict[str, Type | None]) -> Iterator[None]:
+    def parameters(self, names: dict[str, Type | None]) -> Generator[None]:
         """The variables of a comprehension while its conditions and results
         are translated. Each is the parameter of the JSONata function, not a
         Step Functions variable: a variable of the same name that another
@@ -1970,7 +1970,7 @@ class Translator:
     @contextmanager
     def once(
         self, values: list[Expr], reads: Sequence[Expr] = (), *, always: bool = False
-    ) -> Iterator[tuple[list[tuple[str, Expr]], list[Expr]]]:
+    ) -> Generator[tuple[list[tuple[str, Expr]], list[Expr]]]:
         """values that the code being built writes more than once. One that
         may change when it is evaluated again, as $random() does, is bound to
         a variable at the start of a block, which block() then puts around the
@@ -3697,7 +3697,7 @@ def tested(node: ast.expr) -> tuple[str | None, frozenset[str]]:
 @contextmanager
 def narrowing_context(
     bindings: dict[str, Expr], types: dict[str, Type]
-) -> Iterator[None]:
+) -> Generator[None]:
     saved = {name: bindings[name] for name in types}
     for name, declared in types.items():
         bindings[name] = replace(bindings[name], type=declared)
