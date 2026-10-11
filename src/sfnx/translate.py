@@ -1,7 +1,7 @@
 """Python expressions to JSONata, with the spelling chosen by the operand types."""
 
 import ast
-import datetime
+import datetime as dt
 import difflib
 import re
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
@@ -2404,12 +2404,12 @@ class Translator:
             else:
                 units[keyword.arg] = written
         try:
-            span = datetime.timedelta(**units)
+            span = dt.timedelta(**units)
         except OverflowError:
             raise CompileError(
                 f"{ast.unparse(node)} is longer than a timedelta holds", node
             ) from None
-        microseconds = span // datetime.timedelta(microseconds=1)
+        microseconds = span // dt.timedelta(microseconds=1)
         if microseconds % 1000:
             raise CompileError(
                 f"Step Functions keeps time to the millisecond, and "
