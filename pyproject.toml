@@ -24,7 +24,7 @@ classifiers = [
 # The floors are the oldest versions the test suite passes with.
 dependencies = [
     "botocore>=1.31.0",
-    "jsonata-python>=0.7.0",
+    "jsonata-python>=0.7.1",
 ]
 
 [project.optional-dependencies]
@@ -44,7 +44,7 @@ Issues = "https://github.com/iwamot/sfnx/issues"
 [dependency-groups]
 dev = [
     "hypothesis==6.169.0",
-    "jsonata-python==0.7.0",
+    "jsonata-python==0.7.1",
     "pip-licenses==5.5.5",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",

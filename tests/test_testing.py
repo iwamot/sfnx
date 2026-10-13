@@ -1235,17 +1235,25 @@ def test_a_definition_whose_every_state_sets_jsonata_runs():
 @pytest.mark.parametrize(
     "code, cause",
     [
-        ('$merge([{"a": 1}, [{"b": 2}]])', "T0412: Argument {{index}} of Object"),
-        ('1 < "a"', "T2009: The values {{value}}"),
+        (
+            '$merge([{"a": 1}, [{"b": 2}]])',
+            "Argument 1 of Object merge must be an array of o",
+        ),
+        (
+            '1 < "a"',
+            (
+                "The values 1 and a either side of operator < must be of the"
+                " same data type"
+            ),
+        ),
     ],
 )
-def test_an_error_whose_message_jsonata_python_cannot_write_fails(code, cause):
-    """jsonata-python raises an IndexError while it writes the message."""
+def test_an_error_with_values_in_its_message_fails(code, cause):
     failed = testing.run(
         machine({"Type": "Succeed", "Output": "{% " + code + " %}"}), {}
     )
     assert failed.error == "States.QueryEvaluationError"
-    assert failed.cause.startswith(cause)
+    assert failed.cause == cause
 
 
 def test_an_index_error_from_a_function_reaches_the_test():
