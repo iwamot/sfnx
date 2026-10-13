@@ -256,11 +256,11 @@ wheels = [
 
 [[package]]
 name = "jsonata-python"
-version = "0.7.0"
+version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9d/6a/b756e10939f584b0629c301bb4aa0e79f94163ac3b0083c788b8ee78c708/jsonata_python-0.7.0.tar.gz", hash = "sha256:2cf788147a0d444cb9d7d81c58da9991607280d6a5d0f06bd2dd212a59fdcb16", size = 368727, upload-time = "2026-07-05T00:44:15.238Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/e1/a1247412b909987479acc5e376c65f975a7daf25ec37e91cc0c8ec5fa74e/jsonata_python-0.7.1.tar.gz", hash = "sha256:c3c4dd3e68d913cf079ed5374cfcc6b249fb33fedaef55b23b14c7168b797e4e", size = 87663, upload-time = "2026-10-10T03:48:51.755Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/03/30/17eaf4576916556875fc961002cb67d0b404abc3345ab2bb13f1496654a2/jsonata_python-0.7.0-py3-none-any.whl", hash = "sha256:85b8dd2adf9c17a67494892ef04bc191ba2156598daae4465eec30ffd1559238", size = 87399, upload-time = "2026-07-05T00:44:13.885Z" },
+    { url = "https://files.pythonhosted.org/packages/46/85/1abd3677ad6c3a6ae249ed1234c0ab8dabbbca7b13d5bfd58c65acacb64f/jsonata_python-0.7.1-py3-none-any.whl", hash = "sha256:d34603578dd20add2aa0ac4562ca080d9c662f6b161298bd6254fe28247804ae", size = 87560, upload-time = "2026-10-10T03:48:49.643Z" },
 ]
 
 [[package]]
@@ -376,14 +376,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "botocore", specifier = ">=1.31.0" },
-    { name = "jsonata-python", specifier = ">=0.7.0" },
+    { name = "jsonata-python", specifier = ">=0.7.1" },
 ]
 provides-extras = ["testing"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "hypothesis", specifier = "==6.169.0" },
-    { name = "jsonata-python", specifier = "==0.7.0" },
+    { name = "jsonata-python", specifier = "==0.7.1" },
     { name = "pip-licenses", specifier = "==5.5.5" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-cov", specifier = "==7.1.0" },
