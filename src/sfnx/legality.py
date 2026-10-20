@@ -426,13 +426,23 @@ def failsafe(field: object) -> bool:
 def assigned_value(template: object) -> Expr | None:
     """What an Assign writes for a variable, as an expression to read in its
     place: an expression, or a value written out, whose JSON is JSONata too.
-    An object or an array with expressions among its values is no one
+    An object or an array with expressions among its values is one where no
+    value is ever undefined: JSONata leaves an undefined value out of the
+    object or the array, where the template fails, and an expression that
+    may fail fails alike in both. Other such templates are no one
     expression. An expression keeps what the field's Expr knows of it, as
     whether it may fail or be undefined; the names it reads are those of
     its code, $states and functions among them, and it binds as tightly as
     an atom only where it is a path alone, which is what may be written in
     place of a variable read more than once."""
-    if isinstance(template, Expr) and code_of(template) is not None:
+    if isinstance(template, Expr) and (
+        code_of(template) is not None
+        or (
+            isinstance(template.template, (dict, list))
+            and not written(template.template)
+            and template.defined
+        )
+    ):
         code = template.code
         precedence = ATOM if path_alone(code) else WRITTEN
         return replace(
