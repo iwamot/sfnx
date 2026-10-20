@@ -4,13 +4,16 @@ import pytest
 
 from sfnx.compiler import as_expr, composed, emitted, from_asl, loose_expressions
 from sfnx.expressions import (
+    ADD,
     Expr,
+    binary,
     code_of,
     expression,
     literal,
     template_of,
     written,
 )
+from sfnx.jsontypes import STRING, of
 
 
 def test_a_field_reads_alike_as_an_expr_or_as_its_template():
@@ -141,3 +144,58 @@ def test_a_definition_written_as_asl_reads_in_and_writes_out_as_it_was():
     assert emitted(read) == ASL
     assert isinstance(read, dict)
     assert as_expr(read["States"]["p"]["Assign"]["x"]).code == "$a"
+
+
+X = expression("$x", frozenset({"x"}), type=of(STRING), defined=True, total=True)
+
+
+def joined(left: Expr, right: Expr) -> Expr:
+    return binary(left, "&", right, ADD, of(STRING))
+
+
+@pytest.mark.parametrize(
+    "left, right, code",
+    [
+        # Text written in the source after text written in the source.
+        (joined(X, literal("a")), "b", "$x & 'ab'"),
+        (joined(joined(literal("p"), X), literal("a")), "b", "'p' & $x & 'ab'"),
+        (joined(X, literal("it's")), "\n\\é", '$x & "it\'s\\n\\\\é"'),
+        (joined(X, literal("a")), "", "$x & 'a'"),
+        (joined(X, literal("${A}")), "-b", "$x & '${A}-b'"),
+        # No text written in the source to join to.
+        (X, "b", "$x & 'b'"),
+        (joined(X, expression("$y")), "b", "$x & $y & 'b'"),
+        (expression("($x & 'a')"), "b", "($x & 'a') & 'b'"),
+        (expression('$x & "a"'), "b", "$x & \"a\" & 'b'"),
+        # Joined, the texts would spell a placeholder neither spells.
+        (joined(X, literal("a$")), "{X}", "$x & 'a$' & '{X}'"),
+        (literal("a$"), "{X}", "'a$' & '{X}'"),
+    ],
+)
+def test_text_written_in_the_source_joins_the_text_before_it(left, right, code):
+    assert joined(left, literal(right)).code == code
+
+
+@pytest.mark.parametrize(
+    "left",
+    [
+        joined(X, literal("a")),
+        # A jsonata() expression, whose type is not known.
+        expression("$x & 'a'", frozenset({"x"})),
+    ],
+)
+def test_text_joined_to_an_expression_is_typed_as_the_operation(left):
+    value = joined(left, literal("b"))
+    assert value.template == "{% $x & 'ab' %}"
+    assert (value.variables, value.type, value.defined, value.total) == (
+        frozenset({"x"}),
+        of(STRING),
+        left.defined,
+        left.total,
+    )
+
+
+def test_text_joined_to_an_operation_on_other_values_stays_an_operation():
+    assert binary(joined(X, literal("a")), "=", literal("b"), ADD, None).code == (
+        "$x & 'a' = 'b'"
+    )

@@ -17,7 +17,7 @@ from sfnx.jsontypes import (
     of,
     union,
 )
-from sfnx.syntax import EXACT, Sensitivity, sensitivity
+from sfnx.syntax import EXACT, Sensitivity, sensitivity, tree_of
 
 # JSONata binding powers. A subexpression is parenthesized when it binds
 # looser than the place it is put in; an expression written in jsonata() may
@@ -462,7 +462,7 @@ def binary(
     if folded is not None:
         return folded
     left_precedence = precedence + 1 if precedence == COMPARE else precedence
-    code = (
+    code = joined_text(left, operator, right) or (
         f"{operand(left, left_precedence)} {operator} {operand(right, precedence + 1)}"
     )
     return expression(
@@ -487,7 +487,7 @@ def fold(left: Expr, operator: str, right: Expr) -> Expr | None:
     a, b = written_scalar(left), written_scalar(right)
     if isinstance(a, str) and isinstance(b, str):
         if operator == "&":
-            return literal(a + b)
+            return None if makes_placeholder(a, b) else literal(a + b)
         if operator in {"=", "!="} and "${" not in a + b:
             return literal((a == b) == (operator == "="))
         return None
@@ -507,6 +507,38 @@ def fold(left: Expr, operator: str, right: Expr) -> Expr | None:
     if result is None or abs(result) > EXACT:
         return None
     return literal(result)
+
+
+def joined_text(left: Expr, operator: str, right: Expr) -> str | None:
+    """The code of text written in the source joined to an expression that
+    ends with text written in the source, as the one text both make, as a
+    hand-writer writes $x & 'ab' for $x & 'a' & 'b': & turns each side into
+    text and joins them, so what comes before is evaluated as it was. None
+    for anything else, and where the joined text would hold a ${Name}
+    placeholder neither text holds."""
+    b = written_scalar(right)
+    tree = tree_of(left.code)
+    if (
+        operator != "&"
+        or not isinstance(b, str)
+        or tree is None
+        or tree.value != "&"
+        or tree.rhs is None
+        or tree.rhs.type != "string"
+        or not isinstance(tree.rhs.value, str)
+    ):
+        return None
+    a = tree.rhs.value
+    spelled = f" & {string(a)}"
+    if not left.code.endswith(spelled) or makes_placeholder(a, b):
+        return None
+    return left.code[: -len(spelled)] + f" & {string(a + b)}"
+
+
+def makes_placeholder(a: str, b: str) -> bool:
+    """Whether two texts joined spell the start of a ${Name} placeholder
+    that neither spells, which the deployment would fill in."""
+    return a.endswith("$") and b.startswith("{")
 
 
 def written_scalar(value: Expr) -> object:
