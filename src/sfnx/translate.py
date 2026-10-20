@@ -707,6 +707,10 @@ class Translator:
             )
         if isinstance(node, ast.DictComp):
             return self.dict_comprehension(node)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call):
+            # A call sfnx cannot compile is what to rewrite: its result has no
+            # key to read in place of the attribute either.
+            self.expr(node.value)
         name = type(node).__name__
         raise CompileError(
             EXPRESSIONS.get(name, f"{name} expressions are not supported"), node
