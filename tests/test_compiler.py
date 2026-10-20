@@ -12,9 +12,11 @@ from sfnx.compiler import (
     changed_states,
     compile_source,
     definitions,
+    emitted,
     from_asl,
     misread,
     note_reads,
+    run_round,
 )
 from sfnx.diagnostics import CompileError
 from tests import asl
@@ -1251,6 +1253,82 @@ def test_what_the_except_clause_assigns_after_the_failure_is_not_compared():
     too, wherever the passes put it."""
     assert misread(except_body(False)) == []
     assert misread(except_body(True)) == []
+
+
+def join_the_next_pass(definition: dict) -> None:
+    """A wrong pass: the second Pass's Assign goes in the first's without
+    reading a as the value it is assigned there."""
+    states = definition["States"]
+    states["a"]["Assign"] = {**states["a"]["Assign"], **states["b"]["Assign"]}
+    states["a"]["Next"] = "r"
+    del states["b"]
+
+
+def join_the_task(definition: dict) -> None:
+    """A wrong pass: the Pass's Assign goes in the Task's, where a failure of
+    b's value leaves a unassigned."""
+    states = definition["States"]
+    states["b"]["Assign"] = {**states["a"]["Assign"], **states["b"]["Assign"]}
+    definition["StartAt"] = "b"
+    del states["a"]
+
+
+def write_again(definition: dict) -> None:
+    """A pass that writes every expression again without its note, which
+    misread does not judge."""
+    states = from_asl(emitted(definition["States"]))
+    assert isinstance(states, dict)
+    definition["States"] = states
+
+
+def nothing(definition: dict) -> None:
+    pass
+
+
+def test_the_first_pass_that_misreads_fails_the_check_with_what_it_changed():
+    definition = assigning(False)
+    passes = [(nothing, ()), (join_the_next_pass, ()), (nothing, ())]
+    with pytest.raises(AssertionError) as failure:
+        run_round(definition, passes, 3, True)
+    assert str(failure.value).splitlines() == [
+        "join_the_next_pass in round 3:",
+        "a: $a reads a of [0]",
+        "changed:",
+        '- a: {"Type": "Pass", "Assign": {"a": 1}, "Next": "b"}',
+        '+ a: {"Type": "Pass", "Assign": {"a": 1, "b": "{% $a %}"}, "Next": "r"}',
+        '- b: {"Type": "Pass", "Assign": {"b": "{% $a %}"}, "Next": "r"}',
+    ]
+
+
+def test_a_misread_a_later_pass_would_hide_fails_the_pass_that_made_it():
+    """After write_again, misread no longer judges the read, so only the
+    check right after join_the_next_pass finds it."""
+    hidden = assigning(False)
+    join_the_next_pass(hidden)
+    write_again(hidden)
+    assert misread(hidden) == []
+    passes = [(join_the_next_pass, ()), (write_again, ())]
+    with pytest.raises(AssertionError, match="^join_the_next_pass in round 1:"):
+        run_round(assigning(False), passes, 1, True)
+
+
+def test_a_pass_that_misses_an_assignment_before_a_failure_fails_the_check():
+    passes = [(join_the_task, ())]
+    with pytest.raises(AssertionError) as failure:
+        run_round(excepting(False), passes, 2, True)
+    lines = str(failure.value).splitlines()
+    assert lines[0] == "join_the_task in round 2:"
+    assert (
+        "b: the except clause reads a of [0] where $number($states.result.Payload) fails"
+        in lines
+    )
+    assert "StartAt: a -> b" in lines
+
+
+def test_passes_run_unchecked_where_the_compile_does_not_check_them():
+    definition = assigning(False)
+    run_round(definition, [(join_the_next_pass, ())], 1, False)
+    assert list(definition["States"]) == ["a", "r"]
 
 
 def test_a_value_is_held_by_another_expression_as_its_syntax_tree():
