@@ -188,9 +188,18 @@ ASL is a JSON document of states that name each other, with the logic in JSONata
 
 - **The output is ASL you can read.** States split only where ASL needs them, independent assignments share one Pass, and each state is named after its variable, `return`, `if`, `for` or the API it calls (a Lambda invoke, a DynamoDB putItem or an SNS publish whose result nothing assigns adds the function, table or topic the source writes, `putItem orders`), so execution histories and the console read like the source; a `# state: Name` comment at the end of a line names its state yourself.
 - **Mistakes surface at compile time.** Every rejected line comes with what to write instead. SDK integrations' services, operations, argument names and errors are checked against the botocore service models (whether Step Functions integrates the action is not checked).
-- **Python control flow with a few workflow primitives.** The names sfnx exports make states (the operations of `aws`, `activity`, `task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes, `jsonata` for an expression written out). Everything else is Python syntax, compiled to the JSONata you would write for it. [Where results differ from Python](https://github.com/iwamot/sfnx/blob/main/docs/language.md#where-results-differ-from-python) lists the values known to come out otherwise.
+- **Python control flow with a few workflow primitives.** The names sfnx exports make states (the operations of `aws`, `activity`, `task`, `wait`, `parallel`, `inline_map`, `distributed_map`) or name what ASL names (`context`, error classes, `jsonata` for an expression written out). The Python expressions sfnx supports compile to the JSONata you would write for them, and [Where results differ from Python](https://github.com/iwamot/sfnx/blob/main/docs/language.md#where-results-differ-from-python) lists the values known to come out otherwise.
 
-sfnx compiles, and can run a JSONata-mode definition locally with mocked tasks to test it; it does not deploy, and it does not run workflows in AWS. The Python module stays importable, but the definition is the contract, not what CPython computes.
+The compiled JSONata runs when its state does: `random.random()` and `time.time()` read `$random()` and `$millis()` there, so they are written in the machine as they are ([Time is UTC, to the millisecond](https://github.com/iwamot/sfnx/blob/main/docs/language.md#time-is-utc-to-the-millisecond)). Only a Task, a Parallel or a Map catches a failure ([The ASL's own semantics](https://github.com/iwamot/sfnx/blob/main/docs/language.md#the-asls-own-semantics)).
+
+The definition is the contract, not what CPython computes. What runs where:
+
+| What you do | What runs |
+|---|---|
+| `sfnx compile app.py` | The compiler parses the file and writes the definition; it never imports or runs the module. |
+| `sfnx.testing.run(definition, ...)` | The definition, on your machine, with a function of your test answering each Task ([Testing the definition](#testing-the-definition)). |
+| Deploy the definition | Step Functions runs it in AWS. sfnx does not deploy ([Deploying the definition](#deploying-the-definition)). |
+| Call the function from Python | Plain Python: `wait()` returns at once, `parallel()` and `inline_map()` call their functions in turn, and the Task calls raise `NotImplementedError` ([At run time](https://github.com/iwamot/sfnx/blob/main/docs/language.md#at-run-time)). Test the definition, not the function. |
 
 ## Setup
 
