@@ -442,6 +442,38 @@ def test_a_list_holding_an_expression_joined_stays_an_expression():
     assert output["return"]["Output"][0].startswith("{% $append(")
 
 
+M = "$states.context.Execution.Input.a[0], 3"
+
+
+@pytest.mark.parametrize(
+    "use, output, expected",
+    [
+        ("len([m][0])", f"{{% $count(([[{M}]])[0]) %}}", 2),
+        ("[x for x in m]", f"{{% [{M}] %}}", [1, 3]),
+        ("[m, 1]", [["{% $states.context.Execution.Input.a[0] %}", 3], 1], [[1, 3], 1]),
+        ("str(m)", f"{{% $string([{M}]) %}}", "[1,3]"),
+    ],
+)
+def test_a_list_read_in_place_of_a_variable_keeps_its_shape(use, output, expected):
+    """The list the Pass assigns goes in the Task's Output as its array, in
+    place of the array written around the variable to keep its items."""
+    call = 'task("arn:aws:states:::lambda:invoke", {"FunctionName": "f"})'
+    body = f'a: list[int] = input["a"]\nm = [a[0], 3]\nr = {call}\nreturn [{use}, r]'
+    source = "from sfnx import task\n" + machine(body)
+    definition = compile_one(source)
+    assert definition["States"]["r"]["Output"] == [output, "{% $states.result %}"]
+    tasks = {"r": lambda arguments: 5}
+    assert asl.run(definition, {"a": [1, 2]}, tasks) == [expected, 5]
+
+
+def test_a_list_read_in_place_of_a_variable_in_a_condition_keeps_its_shape():
+    body = 'a: list[int] = input["a"]\nm = [a[0], 3]\nif len([m][0]) == 2:\n    return "two"\nreturn "other"'
+    definition = compile_one(machine(body))
+    (choice,) = [s for s in definition["States"].values() if s["Type"] == "Choice"]
+    assert choice["Choices"][0]["Condition"] == f"{{% $count(([[{M}]])[0]) = 2 %}}"
+    assert asl.run(definition, {"a": [1, 2]}) == "two"
+
+
 @pytest.mark.parametrize(
     "body, execution_input, expected",
     [

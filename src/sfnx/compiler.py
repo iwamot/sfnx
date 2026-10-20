@@ -79,14 +79,17 @@ from sfnx.legality import (
 from sfnx.locations import PREFIX, Locations, Origin
 from sfnx.module import Module, holds, module, qualified
 from sfnx.syntax import (
+    Place,
     Strictness,
     atomic,
+    builds,
     constant,
     lone_variable,
     looser_than_and,
     mentions,
     names_read,
     path_alone,
+    reads_of,
     reads_the_name,
     sensitivity,
     strictness,
@@ -4008,9 +4011,10 @@ def read_through(
     if placed:
         # All at once: a value put in place may read the name of another from
         # before the state, which is not to be put in place again.
-        names = "|".join(map(re.escape, placed))
-        code = re.sub(
-            rf"\$({names})(?!\w)", lambda m: operand(placed[m[1]], ATOM), code
+        code = put_in_place(
+            code,
+            {n: v.code for n, v in placed.items()},
+            lambda n: operand(placed[n], ATOM),
         )
     if bound:
         bindings = "".join(f"${n} := {values[n].code}; " for n in bound)
@@ -4018,6 +4022,36 @@ def read_through(
     return composed(
         leaf, code, [v for n, v in values.items() if reads[n]], around=around
     )
+
+
+def put_in_place(
+    code: str, values: dict[str, str], written: Callable[[str], str]
+) -> str:
+    """Code that reads each variable of values as its value, all at once, as
+    a value put in place may read the name of another from before the state,
+    and each as written gives it: an array a value builds, where the array
+    written around the variable holds its items, in place of that array, as
+    [$xs] is the list $xs, and an array or an object a value builds as it is
+    where the variable is an operand alone."""
+    reads = reads_of(code, values)
+    # The passes write a value in place only where the parser reads the code
+    # and no string in it spells the name, as captures says.
+    assert reads is not None
+    parts: list[str] = []
+    last = 0
+    for start, end, name, place in reads:
+        value = values[name]
+        if place is Place.ITEM and builds(value) and value.startswith("["):
+            text = value
+        elif place is Place.ITEM:
+            text = f"[{written(name)}]"
+        elif place is Place.OPERAND and builds(value):
+            text = value
+        else:
+            text = written(name)
+        parts += [code[last:start], text]
+        last = end
+    return "".join(parts) + code[last:]
 
 
 def shorter(first: Expr, second: Expr) -> bool:
@@ -4951,11 +4985,10 @@ def read_as_values(
         once = [n for n in used if counts[n] > 1]
         bound = {r for n in once for r in names_read(used[n])}
         if not once or bound & set(once):
-            return pattern.sub(lambda m: grouped(used[m[1]]), code)
-        inline = [n for n in used if counts[n] == 1]
+            return put_in_place(code, used, lambda n: grouped(used[n]))
+        inline = {n: used[n] for n in used if counts[n] == 1}
         if inline:
-            single = re.compile(r"\$(" + "|".join(map(re.escape, inline)) + r")(?!\w)")
-            code = single.sub(lambda m: grouped(used[m[1]]), code)
+            code = put_in_place(code, inline, lambda n: grouped(used[n]))
         bindings = "".join(f"${n} := {used[n]}; " for n in once)
         return "(" + bindings + code + ")"
 
