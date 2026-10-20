@@ -939,6 +939,33 @@ def test_diagnostics(body, message):
     assert message in raised.value.message
 
 
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        (
+            'return requests.get(input["url"]).text',
+            "requests.get() is not supported",
+        ),
+        ("return datetime.now().year", "datetime.now() is a datetime object"),
+        ("return uuid.uuid4().hex", "uuid.uuid4() is a UUID object"),
+        # A call sfnx compiles keeps the advice for the attribute.
+        (
+            'return task("arn:aws:states:::lambda:invoke", {"FunctionName": "f"}).Payload',
+            'attributes are not supported; read a key with x["key"]',
+        ),
+        ('return str(input["x"]).x', "attributes are not supported"),
+    ],
+)
+def test_an_attribute_of_a_call_is_judged_by_the_call_first(body, message):
+    header = (
+        "import requests\nimport uuid\nfrom datetime import datetime\n"
+        "from sfnx import state_machine, task\n\n\n@state_machine\ndef f(input):\n"
+    )
+    with pytest.raises(CompileError) as raised:
+        compile_source(header + textwrap.indent(body, "    "))
+    assert message in raised.value.message
+
+
 IMPORTS = (
     "import json\nimport math\nimport os\nimport time\nimport uuid\n"
     "from datetime import datetime, timedelta\nfrom uuid import uuid4\n"
