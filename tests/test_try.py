@@ -4,7 +4,13 @@ import textwrap
 import pytest
 
 from sfnx import testing
-from sfnx.compiler import compile_source, emitted, fold_into_catching_tasks, from_asl
+from sfnx.compiler import (
+    compile_source,
+    definitions,
+    emitted,
+    fold_into_catching_tasks,
+    from_asl,
+)
 from sfnx.diagnostics import CompileError
 from tests import asl
 
@@ -957,8 +963,8 @@ def test_a_clause_a_raise_goes_to_raises_the_same_error_again():
 
 def test_a_list_the_task_assigns_goes_on_to_a_return_after_the_try_when_written():
     """After the try, the return reads the list the Task assigns as the list,
-    when every item is written in the source; one with an expression among
-    its items keeps the return its own."""
+    when every item is written in the source; one with an item that may be
+    undefined keeps the return its own."""
     tasks = {"r": lambda arguments: {"Payload": 2}}
     written = f'try:\n    r = {CHARGE}\n    d = [1, 2]\nexcept Exception:\n    return "caught"\nreturn [d, r]'
     compiled = states(written)
@@ -968,6 +974,107 @@ def test_a_list_the_task_assigns_goes_on_to_a_return_after_the_try_when_written(
     compiled = states(read)
     assert "Output" not in compiled["r"]
     assert run(read, {}, tasks) == [2, 1]
+
+
+def unoptimized_and_optimized(body: str) -> list[dict]:
+    """A body's definition as the statements build it and as the passes leave
+    it, for tests that compare what the two do."""
+    return [
+        next(
+            iter(definitions(source(body), "<test>", False, optimizing, True).values())
+        )
+        for optimizing in (False, True)
+    ]
+
+
+@pytest.mark.parametrize("value", [None, 0, {}, [], [1, 2], {"nested": [1, 2]}])
+@pytest.mark.parametrize(
+    "shape, expected",
+    [
+        ('{"a": r}', lambda value: {"a": value}),
+        ("[r]", lambda value: [value]),
+        ('[{"a": r}, [r]]', lambda value: [{"a": value}, [value]]),
+    ],
+)
+@pytest.mark.parametrize("retry", ["", ', retry=[{"ErrorEquals": [Exception]}]'])
+def test_an_object_or_array_of_the_result_is_returned_by_the_task(
+    value, shape, expected, retry
+):
+    """The successful result is never undefined, null included, so an object
+    or an array of it goes in the Task's Output after the Catch and the
+    retrier, and the return after the try needs no Succeed of its own."""
+    call = CHARGE[:-1] + retry + ")"
+    body = f'try:\n    r = {call}\n    x = {shape}\nexcept Exception:\n    return "caught"\nreturn x'
+    before, after = unoptimized_and_optimized(body)
+    assert after["States"]["r"]["End"] is True
+    assert set(after["States"]) == {"r", "return"}
+    for answer, result in [
+        (lambda arguments: value, expected(value)),
+        (fails("Declined"), "caught"),
+    ]:
+        assert asl.run(before, {}, {"r": answer}) == result
+        assert asl.run(after, {}, {"r": answer}) == result
+
+
+@pytest.mark.parametrize("use", ["x", "str(x)", "len(x)"])
+def test_an_object_with_a_value_that_may_be_undefined_keeps_the_return(use):
+    """JSONata leaves an undefined value out of an object where the Assign's
+    template fails, so the object is not read as its expression: the return
+    fails on a missing key as the Assign does."""
+    body = f'try:\n    r = {CHARGE}\n    x = {{"a": r["k"]}}\nexcept Declined:\n    return "caught"\nreturn {use}'
+    for definition in unoptimized_and_optimized(body):
+        assert "Output" not in definition["States"]["r"]
+        with pytest.raises(asl.Failure) as failure:
+            asl.run(definition, {}, {"r": lambda arguments: {"z": 1}})
+        assert failure.value.error == "States.QueryEvaluationError"
+
+
+@pytest.mark.parametrize("use, expected", [("x", {"a": 3}), ("str(x)", '{"a":3}')])
+def test_an_object_with_a_value_that_may_fail_is_returned_by_the_task(use, expected):
+    """A value that may fail fails alike in the Output and in the Assign, and
+    no Catch here takes the failure of either, so the object goes in the
+    Task's Output."""
+    body = f'try:\n    r = {CHARGE}\n    x = {{"a": r.get("k", 0) + 1}}\nexcept Declined:\n    return "caught"\nreturn {use}'
+    before, after = unoptimized_and_optimized(body)
+    assert after["States"]["r"]["End"] is True
+    assert set(after["States"]) == {"r", "return"}
+    for definition in (before, after):
+        assert asl.run(definition, {}, {"r": lambda arguments: {"k": 2}}) == expected
+        with pytest.raises(asl.Failure) as failure:
+            asl.run(definition, {}, {"r": lambda arguments: {"k": "s"}})
+        assert failure.value.error == "States.QueryEvaluationError"
+
+
+@pytest.mark.parametrize(
+    "use, output, expected",
+    [
+        ("len(d)", '$count(["${A}", ""])', 2),
+        ("d[0]", '["${A}", ""][0]', "${A}"),
+    ],
+)
+def test_a_literal_array_in_a_task_output_keeps_its_spelling(use, output, expected):
+    # A deployment placeholder prevents constant folding of the whole use.
+    body = (
+        f'try:\n    r = {CHARGE}\n    d = ["${{A}}", ""]\n'
+        f'except Declined:\n    return "caught"\nreturn [{use}, r]'
+    )
+    assert states(body)["r"]["Output"] == [
+        "{% " + output + " %}",
+        "{% $states.result %}",
+    ]
+    assert run(body, {}, {"r": lambda arguments: {}}) == [expected, {}]
+
+
+def test_a_literal_error_in_a_task_output_keeps_its_spelling():
+    body = (
+        f'try:\n    try:\n        {NOTIFY}\n        raise Expired("late")\n'
+        '    except Declined:\n        return "inner"\n'
+        'except Expired as e:\n    return "outer " + str(e)'
+    )
+    assert states(body)["publish"]["Output"] == (
+        "{% 'outer ' & " + '{"Error": "Expired", "Cause": "late"}.Cause %}'
+    )
+    assert run(body, {}, {"publish": lambda arguments: {}}) == "outer late"
 
 
 @pytest.mark.parametrize(

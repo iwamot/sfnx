@@ -3347,7 +3347,11 @@ class Translator:
         if target is not None:
             name = f"{name} {target}"
         self.task = StateCall(node, name, state, retry_option(node))
-        return expression("$states.result", type=called.result)
+        # A successful call has a JSON result, including null. Reading that
+        # result itself cannot fail; reading a field of it still may.
+        return expression(
+            "$states.result", type=called.result, defined=True, total=True
+        )
 
     def admit(self, node: ast.Call, function: str, kind: str) -> None:
         """Whether a call that makes a state can be here."""
@@ -3388,7 +3392,7 @@ class Translator:
             self.accepts_task = True
         name = "parallel" if function == "parallel" else "map"
         self.task = StateCall(node, name, state, retry_option(node))
-        return expression("$states.result", type=result)
+        return expression("$states.result", type=result, defined=True, total=True)
 
     def task_arguments(
         self,
