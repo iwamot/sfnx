@@ -4,10 +4,12 @@ import pytest
 
 from sfnx.syntax import (
     EvaluationCount,
+    Place,
     Strictness,
     UndefinedPropagation,
     always_read,
     atomic,
+    builds,
     changes,
     constant,
     evaluates,
@@ -21,6 +23,7 @@ from sfnx.syntax import (
     path_alone,
     propagation,
     reads_context,
+    reads_of,
     reads_own_context,
     reads_own_states,
     reads_state_name,
@@ -236,6 +239,58 @@ def test_shapes(code, lone, path, operand):
 )
 def test_looser_than_and(code, loose):
     assert looser_than_and(code) == loose
+
+
+@pytest.mark.parametrize(
+    "code, found",
+    [
+        # The one item of an array written around it holds the brackets.
+        ("[$m]", [(0, 4, "m", Place.ITEM)]),
+        ("$count([[$m]][0])", [(8, 12, "m", Place.ITEM)]),
+        (
+            "$type($m) = 'array' ? [[$m]] : $m",
+            [
+                (6, 8, "m", Place.OPERAND),
+                (23, 27, "m", Place.ITEM),
+                (31, 33, "m", Place.OPERAND),
+            ],
+        ),
+        ("$string($m) & $n", [(8, 10, "m", Place.OPERAND)]),
+        # An item among others merges the items of an array alike.
+        ("[$m, 1]", [(1, 3, "m", Place.OTHER)]),
+        # A step or a filter would follow a value written in its place.
+        ("$m.a", [(0, 2, "m", Place.OTHER)]),
+        ("$m[0]", [(0, 2, "m", Place.OTHER)]),
+        ("[$m[0]]", [(1, 3, "m", Place.OTHER)]),
+        ("$m{'a': 1}", [(0, 2, "m", Place.OTHER)]),
+        ("$x.$m", [(3, 5, "m", Place.OTHER)]),
+        ("$mm + $m", [(6, 8, "m", Place.OPERAND)]),
+        # A string or a comment that spells the name does not read it.
+        ("'$m' & $m", [(7, 9, "m", Place.OPERAND)]),
+        ("$m /* $m */ & ''", [(0, 2, "m", Place.OPERAND)]),
+    ],
+)
+def test_where_code_reads_a_variable(code, found):
+    assert reads_of(code, {"m"}) == found
+
+
+def test_code_the_parser_cannot_read_has_no_reads():
+    assert reads_of("[$m", {"m"}) is None
+
+
+@pytest.mark.parametrize(
+    "code, built",
+    [
+        ("[1, $a]", True),
+        ("{'a': $a}", True),
+        ("[1, 2][0]", False),
+        ("$a", False),
+        ("($a)", False),
+        ("[1", False),
+    ],
+)
+def test_what_builds_an_array_or_an_object(code, built):
+    assert builds(code) == built
 
 
 @pytest.mark.parametrize(

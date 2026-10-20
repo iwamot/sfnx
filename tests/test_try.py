@@ -1016,6 +1016,40 @@ def test_an_object_or_array_of_the_result_is_returned_by_the_task(
         assert asl.run(after, {}, {"r": answer}) == result
 
 
+@pytest.mark.parametrize(
+    "use, output, expected",
+    [
+        ("str(m)", "$string([$states.result, 3])", "[5,3]"),
+        ("str([m])", "$string([[$states.result, 3]])", "[[5,3]]"),
+        ("len([m][0])", "$count(([[$states.result, 3]])[0])", 2),
+    ],
+)
+def test_a_list_of_the_result_reads_as_its_array_in_the_task_output(
+    use, output, expected
+):
+    """The list goes in the Task's Output as the array that builds it, as it
+    is written where the return reads it as an operand, and in place of the
+    array written around it to keep its items."""
+    body = f'try:\n    r = {CHARGE}\n    m = [r, 3]\nexcept Declined:\n    return "caught"\nreturn {use}'
+    assert states(body)["r"]["Output"] == "{% " + output + " %}"
+    for definition in unoptimized_and_optimized(body):
+        assert asl.run(definition, {}, {"r": lambda arguments: 5}) == expected
+
+
+def test_a_name_a_comment_spells_is_not_read_in_place_of_the_value():
+    body = (
+        f"try:\n    r = {CHARGE}\nexcept Declined:\n    return None\n"
+        "return jsonata(\"$v /* $r */ & ''\", v=r)"
+    )
+    preamble = "from sfnx import jsonata\n" + CLASSES
+    (compiled,) = compile_source(source(body, preamble)).values()
+    # The comment stays as it is written.
+    assert compiled["States"]["r"]["Output"] == (
+        "{% ($v := $states.result; $v /* $r */ & '') %}"
+    )
+    assert asl.run(compiled, {}, {"r": lambda arguments: "paid"}) == "paid"
+
+
 @pytest.mark.parametrize("use", ["x", "str(x)", "len(x)"])
 def test_an_object_with_a_value_that_may_be_undefined_keeps_the_return(use):
     """JSONata leaves an undefined value out of an object where the Assign's

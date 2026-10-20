@@ -5,7 +5,7 @@ one the expression reads or binds."""
 import json
 import math
 import re
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from functools import cache
@@ -153,6 +153,76 @@ def atomic(code: str) -> bool:
     if tree.type == "number":
         return not code.lstrip().startswith("-")
     return tree.type in {"variable", "string", "value", "function", "block"}
+
+
+class Place(Enum):
+    """Where code reads a variable, for a value written in its place."""
+
+    # The one item of an array written around it, [$name]: the array holds
+    # the items of an array value, as JSONata merges them.
+    ITEM = "item"
+    # An operand alone, with no step or filter after it.
+    OPERAND = "operand"
+    # An item among others, a step of a path, or a read with filters.
+    OTHER = "other"
+
+
+def reads_of(
+    code: str, names: Collection[str]
+) -> list[tuple[int, int, str, Place]] | None:
+    """Each read of a variable of the names in the code, in the order of its
+    text: where it starts and ends, the brackets around it for an item, its
+    name and where it is; a name a string or a comment spells is no read.
+    None where the parser cannot read the code."""
+    tree = tree_of(code)
+    if tree is None:
+        return None
+    places: dict[int, tuple[int, int, Place]] = {}
+    for node in nodes(tree):
+        if node.type == "path":
+            assert node.steps is not None
+            for step in node.steps:
+                places[id(step)] = (0, 0, Place.OTHER)
+        elif node.type == "unary" and node.value == "[" and node.expressions:
+            for item in node.expressions:
+                places.setdefault(id(item), (0, 0, Place.OTHER))
+            if len(node.expressions) != 1:
+                continue
+            item = node.expressions[0]
+            start, end = node.position - 1, item.position + 1
+            if item.type == "variable" and code[start:end] == f"[${item.value}]":
+                places[id(item)] = (start, end, Place.ITEM)
+    found: dict[int, tuple[int, int, str, Place]] = {}
+    for node in nodes(tree):
+        if node.type != "variable" or text(node) not in names:
+            continue
+        name = text(node)
+        start, end, place = places.get(id(node), (0, 0, Place.OPERAND))
+        if place is not Place.ITEM:
+            end = node.position
+            start = end - len(name) - 1
+        if grouped(node):
+            place = Place.OTHER
+        found[id(node)] = (start, end, name, place)
+    return sorted(found.values())
+
+
+def grouped(node: Parser.Symbol) -> bool:
+    """Whether a node carries filters, @ and # bindings, or a grouping of its
+    own, which a value written in its place would take."""
+    return filtered(node) or node.group is not None
+
+
+def builds(code: str) -> bool:
+    """Whether the code is an array or an object it builds, with nothing
+    after it."""
+    tree = tree_of(code)
+    return (
+        tree is not None
+        and tree.type == "unary"
+        and tree.value in {"[", "{"}
+        and not grouped(tree)
+    )
 
 
 def looser_than_and(code: str) -> bool:
