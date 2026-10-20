@@ -2031,7 +2031,6 @@ class Scope:
         definition = scope.graph.definition()
         if scope.optimizing:
             optimize(definition, scope)
-            checked(definition, scope.checking)
         docstring = ast.get_docstring(function)
         if docstring:
             definition = {"Comment": docstring, **definition}
@@ -5876,7 +5875,7 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
     can in one go, and the first round of a loop is taken once, so the
     rounds end. Where the compile checks the passes, the assignments each
     expression reads are noted first, so that misread can tell where a pass
-    made one read another."""
+    made one read another, and the reads are checked after each pass."""
     assert not loose_expressions(definition)
     # Each state knows the try bodies it is in, which narrow and
     # fold_into_catching_tasks read.
@@ -5886,24 +5885,54 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
         note_reads(definition)
     rounds = Rounds()
     enclosing = scope.enclosing
-    while True:
+    passes: list[tuple[FunctionType, tuple[object, ...]]] = [
+        (fold_constants, ()),
+        (thread_choices, (None, enclosing)),
+        (drop_dead_assignments, ()),
+        (fold_into_catching_tasks, (enclosing,)),
+        (fold_start, (enclosing,)),
+        (spread_passes, (enclosing,)),
+        (thread_choices, (rounds, enclosing)),
+        (merge_choices, (enclosing,)),
+        (take_in_choices, (rounds, enclosing)),
+        (share_states, (enclosing,)),
+        (return_in_place_of_passes, ()),
+        (end_before_returns, ()),
+    ]
+    for number in itertools.count(1):
         before = copy.deepcopy(definition)
-        traced(fold_constants, definition)
-        traced(thread_choices, definition, None, enclosing)
-        traced(drop_dead_assignments, definition)
-        traced(fold_into_catching_tasks, definition, enclosing)
-        traced(fold_start, definition, enclosing)
-        traced(spread_passes, definition, enclosing)
-        traced(thread_choices, definition, rounds, enclosing)
-        traced(merge_choices, definition, enclosing)
-        traced(take_in_choices, definition, rounds, enclosing)
-        traced(share_states, definition, enclosing)
-        traced(return_in_place_of_passes, definition)
-        traced(end_before_returns, definition)
+        run_round(definition, passes, number, scope.checking)
         # A round that writes the same definition changes nothing, though it
         # may hold an Expr where a template was.
         if emitted(definition) == emitted(before):
             return
+
+
+def run_round(
+    definition: dict[str, object],
+    passes: list[tuple[FunctionType, tuple[object, ...]]],
+    number: int,
+    checking: bool,
+) -> None:
+    """One round of passes over a definition, each run as traced runs it.
+    Where the compile checks the passes, the reads misread finds fail the
+    compile right after the pass that made them, which the failure names
+    with the round and the states the pass changed: a later pass may move
+    the read, or write it again without its note, which misread does not
+    judge. Otherwise nothing more is done."""
+    for move, args in passes:
+        if not checking:
+            traced(move, definition, *args)
+            continue
+        start, before = definition["StartAt"], emitted(definition["States"])
+        traced(move, definition, *args)
+        found = misread(definition)
+        if found:
+            changes = changes_of(start, before, definition)
+            raise AssertionError(
+                f"{move.__name__} in round {number}:\n"
+                + "\n".join([*found, "changed:", *changes])
+            )
 
 
 # The assignment a variable holds where a scope starts, which no Assign of
@@ -6111,13 +6140,6 @@ def miscaught(
     return found
 
 
-def checked(definition: dict[str, object], checking: bool) -> None:
-    """Where checking, fail on each read misread finds."""
-    if checking:
-        found = misread(definition)
-        assert not found, "\n".join(found)
-
-
 # Each pass's changes to a definition, at DEBUG, for whoever follows how the
 # passes reach a definition: logging.getLogger("sfnx.passes").
 PASSES = logging.getLogger("sfnx.passes")
@@ -6133,11 +6155,21 @@ def traced(step: FunctionType, definition: dict[str, object], *args: object) -> 
         return
     start, before = definition["StartAt"], emitted(definition["States"])
     step(definition, *args)
+    changes = changes_of(start, before, definition)
+    if changes:
+        PASSES.debug("%s\n%s", step.__name__, "\n".join(changes))
+
+
+def changes_of(
+    start: object, before: object, definition: dict[str, object]
+) -> list[str]:
+    """What a pass changed in a definition whose start and States, written
+    out, were start and before: the start it moved, as a pass that folds or
+    drops the first state does, then the states changed_states gives."""
     changes = changed_states(before, emitted(definition["States"]))
     if definition["StartAt"] != start:
         changes.insert(0, f"StartAt: {start} -> {definition['StartAt']}")
-    if changes:
-        PASSES.debug("%s\n%s", step.__name__, "\n".join(changes))
+    return changes
 
 
 def changed_states(before: object, after: object) -> list[str]:
@@ -6252,7 +6284,6 @@ def compile_machine(
     definition = graph.definition()
     if optimizing:
         optimize(definition, scope)
-        checked(definition, checking)
     definition = emitted(definition)
     assert isinstance(definition, dict)
     rename_states(definition, graph.taken)
