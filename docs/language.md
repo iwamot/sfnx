@@ -2,7 +2,7 @@
 
 sfnx accepts the part of Python that has a counterpart in ASL and whose meaning JSONata can express. This page lists what that part is and what it compiles to. The reasons behind the decisions, and the Step Functions behavior they rely on, are in [design.md](design.md).
 
-The generated ASL is the contract: sfnx writes what someone would write in ASL for what the source intends, rather than reproducing every detail of Python. A module is still ordinary Python that imports and runs, and where the two would disagree, [Where results differ from Python](#where-results-differ-from-python) lists what to expect.
+The generated ASL is the contract: sfnx writes what someone would write in ASL for what the source intends, rather than reproducing every detail of Python. A module is still ordinary Python that imports, but calling the machine's function runs it as Python, not as the definition ([At run time](#at-run-time)); where the definition's results would disagree with Python's, [Where results differ from Python](#where-results-differ-from-python) lists what to expect.
 
 ## The machine
 
