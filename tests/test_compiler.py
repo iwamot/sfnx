@@ -372,6 +372,49 @@ def test_an_operation_on_other_values_stays_an_expression(value):
     assert isinstance(output[0], str) and output[0].startswith("{%")
 
 
+@pytest.mark.parametrize(
+    "body, output",
+    [
+        ('x: str = input["x"]\nreturn (x + "a") + "b"', "{% $x & 'ab' %}"),
+        ('x: str = input["x"]\nreturn f"{x}a" + "b" + "c"', "{% $x & 'abc' %}"),
+        # The deployment would fill in a ${X} the texts spell joined.
+        ('x: str = input["x"]\nreturn x + "a$" + "{X}"', "{% $x & 'a$' & '{X}' %}"),
+        ('return "a$" + "{X}"', "{% 'a$' & '{X}' %}"),
+    ],
+)
+def test_text_written_in_the_source_joins_the_text_before_it(body, output):
+    definition = compile_one(machine(body))
+    assert definition["States"]["return"]["Output"] == output
+
+
+def test_text_joined_to_a_jsonata_expression_is_text():
+    source = "from sfnx import jsonata\n" + machine(
+        "return len(jsonata(\"'x' & 'a'\") + \"b\")"
+    )
+    definition = compile_one(source)
+    assert definition["States"]["return"]["Output"] == "{% $length('x' & 'ab') %}"
+    assert asl.run(definition, {}) == 3
+
+
+def test_returns_that_join_the_same_text_share_their_succeed():
+    body = (
+        'x: str = input["x"]\nif input["flag"]:\n    return (x + "a") + "b"\n'
+        'return x + "ab"'
+    )
+    source = machine(body)
+    definitions_of = [
+        next(iter(definitions(source, "<test>", False, optimizing).values()))
+        for optimizing in (False, True)
+    ]
+    assert [s["Type"] for s in definitions_of[1]["States"].values()].count(
+        "Succeed"
+    ) == 1
+    for flag in (True, False):
+        execution_input = {"x": "x", "flag": flag}
+        for definition in definitions_of:
+            assert asl.run(definition, execution_input) == "xab"
+
+
 def test_joining_text_cannot_fail_so_it_goes_in_the_return():
     body = 's = input.get("s", "a")\nt = s + "x"\nreturn [t]'
     assert list(compile_one(machine(body))["States"]) == ["return"]
