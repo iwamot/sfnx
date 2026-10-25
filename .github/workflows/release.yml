@@ -32,10 +32,14 @@ jobs:
           allowed-endpoints: >
             api.github.com:443
             files.pythonhosted.org:443
+            fulcio.sigstore.dev:443
             github.com:443
             pypi.org:443
             raw.githubusercontent.com:443
             releases.astral.sh:443
+            rekor.sigstore.dev:443
+            timestamp.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
             upload.pypi.org:443
 
       - uses: iwamot/actions/release-draft@065163b337e28a1bb41683e62e1e481cb15b6493 # v2.10.0
