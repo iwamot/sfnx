@@ -13,5 +13,5 @@ python = "3.15.2"
 
 [task_config]
 includes = [
-  "git::https://github.com/iwamot/mise-tasks.git//.mise/tasks?ref=v3.2.0",
+  "git::https://github.com/iwamot/mise-tasks.git//.mise/tasks?ref=v3.2.1",
 ]
