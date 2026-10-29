@@ -46,7 +46,7 @@ dev = [
     "hypothesis==6.170.12",
     "jsonata-python==0.7.1",
     "pip-licenses==5.5.5",
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "pytest-cov==7.1.0",
 ]
 
