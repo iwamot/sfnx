@@ -286,7 +286,7 @@ def retriers(
                 raise CompileError(
                     f"retrier fields are {', '.join(RETRIER_FIELDS)}", key or value
                 )
-            retrier[field] = retrier_field(field, holds(value), context)
+            retrier[field] = retrier_field(field, holds(value), context, holds)
         if "ErrorEquals" not in retrier:
             raise CompileError(f"a retrier needs ErrorEquals: {EXAMPLE}", element)
         errors = retrier["ErrorEquals"]
@@ -300,14 +300,19 @@ def retriers(
     return result
 
 
-def retrier_field(name: str, node: ast.expr, context: Module) -> object:
+def retrier_field(
+    name: str,
+    node: ast.expr,
+    context: Module,
+    holds: Callable[[ast.expr], ast.expr],
+) -> object:
     if name == "ErrorEquals":
         if not isinstance(node, (ast.List, ast.Tuple)) or not node.elts:
             raise CompileError(
                 "ErrorEquals is a list of exception classes: [Timeout, TaskFailed]",
                 node,
             )
-        return caught(node.elts, context)
+        return caught([holds(element) for element in node.elts], context)
     value = node.value if isinstance(node, ast.Constant) else None
     ranges = {
         "IntervalSeconds": (1, MAX_SECONDS),

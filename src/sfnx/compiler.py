@@ -2447,7 +2447,7 @@ class Scope:
                 )
             arguments = exception.args
             exception = exception.func
-        error = raised(exception, self.module)
+        error = raised(self.translator.holds(exception), self.module)
         handler = self.catcher_of(error)
         if handler is not None:
             self.divert(handler, error, arguments, node)
@@ -2552,7 +2552,7 @@ class Scope:
                 if isinstance(clause.type, ast.Tuple)
                 else [clause.type]
             )
-            errors = caught(types, self.module)
+            errors = caught([self.translator.holds(t) for t in types], self.module)
             if errors == [EVERYTHING] and position != len(node.handlers) - 1:
                 raise CompileError(
                     "except Exception catches every error, so the clauses after "

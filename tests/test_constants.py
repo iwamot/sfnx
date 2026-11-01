@@ -305,3 +305,54 @@ def test_the_module_runs_in_python_and_the_asl_gives_the_same_value():
     assert callable(flow)
     execution_input = {"total": 20.0}
     assert asl.run(compiled, execution_input) == flow(execution_input) == [2.0, 1.0]
+
+
+def test_a_name_holding_an_exception_class_names_its_error():
+    compiled = definition(
+        "OUTAGE = Lambda.ServiceException\n"
+        "AGAIN = OUTAGE\n"
+        "SLOW = Timeout\n"
+        "RETRIES = [{'ErrorEquals': [SLOW], 'MaxAttempts': 2}]",
+        f"""
+        try:
+            return task("{LAMBDA}", {{"FunctionName": "a"}}, retry=RETRIES)
+        except AGAIN:
+            raise OUTAGE()
+        """,
+    )
+    task_state = next(
+        state for state in compiled["States"].values() if state["Type"] == "Task"
+    )
+    assert task_state["Retry"][0]["ErrorEquals"] == ["States.Timeout"]
+    assert task_state["Catch"][0]["ErrorEquals"] == ["Lambda.ServiceException"]
+    fail = next(
+        state for state in compiled["States"].values() if state["Type"] == "Fail"
+    )
+    assert fail["Error"] == "Lambda.ServiceException"
+
+
+def test_a_name_holding_data_does_not_name_an_error():
+    with pytest.raises(CompileError, match="name an exception class here"):
+        definition(
+            'OUTAGE = "outage"',
+            f"""
+            try:
+                return task("{LAMBDA}", {{"FunctionName": "a"}})
+            except OUTAGE:
+                return 1
+            """,
+        )
+
+
+def test_a_name_the_machine_assigns_does_not_read_as_the_class_outside():
+    with pytest.raises(CompileError, match="OUTAGE is not defined"):
+        definition(
+            "OUTAGE = Lambda.ServiceException",
+            f"""
+            OUTAGE = 1
+            try:
+                return task("{LAMBDA}", {{"FunctionName": "a"}})
+            except OUTAGE:
+                return OUTAGE
+            """,
+        )
