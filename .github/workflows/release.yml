@@ -50,17 +50,17 @@ jobs:
             tuf-repo-cdn.sigstore.dev:443
             upload.pypi.org:443
 
-      - uses: iwamot/actions/release-tag@0cc8920c2941f4e51302920bc6f705f3ad2c0608 # v2.13.2
+      - uses: iwamot/actions/release-tag@597ad5f72751d4b28d3540b130dfd69e99274e87 # v2.14.0
         id: release-tag
         with:
           tag: ${{ inputs.tag || '' }}
 
-      - uses: iwamot/actions/release-draft@0cc8920c2941f4e51302920bc6f705f3ad2c0608 # v2.13.2
+      - uses: iwamot/actions/release-draft@597ad5f72751d4b28d3540b130dfd69e99274e87 # v2.14.0
         with:
           tag: ${{ steps.release-tag.outputs.tag }}
-      - uses: iwamot/actions/uv-publish@0cc8920c2941f4e51302920bc6f705f3ad2c0608 # v2.13.2
+      - uses: iwamot/actions/uv-publish@597ad5f72751d4b28d3540b130dfd69e99274e87 # v2.14.0
         with:
           tag: ${{ steps.release-tag.outputs.tag }}
-      - uses: iwamot/actions/release-publish@0cc8920c2941f4e51302920bc6f705f3ad2c0608 # v2.13.2
+      - uses: iwamot/actions/release-publish@597ad5f72751d4b28d3540b130dfd69e99274e87 # v2.14.0
         with:
           tag: ${{ steps.release-tag.outputs.tag }}
