@@ -11,7 +11,7 @@ workflows:
     '.github/workflows/oide.yml': []
     '.github/workflows/release.yml':
         - 'iwamot/actions@3236ea780ac15c4e38173c05b18b0d0ac3679ee2'
-        - 'step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a'
+        - 'step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c'
     '.github/workflows/renovate.yml': []
     '.github/workflows/validate.yml': []
 dependencies:
@@ -46,8 +46,8 @@ dependencies:
             - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
             - 'astral-sh/attest-action@39b6ce43875c196a579e31635b11aa2a2036384a'
             - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
-    'step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a':
-        ref: 'v2.22.4'
-        commit: 'sha1-1d88384fd173af6ecb012dfd0264a306b711241a'
+    'step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c':
+        ref: 'v2.23.0'
+        commit: 'sha1-aebdcf6156ab6691adf63218240e476564a1ed4c'
         owner_id: 88700172
         repo_id: 422287306
