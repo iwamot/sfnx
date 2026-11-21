@@ -5962,11 +5962,11 @@ def optimize(definition: dict[str, object], scope: "Scope") -> None:
         (end_before_returns, ()),
     ]
     for number in itertools.count(1):
-        before = copy.deepcopy(definition)
+        before = snapshot(definition)
         run_round(definition, passes, number, scope.checking)
-        # A round that writes the same definition changes nothing, though it
-        # may hold an Expr where a template was.
-        if emitted(definition) == emitted(before):
+        # Only the emitted definition decides whether another round is
+        # needed; expression types and provenance do not appear in ASL.
+        if emitted(definition) == before:
             return
 
 
@@ -6250,6 +6250,12 @@ def changed_states(before: object, after: object) -> list[str]:
         if now is not None:
             lines.append(f"+ {name}: {json.dumps(now, ensure_ascii=False)}")
     return lines
+
+
+def snapshot(node: object) -> object:
+    """An independent copy of the emitted ASL, including containers inside
+    expression templates, without copying compiler analysis and types."""
+    return copy.deepcopy(emitted(node))
 
 
 def emitted(node: object) -> object:
