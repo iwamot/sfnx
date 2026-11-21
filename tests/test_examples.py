@@ -31,14 +31,6 @@ def definition(name: str) -> dict[str, object]:
     return machine
 
 
-@pytest.mark.parametrize("name", NAMES)
-def test_the_passes_keep_what_each_read_reads(name):
-    """Each variable an expression reads holds, after the passes, a value an
-    assignment gives it that it read before them."""
-    source = (EXAMPLES / f"{name}.py").read_text()
-    definitions(source, name, False, checking=True)
-
-
 class Tasks(Mapping[str, Callable[[object], object]]):
     """Answers each Task by its state name and records the calls; every
     example passes its arguments as a JSON object."""
@@ -83,8 +75,11 @@ def in_turn(*results: object) -> Callable[[object], object]:
 
 @pytest.mark.parametrize("name", NAMES)
 def test_the_committed_definition_is_current(name):
+    """Each pass preserves what expressions read, and the result matches the file."""
+    source = (EXAMPLES / f"{name}.py").read_text()
+    (compiled,) = definitions(source, name, False, checking=True).values()
     expected = (EXAMPLES / f"{name}.asl.json").read_bytes()
-    assert document(definition(name)) == expected, (
+    assert document(compiled) == expected, (
         f"regenerate it: uv run sfnx compile examples/{name}.py"
         f" -o examples/{name}.asl.json"
     )
