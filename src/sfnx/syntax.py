@@ -486,6 +486,49 @@ def part_key(part: str) -> object:
     return evaluated_key(steps, bare=unfiltered(steps[-1]))
 
 
+def opposite_numeric_test(code: str) -> str | None:
+    """Reverse a plain numeric comparison, retaining undefined and failures.
+    Unlike $not, the opposite ordering still gives undefined for a missing
+    value. The original operands and their spelling stay unchanged."""
+    if numeric_test(code) is None:
+        return None
+    tree = tree_of(code)
+    assert tree is not None and isinstance(tree.value, str)
+    opposite = {">": "<=", ">=": "<", "<": ">=", "<=": ">"}[tree.value]
+    start = tree.position - len(tree.value)
+    return code[:start] + opposite + code[tree.position :]
+
+
+@cache
+def numeric_test(code: str) -> tuple[object, str, int | float] | None:
+    """The path, operator and bound of an unmodified plain numeric test."""
+    tree = tree_of(code)
+    if (
+        tree is None
+        or tree.type != "binary"
+        or tree.value not in {">", ">=", "<", "<="}
+    ):
+        return None
+    left, right = tree.lhs, tree.rhs
+    assert left is not None and right is not None
+    if left.type not in {"variable", "path"} or right.type != "number":
+        return None
+    path = left.steps if left.type == "path" else [left]
+    assert path
+    if not named(path[0]) or any(step.type != "name" for step in path[1:]):
+        return None
+    if any(
+        grouped(n) or n.keep_array or n.keep_singleton_array
+        for n in [tree, left, right, *path]
+    ):
+        return None
+    bound = right.value
+    assert isinstance(bound, (int, float)) and isinstance(tree.value, str)
+    if not abs(bound) < EXACT:
+        return None
+    return shape(left), tree.value, bound
+
+
 def stronger_numeric_test(first: str, second: str) -> str | None:
     """The stricter of two same-direction numeric tests of one plain path.
     This identifies the stronger comparison for a defined value; it does
@@ -494,33 +537,10 @@ def stronger_numeric_test(first: str, second: str) -> str | None:
     below the precision limit used for constant folding."""
     tests: list[tuple[object, str, int | float]] = []
     for code in (first, second):
-        tree = tree_of(code)
-        if (
-            tree is None
-            or tree.type != "binary"
-            or tree.value not in {">", ">=", "<", "<="}
-        ):
+        test = numeric_test(code)
+        if test is None:
             return None
-        left, right = tree.lhs, tree.rhs
-        assert left is not None and right is not None
-        if left.type not in {"variable", "path"} or right.type != "number":
-            return None
-        path = left.steps if left.type == "path" else [left]
-        assert path
-        if not named(path[0]) or any(step.type != "name" for step in path[1:]):
-            return None
-        if any(
-            grouped(n) or n.keep_array or n.keep_singleton_array
-            for n in [tree, left, right, *path]
-        ):
-            return None
-        bound = right.value
-        assert isinstance(bound, (int, float))
-        if not abs(bound) < EXACT:
-            return None
-        op = tree.value
-        assert isinstance(op, str)
-        tests.append((shape(left), op, bound))
+        tests.append(test)
     (key, op, bound), (other_key, other_op, other_bound) = tests
     if key != other_key or op[0] != other_op[0]:
         return None
