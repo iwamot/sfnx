@@ -31,6 +31,7 @@ from sfnx.syntax import (
     same_code,
     sensitivity,
     strictness,
+    stronger_numeric_test,
     unsupported_reference,
 )
 
@@ -603,3 +604,51 @@ def test_the_same_code_however_it_is_written():
     assert same_code("$a+1", " ($a + 1) ")
     assert not same_code("$a + 1", "1 + $a")
     assert not same_code("$a +", "$a +")
+
+
+@pytest.mark.parametrize(
+    "first, second, expected",
+    [
+        ("$x > 1", "$x > 2", "$x > 2"),
+        ("$x > 2", "$x >= 1", "$x > 2"),
+        ("$x >= 1", "$x > 1", "$x > 1"),
+        ("$x > 1", "$x >= 1", "$x > 1"),
+        ("$x <= 5", "$x < 3", "$x < 3"),
+        ("$x < 3", "$x <= 3", "$x < 3"),
+        ("$x <= 3", "$x < 3", "$x < 3"),
+        ("$x < -1.5", "$x < -1e-3", "$x < -1.5"),
+        ("$x.a >= 2", "$x.`a` > 2", "$x.`a` > 2"),
+        ("$入力.`a and b` < 2", "$入力.`a and b` < 3", "$入力.`a and b` < 2"),
+    ],
+)
+def test_the_stricter_numeric_condition_is_written_as_it_was(first, second, expected):
+    assert stronger_numeric_test(first, second) == expected
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        ("$x > (", "$x > 2"),
+        ("$x", "$x > 2"),
+        ("$x = 1", "$x > 2"),
+        ("1 > 0", "$x > 2"),
+        ("$x > $n", "$x > 2"),
+        ("$x > '1'", "$x > '2'"),
+        ("$x > 1", "$y > 2"),
+        ("$x > 1", "$x < 3"),
+        ("$random() > 1", "$random() > 2"),
+        ("($x := 1; $x) > 0", "$x > 2"),
+        ("$ > 1", "$ > 2"),
+        ("$x[0] > 1", "$x[0] > 2"),
+        ("$x.a[0] > 1", "$x.a[0] > 2"),
+        ('$x.a{"k":1} > 1', '$x.a{"k":1} > 2'),
+        ("$x.$sum(a) > 1", "$x.$sum(a) > 2"),
+        ("$x[] > 1", "$x > 2"),
+        ("$x.a[] > 1", "$x.a > 2"),
+        ("$x > 1[]", "$x > 2"),
+        ("$x > 9007199254740992", "$x >= 9007199254740993"),
+        ("$x > -9007199254740992", "$x > -9007199254740993"),
+    ],
+)
+def test_other_conditions_keep_both_tests(first, second):
+    assert stronger_numeric_test(first, second) is None
