@@ -86,11 +86,8 @@ SCENARIOS = {
 }
 
 
-def outcome(definition: dict, answers: tuple) -> tuple:
+def outcome(execution: testing.Execution) -> tuple:
     """How a run ends, and every call it makes with its arguments."""
-    execution = testing.run(
-        definition, TERM, tasks_for(*answers), functions={"uuid": lambda: "u"}
-    )
     calls = [(call.resource, call.arguments) for call in execution.calls]
     failed = execution.error is not None
     ended = (execution.error, execution.cause) if failed else execution.output
@@ -99,18 +96,12 @@ def outcome(definition: dict, answers: tuple) -> tuple:
 
 @pytest.mark.parametrize("scenario", SCENARIOS)
 def test_the_example_does_what_the_sample_does(scenario):
-    assert outcome(example(), SCENARIOS[scenario]) == outcome(
-        SAMPLE, SCENARIOS[scenario]
-    )
-
-
-@pytest.mark.parametrize("scenario", SCENARIOS)
-def test_the_example_enters_no_more_states_than_the_sample(scenario):
-    """A Standard workflow is billed per state transition."""
+    """Preserve behavior without more transitions, which Standard workflows bill."""
     functions = {"uuid": lambda: "u"}
     answers = SCENARIOS[scenario]
-    entered = [
-        len(testing.run(d, TERM, tasks_for(*answers), functions=functions).states)
+    actual, reference = (
+        testing.run(d, TERM, tasks_for(*answers), functions=functions)
         for d in (example(), SAMPLE)
-    ]
-    assert entered[0] <= entered[1]
+    )
+    assert outcome(actual) == outcome(reference)
+    assert len(actual.states) <= len(reference.states)
