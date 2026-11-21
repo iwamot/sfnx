@@ -175,14 +175,9 @@ def test_the_keys_of_a_dict_are_what_is_read():
     list it returns."""
     body = 'd: dict = input["d"]\nreturn any(d)'
     every = 'd: dict = input["d"]\nreturn all(d)'
-    assert run(body, {"d": {"": 1}}) is False
-    assert run(body, {"d": {"a": 0}}) is True
-    assert run(body, {"d": {}}) is False
-    assert run(every, {"d": {"a": 1, "": 1}}) is False
-    assert run(every, {"d": {"a": 1, "b": 2}}) is True
     for value in ({"": 1}, {"a": 0}, {}, {"a": 1, "": 1}, {"a": 1, "b": 2}):
-        assert run(body, {"d": value}) == in_python(body, {"d": value})
-        assert run(every, {"d": value}) == in_python(every, {"d": value})
+        assert run(body, {"d": value}) is in_python(body, {"d": value})
+        assert run(every, {"d": value}) is in_python(every, {"d": value})
 
 
 def test_any_stops_at_the_first_item_that_is_true():
@@ -246,20 +241,6 @@ def test_a_list_comprehension_evaluates_every_item():
     with asl.replaced(random=sequence):
         assert asl.run(randomized(body), {}) is True
     assert sequence.calls == 3
-
-
-def test_an_item_past_the_one_that_decides_is_never_evaluated():
-    """The result is decided by the first item, so the second, which would
-    fail, is not read; a list comprehension of the same items fails."""
-    body = 'xs: list = input["xs"]\nreturn any(x - 1 > 0 for x in xs)'
-    assert run(body, {"xs": [2, "a"]}) is True
-    assert in_python(body, {"xs": [2, "a"]}) is True
-    listed = 'xs: list = input["xs"]\nreturn any([x - 1 > 0 for x in xs])'
-    with pytest.raises(asl.Failure) as raised:
-        run(listed, {"xs": [2, "a"]})
-    assert raised.value.error == "States.QueryEvaluationError"
-    with pytest.raises(TypeError):
-        in_python(listed, {"xs": [2, "a"]})
 
 
 def test_a_condition_past_the_one_that_decides_is_never_evaluated():
