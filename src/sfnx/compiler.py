@@ -4166,19 +4166,27 @@ def live_reads(states: dict[str, dict[str, object]]) -> dict[str, set[str]]:
         name: {r for c in expressions_in(state) for r in names_read(c)}
         for name, state in states.items()
     }
-    live: dict[str, set[str]] = {name: set() for name in states}
-    settled = False
-    while not settled:
-        settled = True
-        for name, state in states.items():
-            after = set()
-            for holder, target in ways_out(state):
-                following = live[target] if target is not None else set()
-                after |= following - assigns(holder).keys()
-            found = reads[name] | after
-            if found != live[name]:
-                live[name] = found
-                settled = False
+    live = {name: set(found) for name, found in reads.items()}
+    preceding = leading(states)
+    # Start at the end of the emitted states, where straight-line code's
+    # reads are known first. Only predecessors of a changed state need
+    # another visit, including the ways back around a loop.
+    pending = list(states)
+    queued = set(states)
+    while pending:
+        name = pending.pop()
+        queued.remove(name)
+        after = set()
+        for holder, target in ways_out(states[name]):
+            following = live[target] if target is not None else set()
+            after |= following - assigns(holder).keys()
+        found = reads[name] | after
+        if found != live[name]:
+            live[name] = found
+            for before in preceding.get(name, []):
+                if before not in queued:
+                    pending.append(before)
+                    queued.add(before)
     return live
 
 
@@ -4736,10 +4744,13 @@ def merge_choices(
     assigns, which it would read before it is assigned."""
     states = definition["States"]
     assert isinstance(states, dict)
+    # Merging transfers the second Choice's outgoing transitions to the
+    # first. Every remaining state keeps the same number of incoming
+    # transitions, so the counts stay valid throughout this pass.
+    incoming = {name: len(owners) for name, owners in leading(states).items()}
     merged = True
     while merged:
         merged = False
-        led = leading(states)
         for name, first in states.items():
             second = first.get("Default")
             if (
@@ -4747,7 +4758,7 @@ def merge_choices(
                 or not isinstance(second, str)
                 or states[second]["Type"] != "Choice"
                 or NAMED in states[second]
-                or led[second] != [name]
+                or incoming[second] != 1
             ):
                 continue
             following = states[second]
