@@ -10,7 +10,7 @@ workflows:
     '.github/workflows/dependency-review.yml': []
     '.github/workflows/oide.yml': []
     '.github/workflows/release.yml':
-        - 'iwamot/actions@3236ea780ac15c4e38173c05b18b0d0ac3679ee2'
+        - 'iwamot/actions@36800ea9a4338d93a76da45a27230bce01c59269'
         - 'step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c'
     '.github/workflows/renovate.yml': []
     '.github/workflows/validate.yml': []
@@ -27,9 +27,9 @@ dependencies:
         repo_id: 1101470881
         uses:
             - 'astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7'
-    'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2':
-        ref: 'v10.3.3'
-        commit: 'sha1-68559e99cc807c1eb7e9238fd43a15bba460eec2'
+    'astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d':
+        ref: 'v10.4.0'
+        commit: 'sha1-1db35dd8eee11c5894872e0b383ae6c406cf738d'
         owner_id: 115962839
         repo_id: 846733598
     'astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7':
@@ -37,15 +37,15 @@ dependencies:
         commit: 'sha1-c18668ad3cf93ea998bef934396af7bb5c839dc7'
         owner_id: 115962839
         repo_id: 846733598
-    'iwamot/actions@3236ea780ac15c4e38173c05b18b0d0ac3679ee2':
-        ref: 'v2.16.0'
-        commit: 'sha1-3236ea780ac15c4e38173c05b18b0d0ac3679ee2'
+    'iwamot/actions@36800ea9a4338d93a76da45a27230bce01c59269':
+        ref: 'v2.16.1'
+        commit: 'sha1-36800ea9a4338d93a76da45a27230bce01c59269'
         owner_id: 16149
         repo_id: 1215968540
         uses:
             - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
             - 'astral-sh/attest-action@39b6ce43875c196a579e31635b11aa2a2036384a'
-            - 'astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2'
+            - 'astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d'
     'step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c':
         ref: 'v2.23.0'
         commit: 'sha1-aebdcf6156ab6691adf63218240e476564a1ed4c'
