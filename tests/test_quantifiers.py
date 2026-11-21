@@ -1,30 +1,21 @@
 import textwrap
 
 import pytest
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from sfnx.compiler import compile_source
 from sfnx.diagnostics import CompileError
 from tests import asl, corpus
 
-# The lists the quantifiers are read over: the items $boolean and Python can
-# disagree on, and the pairs that decide a quantifier at the first item, at the
-# second, or at neither.
-LISTS = (
-    [],
-    [0],
-    [1],
-    [[]],
-    [[], []],
-    [None],
-    [""],
-    ["0"],
-    [{}],
-    [{"a": 1}],
-    [0, 1],
-    [1, 0],
-    [0, 0],
-    [1, 1],
-    [None, ""],
+# CPython is an oracle only where the DSL agrees: nonempty nested lists have
+# different truth under $boolean, and booleans compare with 0 differently.
+ITEMS = st.one_of(
+    st.none(),
+    st.integers(-100, 100),
+    st.text(max_size=8),
+    st.just([]),
+    st.dictionaries(st.text(max_size=3), st.integers(-100, 100), max_size=3),
 )
 
 
@@ -150,25 +141,20 @@ def test_spelling(body, code):
     assert output(body) == "{% " + code + " %}"
 
 
-@pytest.mark.parametrize("items", LISTS)
 @pytest.mark.parametrize("name", ["any", "all"])
-def test_the_result_is_the_one_python_gives(name, items):
-    body = f'xs: list = input["xs"]\nreturn {name}(xs)'
-    assert run(body, {"xs": items}) == in_python(body, {"xs": items})
-
-
-@pytest.mark.parametrize("items", LISTS)
-@pytest.mark.parametrize("name", ["any", "all"])
-def test_a_generator_gives_what_python_gives(name, items):
-    body = f'xs: list = input["xs"]\nreturn {name}(x for x in xs)'
-    assert run(body, {"xs": items}) == in_python(body, {"xs": items})
-
-
-@pytest.mark.parametrize("items", LISTS)
-@pytest.mark.parametrize("name", ["any", "all"])
-def test_a_condition_drops_items_as_python_drops_them(name, items):
-    body = f'xs: list = input["xs"]\nreturn {name}(x for x in xs if x != 0)'
-    assert run(body, {"xs": items}) == in_python(body, {"xs": items})
+@pytest.mark.parametrize(
+    "iterable", ["xs", "(x for x in xs)", "(x for x in xs if x != 0)"]
+)
+@settings(max_examples=100, derandomize=True, database=None, deadline=None)
+@example(items=[])
+@example(items=[0, [], [], None, "", {}])
+@example(items=[1, "0", {"a": 1}])
+@example(items=[0, 1])
+@example(items=[1, 0])
+@given(items=st.lists(ITEMS, max_size=10))
+def test_quantifiers_agree_with_python_in_the_shared_domain(name, iterable, items):
+    body = f'xs: list = input["xs"]\nreturn {name}({iterable})'
+    assert run(body, {"xs": items}) is in_python(body, {"xs": items})
 
 
 def test_an_item_is_tested_as_its_type_says():
