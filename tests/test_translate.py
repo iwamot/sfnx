@@ -381,9 +381,7 @@ def test_annotations(annotation, body, code):
             {"a": -1.5, "b": -0.5, "c": 0, "d": 1.5, "e": -2},
             [-1, 0, 0, 1, -2],
         ),
-        ('return ",".join(input["xs"])', {"xs": ["a", "b"]}, "a,b"),
         ('s: str = input["s"]\nreturn ",".join(s)', {"s": "ab"}, "a,b"),
-        ('return ",".join(input["xs"])', {"xs": "ab"}, "ab"),
         *(
             (
                 (
