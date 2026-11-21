@@ -88,6 +88,7 @@ from sfnx.syntax import (
     looser_than_and,
     mentions,
     names_read,
+    opposite_numeric_test,
     path_alone,
     reads_of,
     reads_the_name,
@@ -4834,6 +4835,43 @@ def take_in_choices(
                 if read is None:
                     continue
                 later_rules, later_default, own = read
+                # Put the exit before the continuation: a last rule `a > 0`
+                # into another Choice, with an exit on Default, becomes
+                # `a <= 0` to that exit and continues on Default. Taking in
+                # that Default needs no copy of `a > 0` in every later rule.
+                # Same-path bounds already collapse to one comparison.
+                # Assign, Output and rule comments keep their own route.
+                if (
+                    rule is not first
+                    and index == len(rules) - 1
+                    and rule.keys() <= {"Condition", "Next"}
+                    and not (first.get("Assign") or "Output" in first)
+                    and states[first["Default"]]["Type"] != "Choice"
+                    and not circles(states, target)
+                ):
+                    condition = template_of(rule["Condition"])
+                    if isinstance(condition, str) and condition.startswith("{%"):
+                        opposite = opposite_numeric_test(condition[2:-2].strip())
+                        if opposite is not None and any(
+                            stronger_numeric_test(
+                                condition[2:-2].strip(),
+                                template_code(later["Condition"]),
+                            )
+                            is None
+                            for later in later_rules
+                        ):
+                            rule["Condition"] = composed(
+                                rule["Condition"], opposite, []
+                            )
+                            rule["Next"], first["Default"] = first["Default"], target
+                            passed_rule, passed_default = (
+                                set(rounds.of(rule)),
+                                set(rounds.of(first)),
+                            )
+                            rounds.passed[id(rule)] = (rule, passed_default)
+                            rounds.passed[id(first)] = (first, passed_rule)
+                            taken = True
+                            break
                 narrow(enclosing, states, name, target)
                 if circles(states, target):
                     rounds.taken_in.add((name, target))
