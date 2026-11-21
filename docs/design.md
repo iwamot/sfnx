@@ -203,6 +203,8 @@ JSONata's `and` and `or` evaluate no more once the first side decides (measured;
 
 The rules repeat the transition's `Assign`, which is how a hand-writer who lists the tests in one Choice has to write it, so a Choice that starts a Map processor with many assignments grows by a copy of them for each rule taken in. A Choice that leads back to itself through Choices alone is taken in once into each Choice, as each copy of its rules leads to it again.
 
+When a rule takes in another Choice, its original test remains after the copied rules as their fallback. Two numeric comparisons in the same direction of one plain variable or field path then keep the stricter bound: `$n > 1 and $n >= 2` becomes `$n >= 2`, as a hand-writer tests the bound that decides both. A missing value still fails the Choice before a transition is taken, either in the stricter test or in the original fallback. A standalone conjunction keeps its own handling of undefined. Calls, filters and bindings keep their evaluations, and bounds whose magnitude reaches 2^53 keep both comparisons, as constant folding keeps values past that precision limit.
+
 ### Choices decided by known values
 
 Python has no goto, so a path that should continue elsewhere, such as a saga's compensation for the stage that failed, is written with a flag and the `if` statements that test it. The value a flag holds on each path is written in the source, so where every way into a Choice gives the flag the same such value, the test is decided there and that way leads where the test sends it (corpus: `catch-sets-the-flag-a-choice-tests`), as the Catch of a hand-written saga leads to its compensation.

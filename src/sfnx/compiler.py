@@ -93,6 +93,7 @@ from sfnx.syntax import (
     reads_the_name,
     sensitivity,
     strictness,
+    stronger_numeric_test,
 )
 from sfnx.translate import (
     StateCall,
@@ -4862,7 +4863,12 @@ def take_in_choices(
                 else:
                     test = rule["Condition"]
                     tested = [
-                        {**way, "Condition": both(test, way["Condition"])}
+                        {
+                            **way,
+                            "Condition": both(
+                                test, way["Condition"], first_follows=True
+                            ),
+                        }
                         for way in ways
                     ]
                     for way, old in zip(tested, ways, strict=True):
@@ -5056,13 +5062,17 @@ def grouped(code: str) -> str:
     return f"({code})"
 
 
-def both(first: object, second: object) -> object:
+def both(first: object, second: object, *, first_follows: bool = False) -> object:
     """The test of two Condition templates, the first before the second, each
     in parentheses where it has an operator that binds looser than `and`. A
     Condition written as true or false, as `if False:` is, decides without
     the second where it is first, as `and` evaluates no more once one side
     is false, and is written into the test where it is second, after the
-    first, which may fail."""
+    first, which may fail.
+    Where first_follows is set, the first test is also the fallback rule
+    after the copied rules. Same-path numeric bounds can then keep the
+    stronger test: undefined still fails the Choice, either here or in
+    that fallback, before any way is taken."""
     if isinstance(template_of(first), bool):
         return second if template_of(first) else False
     tests = []
@@ -5074,7 +5084,10 @@ def both(first: object, second: object) -> object:
         code = condition[2:-2].strip()
         tests.append(f"({code})" if looser_than_and(code) else code)
     parts = [c for c in (first, second) if isinstance(c, Expr)]
-    found = composed(None, " and ".join(tests), [])
+    code = (stronger_numeric_test(*tests) if first_follows else None) or " and ".join(
+        tests
+    )
+    found = composed(None, code, [])
     return replace(
         found,
         reads=frozenset().union(*(c.reads for c in parts)),

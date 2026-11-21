@@ -12,6 +12,22 @@ What the tests guarantee, and how to check the generated definitions against Ste
 
 The first two need no credentials and pass or fail on their own. They show that the compiler and the interpreter agree with Python where a test or a case compares them, not that Step Functions does: the interpreter, `sfnx.testing`, is jsonata-python plus the behaviors `docs/design.md` records as measured. The third runs the definitions where they will run, and is the check to repeat when the translator changes what an expression means, or when a new Step Functions behavior is measured.
 
+## Inspecting optimization tradeoffs
+
+Run the fixed corpus, the examples and scaling workloads locally:
+
+```bash
+uv run python -m tests.optimization --out /tmp/sfnx-optimization.json --repeats 5
+```
+
+`--group corpus examples scaling` selects groups, and `--select ID ...` selects individual workloads. The table and JSON compare the definition with the passes disabled and enabled: total states including branches and Map processors, Choice rules, compact UTF-8 ASL bytes, the longest JSONata expression, and median compilation time. Timings are warmed in-process samples in alternating order; they exclude process startup and execution of the definition.
+
+Corpus and executable scaling cases are judged against their stated DSL expectations. Examples and task-chain workloads are compiled without executing their Tasks. The unoptimized definition is a cost baseline, not a semantic reference: some spellings rely on the passes for their documented meaning, including catching a failing expression inside a `try`. Each executable result says whether it meets the expectation, so a difference from that baseline is visible without making the baseline the contract.
+
+`entered_states` counts local interpreter entries, including nested scopes. A retry does not add another entry for its parent state, though branches or Map processors may be entered again. These counts do not measure AWS execution time or billing.
+
+The JSON includes the source, input, expectation and generated definitions for inspection. The measurements carry no pass/fail threshold for speed, size or state count. A longer expression or copied assignment may save a state, while keeping states separate may make a workflow easier to follow. The longest expression is an inspection aid, not a readability score. The DSL meaning and explicitly named states remain the contract.
+
 ## What each property rests on
 
 Each property below lists what supports it, what those checks cannot show, and where the property is specified. How often a check runs is given with it: **every run** is every `validate.sh`, **on request** is `tests/aws_corpus.py` in Step Functions, and **recorded** is a measurement made once and written in [design.md](design.md). A limit of a check says what it does not show, not that the property fails there; where [docs/language.md](language.md) describes a result other than Python's, with a spelling or in [the differences](language.md#where-results-differ-from-python), the checks that compare with CPython keep to values it does not cover.
