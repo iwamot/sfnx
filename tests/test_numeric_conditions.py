@@ -2,7 +2,7 @@
 
 import textwrap
 
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from sfnx import testing
@@ -55,6 +55,8 @@ def agrees(before, after, data):
 
 
 @settings(max_examples=500, derandomize=True, database=None, deadline=None)
+@example(a=0, b=0, lower=False, strict_a=False, strict_b=True, value=0, present=True)
+@example(a=0, b=0, lower=False, strict_a=True, strict_b=False, value=0, present=True)
 @given(
     BOUNDS, BOUNDS, st.booleans(), st.booleans(), st.booleans(), VALUES, st.booleans()
 )
