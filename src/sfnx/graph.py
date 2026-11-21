@@ -84,14 +84,20 @@ class Graph:
         return {"StartAt": self.start, "States": self.states}
 
 
-def serial_name(prefix: str, base: str, names: set[str]) -> str:
+def serial_name(
+    prefix: str,
+    base: str,
+    names: set[str],
+    serials: dict[str, int] | None = None,
+) -> str:
     """The name for a state of a base: prefix and base, or with the least
     serial from 2 that no name in names has. A base of an action and what it
     calls, `putItem orders`, which no variable name can be as it holds a
-    space, gives way to the action alone where the name would be too long."""
-    name = serialed(prefix, base, names)
+    space, gives way to the action alone where the name would be too long.
+    serials resumes searches only where names grows without removals."""
+    name = serialed(prefix, base, names, serials)
     if len(name) > MAX_NAME and " " in base:
-        name = serialed(prefix, base.split(" ", 1)[0], names)
+        name = serialed(prefix, base.split(" ", 1)[0], names, serials)
     if len(name) > MAX_NAME:
         raise ValueError(
             f"state name {name} is longer than {MAX_NAME} characters; "
@@ -100,12 +106,22 @@ def serial_name(prefix: str, base: str, names: set[str]) -> str:
     return name
 
 
-def serialed(prefix: str, base: str, names: set[str]) -> str:
-    serial = 1
-    name = prefix + base
+def serialed(
+    prefix: str,
+    base: str,
+    names: set[str],
+    serials: dict[str, int] | None = None,
+) -> str:
+    """The first free name. A cursor can resume a search where names only
+    grow; callers that may remove names search from the beginning."""
+    stem = prefix + base
+    serial = 1 if serials is None else serials.get(stem, 1)
+    name = stem if serial == 1 else f"{stem}_{serial}"
     while name in names:
         serial += 1
-        name = f"{prefix}{base}_{serial}"
+        name = f"{stem}_{serial}"
+    if serials is not None:
+        serials[stem] = serial
     return name
 
 
@@ -115,11 +131,14 @@ def renaming(taken: dict[str, tuple[str, str]], kept: set[str]) -> dict[str, str
     the names they would have had had the others never taken one. The new
     names are all different, and none changes where no state is gone."""
     names: set[str] = set()
+    # Only kept names are added here. Every skipped serial stays occupied,
+    # so later searches of the same stem can resume where the last stopped.
+    serials: dict[str, int] = {}
     found = {}
     for name, (prefix, base) in taken.items():
         if name not in kept:
             continue
-        new = serial_name(prefix, base, names)
+        new = serial_name(prefix, base, names, serials)
         names.add(new)
         if new != name:
             found[name] = new
