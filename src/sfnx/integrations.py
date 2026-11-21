@@ -109,6 +109,7 @@ class Integration:
     arguments: Type | None = None
 
 
+@cache
 def integration(resource: str) -> Integration:
     if "${" in resource:
         # A definition substitution, filled in when the machine is deployed.
