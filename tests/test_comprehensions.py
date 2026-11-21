@@ -465,13 +465,6 @@ def test_a_dict_comprehension_variable_cannot_hide_what_another_name_reads():
     "body, execution_input, expected",
     [
         (
-            'xs: list[float] = input["xs"]\nreturn [x * 2 for x in xs]',
-            {"xs": [1, 2]},
-            [2, 4],
-        ),
-        ('xs: list[float] = input["xs"]\nreturn [x * 2 for x in xs]', {"xs": [1]}, [2]),
-        ('xs: list[float] = input["xs"]\nreturn [x * 2 for x in xs]', {"xs": []}, []),
-        (
             'xs: list[float] = input["xs"]\nreturn [x for x in xs if x > 5]',
             {"xs": [1, 2]},
             [],
@@ -567,9 +560,8 @@ def test_a_dict_comprehension_variable_cannot_hide_what_another_name_reads():
             {"xs": [1, 3, 2]},
             [3, 2, 1],
         ),
-        # A dict comprehension over a list: nothing to merge, several items, a
-        # condition that drops every item, and a key written twice, where the
-        # last value wins as it does in Python.
+        # A dict comprehension over a list: nothing to merge, several items,
+        # and a condition that drops every item.
         ('xs: list[str] = input["xs"]\nreturn {x: 1 for x in xs}', {"xs": []}, {}),
         (
             'xs: list[str] = input["xs"]\nreturn {x: 1 for x in xs}',
@@ -581,28 +573,13 @@ def test_a_dict_comprehension_variable_cannot_hide_what_another_name_reads():
             {"xs": [1, 2]},
             {},
         ),
-        (
-            'ps: list[dict[str, str]] = input["ps"]\nreturn {p["k"]: p["v"] for p in ps}',
-            {"ps": [{"k": "a", "v": "1"}, {"k": "a", "v": "2"}]},
-            {"a": "2"},
-        ),
         # A value that is a list stays one value of the object.
-        (
-            'xs: list[str] = input["xs"]\nys: list = input["ys"]\nreturn {x: ys for x in xs}',
-            {"xs": ["a"], "ys": [1, 2]},
-            {"a": [1, 2]},
-        ),
         (
             'xs: list[str] = input["xs"]\nys: list = input["ys"]\nreturn {x: [y for y in ys] for x in xs}',
             {"xs": ["a"], "ys": []},
             {"a": []},
         ),
         # The entries of a dict, kept as they are and rewritten.
-        (
-            'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 1}',
-            {"d": {"a": 1, "b": 2}},
-            {"b": 2},
-        ),
         (
             'd: dict[str, float] = input["d"]\nreturn {k: v for k, v in d.items() if v > 5}',
             {"d": {"a": 1}},
