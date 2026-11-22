@@ -4431,6 +4431,21 @@ def reached(states: dict[str, dict[str, object]], starts: list[str]) -> set[str]
     return found
 
 
+def reached_without(
+    states: dict[str, dict[str, object]], start: str, avoided: str
+) -> set[str]:
+    """The states the transitions lead to from start without passing through
+    avoided, start included."""
+    found = {start}
+    pending = [start]
+    while pending:
+        for _, _, target in links(states[pending.pop()]):
+            if target != avoided and target not in found:
+                found.add(target)
+                pending.append(target)
+    return found
+
+
 def redirect(states: dict[str, dict[str, object]], renamed: dict[str, str]) -> None:
     """Each transition to a state renamed leads to the state it is renamed
     to."""
@@ -4466,7 +4481,10 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
     again or the execution, the branch or the processor ends, as a
     hand-writer assigns only what is read: a missing key its value reads
     fails nowhere then, which the table of differences lists. A Pass left
-    with nothing to do goes, each way to it leading on to its Next. Every
+    with nothing to do goes, each way to it leading on to its Next. Its
+    comment goes on to that Next where every way there passes through the
+    Pass, and goes with the Pass otherwise, as on the Next it would also
+    describe the ways that never run the assignment it is about. Every
     expression of a state, those of its branches or its processor included,
     reads the variables it names; a definition that calls $eval, which reads
     variables by names not written out, keeps every assignment. One whose
@@ -4513,6 +4531,14 @@ def drop_dead_assignments(definition: dict[str, object]) -> None:
                 or following == name
             ):
                 continue
+            start = definition["StartAt"]
+            assert isinstance(start, str)
+            if start == name or following not in reached_without(states, start, name):
+                comment = joined_comments(
+                    state.get("Comment"), states[following].get("Comment")
+                )
+                if comment is not None:
+                    states[following]["Comment"] = comment
             redirect(states, {name: following})
             if definition["StartAt"] == name:
                 definition["StartAt"] = following
