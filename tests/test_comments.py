@@ -1,8 +1,9 @@
+import json
 import textwrap
 
 import pytest
 
-from sfnx.compiler import compile_source
+from sfnx.compiler import compile_source, definitions
 from sfnx.module import comments
 
 LAMBDA = "arn:aws:states:::lambda:invoke"
@@ -149,3 +150,79 @@ def test_a_string_on_its_own_line_passes_its_comment_on():
         '# the total\n"a string used as a note"\ntotal = input["a"] + 1\nreturn total'
     )
     assert remarks(definition(body)["States"])["return"] == "the total"
+
+
+ASSIGNED_BEFORE_A_LOOP = f"""\
+# about a
+x = input["a"]
+# the loop
+while input["again"]:
+    task("{LAMBDA}", {{"FunctionName": "step"}})
+return 2"""
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ('# about a\nx = input["a"]\nreturn 2', {"return": "about a"}),
+        (
+            '# about a\nx = input["a"]\n# about b\ny = input["b"]\nreturn 2',
+            {"return": "about a\nabout b"},
+        ),
+        # The way back into the loop passes through the assignment first too,
+        # so the loop takes its comment.
+        (
+            ASSIGNED_BEFORE_A_LOOP,
+            {"while": "about a\nthe loop", "invoke step": None, "return": None},
+        ),
+    ],
+)
+def test_an_assignment_nothing_reads_passes_its_comment_on(body, expected):
+    assert remarks(definition(body)["States"]) == expected
+
+
+TRY_SUCCESS = f"""\
+try:
+    task("{LAMBDA}", {{"FunctionName": "risky"}})
+    # about a
+    x = input["a"]
+except Exception:
+    task("{LAMBDA}", {{"FunctionName": "recover"}})
+# the answer
+return 2"""
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        TRY_SUCCESS,
+        "def left():\n"
+        + textwrap.indent(TRY_SUCCESS, "    ")
+        + "\n\nreturn parallel(left)",
+        "def each(item):\n"
+        + textwrap.indent(TRY_SUCCESS.replace('input["a"]', 'item["a"]'), "    ")
+        + '\n\nreturn inline_map(each, input["items"])',
+    ],
+)
+def test_a_comment_no_state_after_it_belongs_to_alone_goes_with_it(body):
+    """The recovery leads to the return without the assignment, so the
+    return would describe it on that way too."""
+    compiled = json.dumps(definition(body))
+    assert "about a" not in compiled
+    assert "the answer" in compiled
+
+
+def test_comments_do_not_keep_a_pass_whose_comment_goes():
+    """Source locations give every state a Comment, which keeps no more
+    states than the definition has without them."""
+    body = TRY_SUCCESS.replace("    # about a\n", "").replace(
+        "# the answer\nreturn 2",
+        f'y = task("{LAMBDA}", {{"FunctionName": "named"}})  # state: Named\nreturn 2',
+    )
+    source = (
+        "from sfnx import state_machine, task\n\n\n@state_machine\ndef flow(input):\n"
+        + textwrap.indent(body, "    ")
+    )
+    (plain,) = definitions(source, "flow.py", located=False).values()
+    (located,) = definitions(source, "flow.py", located=True).values()
+    assert list(located["States"]) == list(plain["States"])
