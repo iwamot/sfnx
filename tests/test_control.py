@@ -2001,6 +2001,14 @@ def test_a_definition_that_calls_eval_keeps_every_assignment():
     assert dropped(states)["States"]["w"]["Assign"] == {"x": 1}
 
 
+def test_a_pass_left_with_nothing_to_do_that_leads_to_itself_stays():
+    """Its Next is itself, so there is nowhere else to lead the ways into
+    it: the Pass is the loop."""
+    compiled = definition("while True:\n    x = 1")
+    assert compiled["StartAt"] == "x"
+    assert compiled["States"] == {"x": {"Type": "Pass", "Next": "x"}}
+
+
 def test_a_start_decided_by_a_test_written_out_leads_where_it_goes():
     """1 > 2 is false as written: nothing is assigned, so the definition
     starts at the Wait the Default leads to."""
