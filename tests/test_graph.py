@@ -22,7 +22,7 @@ def test_a_name_taken_again_moves_to_the_end_of_what_is_taken():
         st.tuples(
             st.sampled_from(("", "f.", "f", "g.", "入力.")),
             st.sampled_from(
-                ("x", "x_2", "x_3", "fx", "f.x", "return", "send " + "a" * 80)
+                ("x", "X", "x_2", "x_3", "fx", "f.x", "return", "send " + "a" * 80)
             ),
             st.booleans(),
         ),
