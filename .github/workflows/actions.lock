@@ -10,7 +10,7 @@ workflows:
     '.github/workflows/dependency-review.yml': []
     '.github/workflows/oide.yml': []
     '.github/workflows/release.yml':
-        - 'iwamot/actions@36800ea9a4338d93a76da45a27230bce01c59269'
+        - 'iwamot/actions@0d914fa9784b202add6a0ddf9014413962731e99'
         - 'step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c'
     '.github/workflows/renovate.yml': []
     '.github/workflows/validate.yml': []
@@ -37,9 +37,9 @@ dependencies:
         commit: 'sha1-c18668ad3cf93ea998bef934396af7bb5c839dc7'
         owner_id: 115962839
         repo_id: 846733598
-    'iwamot/actions@36800ea9a4338d93a76da45a27230bce01c59269':
-        ref: 'v2.16.1'
-        commit: 'sha1-36800ea9a4338d93a76da45a27230bce01c59269'
+    'iwamot/actions@0d914fa9784b202add6a0ddf9014413962731e99':
+        ref: 'v2.17.0'
+        commit: 'sha1-0d914fa9784b202add6a0ddf9014413962731e99'
         owner_id: 16149
         repo_id: 1215968540
         uses:
