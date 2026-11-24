@@ -7,7 +7,7 @@ mise fmt
 mise install
 
 # Python
-uv sync
+uv sync --locked
 mise run licenses python
 uv audit
 ruff check --fix
